@@ -1,0 +1,92 @@
+# =============================================================================
+# OrgOS — Backend Dependencies — UPDATED (adds document processing for Phase 3)
+# Install: pip install -r requirements.txt
+# =============================================================================
+
+# File uploads in FastAPI (required for /extract/file endpoint)
+python-multipart>=0.0.9
+
+# Document text extraction — Phase 3 Extractor agent
+pypdf>=4.0.0           # PDF text extraction
+python-docx>=1.1.0     # DOCX text extraction
+
+# =============================================================================
+# OrgOS — FastAPI Backend Dependencies
+# Dragnet Solutions Limited | DRG-AUTO-BRIEF-GRC-01-26
+# =============================================================================
+# Install: pip install -r requirements.txt
+# All versions pinned to minimum compatible — pip will resolve upward.
+# Do NOT upgrade major versions without testing.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Web Framework
+# -----------------------------------------------------------------------------
+fastapi>=0.115.0
+# MSAL note: FastAPI 0.115+ uses lifespan= parameter on FastAPI() for startup/
+# shutdown logic. The old @app.on_event("startup") decorator is deprecated.
+# Use: @asynccontextmanager async def lifespan(app): yield
+
+uvicorn[standard]>=0.30.0
+# [standard] installs watchfiles (hot reload), httptools (fast HTTP parser),
+# and websockets. Required for production-grade ASGI serving.
+
+# -----------------------------------------------------------------------------
+# HTTP Client — ALL Graph API calls use this, never requests or aiohttp
+# -----------------------------------------------------------------------------
+httpx>=0.27.0
+# Async-first HTTP client. Used for every Microsoft Graph API call.
+# Pattern: async with httpx.AsyncClient() as client: await client.get(...)
+
+# -----------------------------------------------------------------------------
+# Data Validation — Pydantic v2 ONLY
+# -----------------------------------------------------------------------------
+pydantic>=2.7.0
+# v2 API — use model_validate() not parse_obj(), model_dump() not dict(),
+# Field(...) for field definitions, @model_validator for cross-field validation.
+# Breaking change from v1: validators use @field_validator not @validator.
+
+pydantic-settings>=2.3.0
+# Loads .env file into a Settings class. Used in config.py exclusively.
+# Pattern: class Settings(BaseSettings): model_config = SettingsConfigDict(env_file=".env")
+
+# -----------------------------------------------------------------------------
+# Environment Variables
+# -----------------------------------------------------------------------------
+python-dotenv>=1.0.0
+# Loads .env file. Used as fallback / for direct os.environ access where needed.
+# pydantic-settings is the primary loader — python-dotenv is the underlying mechanism.
+
+# -----------------------------------------------------------------------------
+# Authentication — Entra ID token validation (incoming requests from frontend)
+# -----------------------------------------------------------------------------
+python-jose[cryptography]>=3.3.0
+# JWT validation for incoming bearer tokens from MSAL React frontend.
+# [cryptography] installs the cryptography backend required for RS256 (Entra ID default).
+# Pattern: jose.jwt.decode(token, key, algorithms=["RS256"], audience=CLIENT_ID)
+
+cryptography>=42.0.0
+# Explicit dependency — python-jose uses this for RSA key operations.
+# Entra ID tokens are signed with RS256; this handles the public key operations.
+
+# -----------------------------------------------------------------------------
+# Testing
+# -----------------------------------------------------------------------------
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+# Required for async test functions. Add to pytest.ini:
+# [pytest] asyncio_mode = auto
+
+pytest-httpx>=0.30.0
+# Mocks httpx calls in tests — no real Graph API calls in test suite.
+# Pattern: with respx.mock: respx.get(url).mock(return_value=httpx.Response(200, json={...}))
+
+respx>=0.20.0
+# HTTP mocking library used by pytest-httpx and directly in tests.
+
+# -----------------------------------------------------------------------------
+# Development utilities (not required in production)
+# -----------------------------------------------------------------------------
+httpx[cli]>=0.27.0
+# Enables: python -m httpx GET http://localhost:8000/health
+# Useful for manual API testing without Postman
