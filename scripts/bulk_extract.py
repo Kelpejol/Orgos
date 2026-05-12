@@ -40,18 +40,19 @@ from agents.extractor.ollama_client import (
 from agents.extractor.service import (
     extract_text_from_pdf,
     extract_text_from_docx,
+    _validate_items,
 )
 
 configure_logging()
 logger = logging.getLogger(__name__)
 
-# Checkpoint file path
 CHECKPOINT_FILE = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
     "bulk_extract_checkpoint.json"
 )
 
 SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".txt"}
+VALID_ITEM_TYPES     = {"Extraction", "Orphan", "Harmonisation"}
 
 
 # =============================================================================
@@ -59,7 +60,6 @@ SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".txt"}
 # =============================================================================
 
 def load_checkpoint() -> dict:
-    """Load the checkpoint file. Returns empty state if not found."""
     if not os.path.exists(CHECKPOINT_FILE):
         return {"processed_ids": [], "failed_ids": [], "total_written": 0}
     try:
@@ -70,7 +70,6 @@ def load_checkpoint() -> dict:
 
 
 def save_checkpoint(state: dict) -> None:
-    """Save the checkpoint file after each processed document."""
     try:
         with open(CHECKPOINT_FILE, "w") as f:
             json.dump(state, f, indent=2)
@@ -79,7 +78,6 @@ def save_checkpoint(state: dict) -> None:
 
 
 def reset_checkpoint() -> None:
-    """Delete the checkpoint file to start fresh."""
     if os.path.exists(CHECKPOINT_FILE):
         os.remove(CHECKPOINT_FILE)
         print("Checkpoint cleared — will process all documents from scratch.\n")
@@ -95,14 +93,12 @@ async def get_headers() -> dict:
 
 
 async def resolve_compliance_drive() -> tuple[str, str]:
-    """Get the Compliance site ID and GRC MASTERY drive ID."""
     headers = await get_headers()
-    base = settings.graph_base_url
-
-    url = settings.compliance_site_url.rstrip("/")
-    parts = url.replace("https://", "").split("/", 1)
+    base    = settings.graph_base_url
+    url     = settings.compliance_site_url.rstrip("/")
+    parts   = url.replace("https://", "").split("/", 1)
     hostname = parts[0]
-    path = parts[1] if len(parts) > 1 else ""
+    path     = parts[1] if len(parts) > 1 else ""
 
     async with httpx.AsyncClient(timeout=30.0) as client:
         site_resp = await client.get(
@@ -130,14 +126,14 @@ async def resolve_compliance_drive() -> tuple[str, str]:
 
 async def list_folder(drive_id: str, folder_id: Optional[str] = None) -> list[dict]:
     headers = await get_headers()
-    base = settings.graph_base_url
+    base    = settings.graph_base_url
     url = (
         f"{base}/drives/{drive_id}/items/{folder_id}/children"
         if folder_id
         else f"{base}/drives/{drive_id}/root/children"
     )
     params = {
-        "$top": 200,
+        "$top":    200,
         "$select": "id,name,size,folder,file,lastModifiedDateTime,webUrl",
     }
     all_items = []
@@ -147,7 +143,7 @@ async def list_folder(drive_id: str, folder_id: Optional[str] = None) -> list[di
             resp.raise_for_status()
             data = resp.json()
             all_items.extend(data.get("value", []))
-            url = data.get("@odata.nextLink")
+            url    = data.get("@odata.nextLink")
             params = None
     return all_items
 
@@ -161,10 +157,10 @@ async def walk_folder(
     items = await list_folder(drive_id, folder_id)
     files = []
     for item in items:
-        name = item.get("name", "")
+        name    = item.get("name", "")
         item_id = item["id"]
         if "folder" in item:
-            sub_path = f"{folder_name}/{name}"
+            sub_path  = f"{folder_name}/{name}"
             sub_files = await walk_folder(drive_id, sub_path, item_id)
             files.extend(sub_files)
         else:
@@ -176,13 +172,14 @@ async def walk_folder(
                     "folder_path": folder_name,
                     "extension":   ext,
                     "size":        item.get("size", 0),
+                    "web_url":     item.get("webUrl", ""),
                 })
     return files
 
 
 async def download_file(drive_id: str, item_id: str) -> tuple[bytes, str]:
     headers = await get_headers()
-    base = settings.graph_base_url
+    base    = settings.graph_base_url
     async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
         meta = await client.get(
             f"{base}/drives/{drive_id}/items/{item_id}",
@@ -219,6 +216,7 @@ async def write_to_queue(
     items: list[dict],
     doc_code: str,
     doc_type: DocumentType,
+    web_url: str = "",
 ) -> int:
     list_id   = settings.ai_review_queue_list_id
     list_name = "AI Review Queue"
@@ -237,36 +235,54 @@ async def write_to_queue(
                 or item.get("obligation_statement")
                 or "Untitled item"
             )
+
+            # Force ItemType to a valid value — never allow model free-text through
+            raw_cat = item.get("extraction_category", "")
+            if raw_cat not in VALID_ITEM_TYPES:
+                item["extraction_category"] = (
+                    "Orphan" if doc_type == DocumentType.JD else "Extraction"
+                )
+
             fields = {
                 "Title":              title[:255],
-                "ItemType":           item.get("extraction_category", "Extraction"),
+                "ItemType":           item["extraction_category"],
                 "DocumentType":       item.get("document_type", doc_type.value),
                 "SourceDocumentCode": doc_code,
                 "SourceClause":       item.get("source_clause") or "",
                 "ConfidenceScore":    item.get("confidence_score", 0.0),
                 "ReviewStatus":       "Pending Review",
             }
+
+            # SharePoint file URL for document viewer in Extraction Review
+            if web_url:
+                fields["SourceDocumentUrl"] = web_url
+
             # Control fields
             for k, v in {
-                "ControlStatement":   item.get("control_statement"),
-                "RiskStatement":      item.get("risk_statement"),
-                "ControlType":        item.get("control_type"),
-                "ProposedOwnerRole":  item.get("proposed_owner_role"),
-                "ISOClause":          item.get("iso_clause"),
-                "SourceType":         item.get("source_type", "Policy"),
-                "CompletenessFlag":   item.get("completeness_flag"),
-                "DeficiencyReason":   item.get("deficiency_reason"),
-                "EvidenceType":       item.get("evidence_type"),
-                "EvidenceDescription":item.get("evidence_description"),
-                "EvidenceSourceSystem":item.get("source_system"),
-                "EvidenceFormat":     item.get("evidence_format"),
-                "EvidenceFrequency":  item.get("evidence_frequency"),
-                "EvidenceCollectionMethod": item.get("evidence_collection_method"),
-                "EvidenceOwnerRole":  item.get("evidence_owner_role"),
-                "EvidenceValidationCriteria": item.get("evidence_validation_criteria"),
+                "ControlStatement":          item.get("control_statement"),
+                "RiskStatement":             item.get("risk_statement"),
+                "ControlType":               item.get("control_type"),
+                "ProposedOwnerRole":         item.get("proposed_owner_role"),
+                "ISOClause":                 item.get("iso_clause"),
+                "SourceType":                item.get("source_type", "Policy"),
+                "CompletenessFlag":          item.get("completeness_flag"),
+                "DeficiencyReason":          item.get("deficiency_reason"),
+                "EvidenceType":              item.get("evidence_type"),
+                "EvidenceDescription":       item.get("evidence_description"),
+                "EvidenceSourceSystem":      item.get("source_system"),
+                "EvidenceFormat":            item.get("evidence_format"),
+                "EvidenceFrequency":         item.get("evidence_frequency"),
+                "EvidenceCollectionMethod":  item.get("evidence_collection_method"),
+                "EvidenceOwnerRole":         item.get("evidence_owner_role"),
+                "EvidenceValidationCriteria":item.get("evidence_validation_criteria"),
             }.items():
                 if v:
-                    fields[k] = str(v)[:500] if k in ("EvidenceDescription", "EvidenceValidationCriteria", "DeficiencyReason") else v
+                    fields[k] = (
+                        str(v)[:500]
+                        if k in ("EvidenceDescription", "EvidenceValidationCriteria", "DeficiencyReason")
+                        else v
+                    )
+
             if item.get("evidence_undefined"):
                 fields["EvidenceUndefined"] = True
             if item.get("evidence_undefined_reason"):
@@ -275,10 +291,10 @@ async def write_to_queue(
             # Orphan fields
             if item.get("responsibility_statement"):
                 fields.update({
-                    "OrphanDirection":        item.get("orphan_direction", "JD_to_Doc"),
-                    "ResponsibilityStatement":str(item.get("responsibility_statement", ""))[:500],
-                    "OrphanClassification":   item.get("orphan_classification", ""),
-                    "OrphanReason":           str(item.get("orphan_reason", ""))[:500],
+                    "OrphanDirection":         item.get("orphan_direction", "JD_to_Doc"),
+                    "ResponsibilityStatement": str(item.get("responsibility_statement", ""))[:500],
+                    "OrphanClassification":    item.get("orphan_classification", ""),
+                    "OrphanReason":            str(item.get("orphan_reason", ""))[:500],
                 })
 
             # Regulatory fields
@@ -294,18 +310,19 @@ async def write_to_queue(
             # Audit fields
             if item.get("finding_statement"):
                 fields.update({
-                    "FindingType":              item.get("finding_type", "Finding"),
-                    "Severity":                 item.get("severity", "Minor"),
-                    "GapType":                  item.get("gap_type", "Unknown"),
-                    "RemediationRequired":      str(item.get("remediation_required", ""))[:500],
-                    "TriggersDocumentLifecycle":item.get("triggers_document_lifecycle", False),
-                    "IsRepeatedFinding":        item.get("is_repeated_finding", False),
+                    "FindingType":               item.get("finding_type", "Finding"),
+                    "Severity":                  item.get("severity", "Minor"),
+                    "GapType":                   item.get("gap_type", "Unknown"),
+                    "RemediationRequired":       str(item.get("remediation_required", ""))[:500],
+                    "TriggersDocumentLifecycle": item.get("triggers_document_lifecycle", False),
+                    "IsRepeatedFinding":         item.get("is_repeated_finding", False),
                 })
                 if item.get("standard_reference"):
                     fields["StandardReference"] = item["standard_reference"]
 
             await create_list_item(list_id, list_name, fields)
             written += 1
+
         except Exception as exc:
             logger.error(f"Failed to write queue item: {exc}")
 
@@ -323,30 +340,26 @@ async def bulk_extract(
 ) -> None:
     await startup()
 
-    checkpoint = load_checkpoint()
+    checkpoint    = load_checkpoint()
     processed_ids = set(checkpoint.get("processed_ids", []))
     failed_ids    = set(checkpoint.get("failed_ids", []))
     total_written = checkpoint.get("total_written", 0)
 
     print("\n" + "="*60)
     print("OrgOS — Bulk Extraction (with checkpoint/resume)")
-    if dry_run:
-        print("MODE: DRY RUN")
-    if folder_filter:
-        print(f"FOLDER FILTER: {folder_filter}")
-    if limit:
-        print(f"BATCH LIMIT: {limit} documents then stop")
-    if processed_ids:
-        print(f"RESUMING — {len(processed_ids)} already processed, will skip them")
+    if dry_run:       print("MODE: DRY RUN")
+    if folder_filter: print(f"FOLDER FILTER: {folder_filter}")
+    if limit:         print(f"BATCH LIMIT: {limit} documents then stop")
+    if processed_ids: print(f"RESUMING — {len(processed_ids)} already processed, will skip them")
     print("="*60 + "\n")
 
     try:
         print("Connecting to Compliance SharePoint...")
         site_id, drive_id = await resolve_compliance_drive()
-        print(f"Connected\n")
+        print("Connected\n")
 
         starting_folder = settings.compliance_starting_folder
-        headers = await get_headers()
+        headers         = await get_headers()
         async with httpx.AsyncClient(timeout=30.0) as client:
             root_resp = await client.get(
                 f"{settings.graph_base_url}/drives/{drive_id}/root:/{starting_folder}",
@@ -359,7 +372,6 @@ async def bulk_extract(
         # Collect files
         all_files = []
         top_level = await list_folder(drive_id, root_id)
-
         for top_item in top_level:
             if "folder" not in top_item:
                 continue
@@ -369,7 +381,6 @@ async def bulk_extract(
             folder_files = await walk_folder(drive_id, folder_name, top_item["id"])
             all_files.extend(folder_files)
 
-        # Filter out already processed and failed
         remaining = [
             f for f in all_files
             if f["id"] not in processed_ids and f["id"] not in failed_ids
@@ -390,16 +401,16 @@ async def bulk_extract(
             print("Run with --reset to start fresh.\n")
             return
 
-        # Process each file
-        batch_written  = 0
-        batch_skipped  = 0
-        batch_failed   = 0
+        batch_written   = 0
+        batch_skipped   = 0
+        batch_failed    = 0
         batch_processed = 0
 
         for i, file_info in enumerate(remaining, 1):
             filename    = file_info["name"]
             file_id     = file_info["id"]
             folder_path = file_info["folder_path"]
+            web_url     = file_info.get("web_url", "")
 
             name_no_ext = os.path.splitext(filename)[0]
             doc_code    = name_no_ext.upper().replace(" ", "-").replace("_", "-")[:60]
@@ -407,11 +418,9 @@ async def bulk_extract(
 
             prefix = f"[{i}/{len(remaining)}]"
 
-            # Skip non-extraction targets
             if doc_type in NON_EXTRACTION_TYPES or doc_type == DocumentType.UNCLASSIFIED:
                 reason = "non-extraction target" if doc_type in NON_EXTRACTION_TYPES else "unclassified"
                 print(f"  {prefix} SKIP  {filename[:50]} ({reason})")
-                # Mark as processed so we do not revisit
                 processed_ids.add(file_id)
                 checkpoint["processed_ids"] = list(processed_ids)
                 save_checkpoint(checkpoint)
@@ -425,10 +434,8 @@ async def bulk_extract(
                 continue
 
             try:
-                # Download
                 file_bytes, _ = await download_file(drive_id, file_id)
 
-                # Extract text
                 text = extract_text(file_bytes, filename)
                 if not text.strip():
                     print(f"              → Empty — skipping")
@@ -449,13 +456,17 @@ async def bulk_extract(
                     batch_processed += 1
                     continue
 
+                # Validate and clean — fixes ItemType, ControlType, EvidenceType
+                raw_items = _validate_items(raw_items, doc_type, doc_code)
+
                 # Write to queue
-                written = await write_to_queue(raw_items, doc_code, doc_type)
+                written = await write_to_queue(
+                    raw_items, doc_code, doc_type, web_url=web_url
+                )
                 print(f"              → {len(raw_items)} extracted, {written} written ✓")
 
-                # Save checkpoint immediately after successful write
-                total_written += written
-                batch_written += written
+                total_written   += written
+                batch_written   += written
                 batch_processed += 1
                 processed_ids.add(file_id)
                 checkpoint["processed_ids"] = list(processed_ids)
@@ -471,10 +482,8 @@ async def bulk_extract(
                 save_checkpoint(checkpoint)
                 batch_failed += 1
 
-            # Pause between files to avoid overwhelming Ollama
             await asyncio.sleep(3)
 
-        # Batch summary
         print("\n" + "="*60)
         print("BATCH COMPLETE")
         print(f"  Processed:     {batch_processed}")
@@ -501,13 +510,13 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="Bulk extract GRC MASTERY documents into AI Review Queue"
     )
-    parser.add_argument("--dry-run",  action="store_true",
+    parser.add_argument("--dry-run", action="store_true",
                         help="Walk and classify without extracting or writing")
-    parser.add_argument("--folder",   type=str, default=None,
+    parser.add_argument("--folder",  type=str, default=None,
                         help="Only process folders containing this name")
-    parser.add_argument("--limit",    type=int, default=None,
+    parser.add_argument("--limit",   type=int, default=None,
                         help="Max documents to process in this run (for batching)")
-    parser.add_argument("--reset",    action="store_true",
+    parser.add_argument("--reset",   action="store_true",
                         help="Clear checkpoint and process everything from scratch")
     args = parser.parse_args()
 

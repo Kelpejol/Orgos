@@ -27,6 +27,9 @@ from strategic_risks.router import router as risks_router
 from gap_analysis.router import router as gap_router
 from agents.classifier.router import router as classifier_router
 from agents.cdi_checker.router import router as cdi_router
+from agents.policy_drafter.router import router as policy_drafter_router
+from agents.gap_analyzer.router   import router as gap_analyzer_router
+
 
 # Configure logging before anything else
 configure_logging()
@@ -104,6 +107,9 @@ app.include_router(risks_router)
 app.include_router(gap_router)
 app.include_router(classifier_router)
 app.include_router(cdi_router)
+app.include_router(policy_drafter_router)
+app.include_router(gap_analyzer_router)
+
 # =============================================================================
 #  Health endpoints (no auth required — for monitoring)
 # =============================================================================

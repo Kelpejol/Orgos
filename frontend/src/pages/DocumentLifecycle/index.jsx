@@ -294,26 +294,46 @@ const NewDocForm = ({ onSuccess, onCancel }) => {
   }));
 
   const handleCreate = async () => {
-    if (!form.title.trim())       { setError("Document title is required."); return; }
-    if (!form.document_type)      { setError("Document type is required."); return; }
-    if (!form.department)         { setError("Department is required."); return; }
+    if (!form.title.trim())  { setError("Document title is required."); return; }
+    if (!form.document_type) { setError("Document type is required."); return; }
+    if (!form.department)    { setError("Department is required."); return; }
     setSaving(true);
     setError("");
     try {
-      await lifecycleApi.create({
-        title:             form.title.trim(),
-        document_code:     form.document_code.trim() || undefined,
-        document_type:     form.document_type,
-        department:        form.department,
-        trigger:           "Manual",
-        ai_generated:      form.ai_generated,
-        notes:             form.notes.trim() || undefined,
-        standards_mapping: form.standards_mapping.trim() || undefined,
-      });
+      if (form.ai_generated) {
+        // Call Policy Drafter — creates lifecycle entry automatically
+        const resp = await apiClient.post("/api/v1/agents/draft-document", {
+          title:             form.title.trim(),
+          doc_type:          form.document_type,
+          department:        form.department,
+          notes:             form.notes.trim() || undefined,
+          standards_mapping: form.standards_mapping.trim() || undefined,
+          trigger:           "Manual",
+        });
+        // Show the generated draft to the user
+        const draft = resp.data;
+        alert(
+          `Draft generated — ${draft.doc_code}\n\n` +
+          `A Document Lifecycle entry has been created.\n` +
+          `Copy the draft from the API response into a Word document, ` +
+          `format per CDI standards, and upload via the lifecycle Upload button.`
+        );
+      } else {
+        await lifecycleApi.create({
+          title:             form.title.trim(),
+          document_code:     form.document_code.trim() || undefined,
+          document_type:     form.document_type,
+          department:        form.department,
+          trigger:           "Manual",
+          ai_generated:      false,
+          notes:             form.notes.trim() || undefined,
+          standards_mapping: form.standards_mapping.trim() || undefined,
+        });
+      }
       qc.invalidateQueries({ queryKey: ["lifecycle"] });
       onSuccess();
     } catch (err) {
-      setError(err.message || "Failed to create. Please try again.");
+      setError(err.response?.data?.detail || err.message || "Failed to create. Please try again.");
     } finally {
       setSaving(false);
     }

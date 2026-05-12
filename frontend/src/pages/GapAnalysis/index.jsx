@@ -416,8 +416,51 @@ const GapCard = ({ gap, isCompliance, onStatusUpdate, onAcceptRisk, actionId }) 
 };
 
 // =============================================================================
-//  Main component
+//  Run Gap Analyzer button
 // =============================================================================
+
+const RunGapAnalyzerButton = ({ onComplete }) => {
+  const [running, setRunning] = useState(false);
+  const [result,  setResult]  = useState(null);
+  const [error,   setError]   = useState("");
+
+  const handleRun = async () => {
+    setRunning(true);
+    setError("");
+    setResult(null);
+    try {
+      const resp = await apiClient.post("/api/v1/agents/gap-analysis/run");
+      setResult(resp.data);
+      onComplete?.();
+    } catch (err) {
+      setError(err.response?.data?.detail || err.message || "Gap analysis failed.");
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 4 }}>
+      <button
+        onClick={handleRun}
+        disabled={running}
+        style={{ padding: "7px 14px", fontSize: 12, borderRadius: 8,
+                 border: "none", fontWeight: 500,
+                 background: running ? "#E8E8E8" : "#A32D2D",
+                 color: running ? "#999" : "#fff",
+                 cursor: running ? "not-allowed" : "pointer" }}
+      >
+        {running ? "Running analysis..." : "Run gap analysis"}
+      </button>
+      {result && (
+        <div style={{ fontSize: 10, color: "#A32D2D", textAlign: "right" }}>
+          {result.gaps_found} gaps found · {result.gaps_written} written
+        </div>
+      )}
+      {error && <div style={{ fontSize: 10, color: "#A32D2D" }}>{error}</div>}
+    </div>
+  );
+};
 
 export default function GapAnalysis() {
   const [severityFilter, setSeverityFilter] = useState("All");
@@ -503,6 +546,11 @@ export default function GapAnalysis() {
             </div>
           </div>
           <div style={{ display: "flex", gap: 6 }}>
+            {isCompliance && (
+              <RunGapAnalyzerButton
+                onComplete={() => qc.invalidateQueries({ queryKey: ["gaps"] })}
+              />
+            )}
             {counts.critical > 0 && (
               <div style={{ padding: "3px 10px", borderRadius: 6, fontSize: 11,
                             fontWeight: 700, background: "#FCEBEB", color: "#791F1F",
