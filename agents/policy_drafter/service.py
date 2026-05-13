@@ -237,7 +237,7 @@ async def draft_document(
     # Generate all sections
     logger.info("Generating Purpose...")
     purpose = await _generate_purpose(title, doc_type, department, notes, standards_mapping)
-
+    print(f"Generated purpose: {purpose}")
     logger.info("Generating Scope...")
     scope = await _generate_scope(title, doc_type, department)
 

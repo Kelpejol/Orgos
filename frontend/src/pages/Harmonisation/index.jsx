@@ -75,7 +75,7 @@ const zone3Api = {
       .then(r => r.data),
 
   decide: (itemId, decision, rationale, canonicalName) =>
-    apiClient.patch(`/api/v1/queue/items/${itemId}/decide`, {
+    apiClient.patch(`/api/v1/queue/items/${itemId}/zone3-decide`, {
       decision,
       rationale,
       ...(canonicalName ? { canonical_name: canonicalName } : {}),
@@ -108,7 +108,7 @@ const HarmDecisionPanel = ({ item, onDecide, isPending }) => {
       desc: "Some variants are the same, others are genuinely different" },
     { key: "Keep separate", label: "Keep separate",    primary: false,
       desc: "These are genuinely different — not variants of each other" },
-    { key: "Rename / Standardise", label: "Rename / Standardise", primary: false,
+    { key: "Rename and standardise", label: "Rename / Standardise", primary: false,
       desc: "Standardise the name across all documents without merging" },
   ];
 
@@ -369,8 +369,9 @@ export default function Harmonisation() {
   const handleDecide = async (itemId, decision, rationale, canonicalName) => {
     setActionState({ pending: true, itemId });
     try {
-      await zone3Api.decide(itemId, decision, rationale, canonicalName);
+      const result = await zone3Api.decide(itemId, decision, rationale, canonicalName);
       qc.invalidateQueries({ queryKey: ["zone3"] });
+      return result;
     } catch (err) {
       alert(err.response?.data?.detail || err.message || "Decision failed.");
     } finally {

@@ -72,6 +72,7 @@ async def draft_document_endpoint(
             standards_mapping= body.standards_mapping,
             role_titles=       role_titles,
         )
+        print(f"Draft generated with code, {draft}")
     except Exception as exc:
         logger.exception("Policy Drafter generation failed")
         raise HTTPException(
