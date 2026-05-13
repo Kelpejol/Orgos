@@ -78,6 +78,52 @@ const lifecycleApi = {
     }).then(r => r.data),
 };
 
+
+
+
+async function authenticatedDownload(url, filename) {
+  const { msalInstance } = await import("../../main.jsx");
+  const { apiTokenRequest } = await import("../../authConfig.js");
+ 
+  const accounts = msalInstance.getAllAccounts();
+  if (!accounts.length) throw new Error("Not authenticated — please sign in.");
+ 
+  let tokenResp;
+  try {
+    tokenResp = await msalInstance.acquireTokenSilent({
+      ...apiTokenRequest,
+      account: accounts[0],
+    });
+  } catch {
+    tokenResp = await msalInstance.acquireTokenPopup(apiTokenRequest);
+  }
+ 
+  const resp = await fetch(url, {
+    headers: { Authorization: `Bearer ${tokenResp.accessToken}` },
+  });
+ 
+  if (!resp.ok) {
+    let detail = `Download failed: ${resp.status}`;
+    try { detail = (await resp.json()).detail || detail; } catch { /**/ }
+    throw new Error(detail);
+  }
+ 
+  const blob = await resp.blob();
+  const disposition = resp.headers.get("Content-Disposition") || "";
+  const match = disposition.match(/filename\*?=(?:UTF-8'')?["']?([^;"'\n]+)/i);
+  const resolvedName = match ? decodeURIComponent(match[1].trim()) : filename;
+ 
+  const objectUrl = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = objectUrl;
+  a.download = resolvedName;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(objectUrl);
+}
+ 
+
 // =============================================================================
 //  Hooks
 // =============================================================================
@@ -541,27 +587,356 @@ const NewDocForm = ({ onSuccess, onCancel }) => {
 //  Lifecycle card
 // =============================================================================
 
+// const LifecycleCard = ({
+//   doc, stageConfig, currentUserOid,
+//   onViewDetails, onProgress, onUpload, onReassign,
+//   progressPending,
+// }) => {
+//   const uploadRef  = useRef();
+//   const [uploading, setUploading] = useState(false);
+//   const [uploadError, setUploadError] = useState("");
+//   const [showFeedback, setShowFeedback] = useState(false);
+//   const [feedbackText, setFeedbackText] = useState("");
+//   const [submittingFeedback, setSubmittingFeedback] = useState(false);
+//   const qc = useQueryClient();
+
+//   const isOwner    = doc.OwnerEntraId === currentUserOid;
+//   const daysIn     = doc.DaysInStage || 0;
+//   const isStalled  = daysIn > 14;
+//   const canProgress= isOwner && doc.Revised;
+//   const isSensitisation = doc.Stage === "Sensitisation";
+//   const triggerStyle = TRIGGER_LABELS[doc.Trigger] || TRIGGER_LABELS["Manual"];
+
+//   // CDI failures parsed
+//   let cdiCount = 0;
+//   if (doc.CDIFailures) {
+//     try {
+//       const parsed = JSON.parse(doc.CDIFailures);
+//       cdiCount = Array.isArray(parsed) ? parsed.length : 1;
+//     } catch { cdiCount = 1; }
+//   }
+
+//   // Parse sensitisation feedback
+//   let feedbackItems = [];
+//   if (doc.SensitisationFeedback) {
+//     try {
+//       feedbackItems = JSON.parse(doc.SensitisationFeedback);
+//     } catch {
+//       feedbackItems = [];
+//     }
+//   }
+
+//   const handleFileSelect = async (e) => {
+//     const file = e.target.files[0];
+//     if (!file) return;
+//     setUploading(true);
+//     setUploadError("");
+//     try {
+//       await lifecycleApi.upload(doc.id, file);
+//       qc.invalidateQueries({ queryKey: ["lifecycle"] });
+//     } catch (err) {
+//       setUploadError(err.message || "Upload failed");
+//     } finally {
+//       setUploading(false);
+//       if (uploadRef.current) uploadRef.current.value = "";
+//     }
+//   };
+
+//   const handleSubmitFeedback = async () => {
+//     if (!feedbackText.trim()) return;
+//     setSubmittingFeedback(true);
+//     try {
+//       const existing = feedbackItems;
+//       const newEntry = {
+//         text:      feedbackText.trim(),
+//         submittedAt: new Date().toISOString(),
+//         submittedBy: "You",
+//       };
+//       const updated = [...existing, newEntry];
+//       await lifecycleApi.updateFeedback(doc.id, JSON.stringify(updated));
+//       qc.invalidateQueries({ queryKey: ["lifecycle"] });
+//       setFeedbackText("");
+//       setShowFeedback(false);
+//     } catch (err) {
+//       alert(err.message || "Failed to submit feedback.");
+//     } finally {
+//       setSubmittingFeedback(false);
+//     }
+//   };
+
+//   return (
+//     <div style={{
+//       background: "var(--color-background-primary)",
+//       border: isOwner ? `1.5px solid ${stageConfig.color}` : "1px solid #D0D0D0",
+//       borderRadius: 12, padding: "10px 12px",
+//       boxShadow: isStalled ? `0 0 0 2px #F09595` : "none",
+//     }}>
+//       {/* Your action badge */}
+//       {isOwner && (
+//         <div style={{ fontSize: 9, fontWeight: 600, color: stageConfig.color,
+//                       marginBottom: 3, textTransform: "uppercase", letterSpacing: "0.5px" }}>
+//           Your action
+//         </div>
+//       )}
+
+//       {/* Title + View details link */}
+//       <div style={{ display: "flex", justifyContent: "space-between",
+//                     alignItems: "flex-start", marginBottom: 6, gap: 8 }}>
+//         <div style={{ fontSize: 12, fontWeight: 600, lineHeight: 1.4, flex: 1 }}>
+//           {doc.Title || doc.DocumentCode || "Untitled document"}
+//         </div>
+//         <span
+//           role="button" tabIndex={0}
+//           onClick={() => onViewDetails(doc)}
+//           onKeyDown={e => e.key === "Enter" && onViewDetails(doc)}
+//           style={{ fontSize: 11, color: "var(--color-text-tertiary)",
+//                    textDecoration: "underline", cursor: "pointer",
+//                    flexShrink: 0, marginTop: 2, userSelect: "none" }}
+//         >
+//           View details
+//         </span>
+//       </div>
+
+//       {/* Badges row */}
+//       <div style={{ display: "flex", gap: 4, marginBottom: 6, flexWrap: "wrap" }}>
+//         {doc.Trigger && (
+//           <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 3, fontWeight: 500,
+//                          background: triggerStyle.bg, color: triggerStyle.color,
+//                          border: `0.5px solid ${triggerStyle.bd}` }}>
+//             {doc.Trigger}
+//           </span>
+//         )}
+//         {doc.AIGenerated  && <StatusBadge label="AI draft" />}
+//         {doc.Revised      && <StatusBadge label="Revised" />}
+//         {doc.DocumentType && <StatusBadge label={doc.DocumentType} />}
+//       </div>
+
+//       {/* CDI failure notice */}
+//       {cdiCount > 0 && (
+//         <div style={{ padding: "6px 10px", background: "#FCEBEB", borderRadius: 6,
+//                       fontSize: 11, color: "#791F1F", marginBottom: 8 }}>
+//           {cdiCount} CDI failure{cdiCount > 1 ? "s" : ""} to fix — click View details
+//         </div>
+//       )}
+
+//       {/* Gap link */}
+//       {doc.LinkedGapId && (
+//         <div style={{ fontSize: 10, color: "#3C3489", marginBottom: 6 }}>
+//           Gap: {doc.LinkedGapId}
+//         </div>
+//       )}
+
+//       {/* Upload error */}
+//       {uploadError && (
+//         <div style={{ padding: "5px 8px", background: "#FCEBEB", borderRadius: 6,
+//                       fontSize: 11, color: "#791F1F", marginBottom: 6 }}>
+//           Upload failed: {uploadError}
+//         </div>
+//       )}
+
+//       {/* Action buttons — owner only */}
+//       {isOwner && (
+//         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginTop: 6 }}>
+
+//           {/* Download */}
+//           <a
+//             href={doc.SharePointFileUrl || lifecycleApi.downloadUrl(doc.id)}
+//             target="_blank"
+//             rel="noreferrer"
+//             style={{
+//               padding: "7px", fontSize: 11, borderRadius: 7,
+//               border: "1.5px solid #C0C0C0", background: "transparent",
+//               color: "var(--color-text-primary)", cursor: "pointer",
+//               textDecoration: "none", textAlign: "center",
+//               display: "block",
+//             }}
+//           >
+//             Download ↓
+//           </a>
+
+//           {/* Upload */}
+//           <div>
+//             <input
+//               ref={uploadRef} type="file"
+//               accept=".pdf,.docx,.doc"
+//               style={{ display: "none" }}
+//               onChange={handleFileSelect}
+//             />
+//             <button
+//               onClick={() => uploadRef.current?.click()}
+//               disabled={uploading}
+//               style={{
+//                 width: "100%", padding: "7px", fontSize: 11, borderRadius: 7,
+//                 border: "1.5px solid #C0C0C0", background: "transparent",
+//                 color: uploading ? "#999" : "var(--color-text-primary)",
+//                 cursor: uploading ? "not-allowed" : "pointer",
+//               }}
+//             >
+//               {uploading ? "Uploading..." : "Upload ↑"}
+//             </button>
+//           </div>
+
+//           {/* Reassign */}
+//           <button
+//             onClick={() => onReassign(doc)}
+//             style={{
+//               padding: "7px", fontSize: 11, borderRadius: 7,
+//               border: "1.5px solid #C0C0C0", background: "transparent",
+//               color: "var(--color-text-secondary)", cursor: "pointer",
+//             }}
+//           >
+//             Reassign
+//           </button>
+
+//           {/* Progress */}
+//           <button
+//             onClick={() => canProgress && onProgress(doc.id, doc.Stage)}
+//             disabled={!canProgress || progressPending}
+//             title={!canProgress ? "Upload a revised version to unlock Progress" : undefined}
+//             style={{
+//               padding: "7px", fontSize: 11, borderRadius: 7, fontWeight: 500,
+//               border: canProgress && !progressPending ? "none" : "1.5px solid #E0E0E0",
+//               background: canProgress && !progressPending ? stageConfig.color : "transparent",
+//               color: canProgress && !progressPending ? "#fff" : "#B0B0B0",
+//               cursor: canProgress && !progressPending ? "pointer" : "not-allowed",
+//             }}
+//           >
+//             {progressPending ? "Moving..." : "Progress →"}
+//           </button>
+//         </div>
+//       )}
+
+//       {/* Sensitisation feedback panel */}
+//       {isSensitisation && (
+//         <div style={{ marginTop: 10 }}>
+//           {/* Collected feedback */}
+//           {feedbackItems.length > 0 && (
+//             <div style={{ marginBottom: 8 }}>
+//               <div style={{ fontSize: 10, fontWeight: 600, color: "#D85A30",
+//                             textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 6 }}>
+//                 Feedback received ({feedbackItems.length})
+//               </div>
+//               <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+//                 {feedbackItems.map((fb, i) => (
+//                   <div key={i} style={{
+//                     padding: "7px 10px", background: "#FAECE7", borderRadius: 7,
+//                     border: "0.5px solid #F0997B", fontSize: 11, color: "#712B13",
+//                   }}>
+//                     <div style={{ lineHeight: 1.4 }}>{fb.text}</div>
+//                     <div style={{ fontSize: 10, opacity: 0.7, marginTop: 2 }}>
+//                       {fb.submittedBy} · {fb.submittedAt
+//                         ? new Date(fb.submittedAt).toLocaleDateString("en-GB", {
+//                             day: "numeric", month: "short", year: "numeric",
+//                           })
+//                         : ""}
+//                     </div>
+//                   </div>
+//                 ))}
+//               </div>
+//             </div>
+//           )}
+
+//           {/* Submit feedback button — visible to all, not just owner */}
+//           {!showFeedback && (
+//             <button
+//               onClick={() => setShowFeedback(true)}
+//               style={{
+//                 width: "100%", padding: "7px", fontSize: 11, borderRadius: 7,
+//                 border: "1.5px solid #F0997B", background: "transparent",
+//                 color: "#D85A30", cursor: "pointer", fontWeight: 500,
+//               }}
+//             >
+//               + Add feedback or comment
+//             </button>
+//           )}
+
+//           {showFeedback && (
+//             <div style={{ padding: "10px 12px", background: "#FAECE7",
+//                           borderRadius: 8, border: "1px solid #F0997B" }}>
+//               <div style={{ fontSize: 11, fontWeight: 600, color: "#D85A30", marginBottom: 6 }}>
+//                 Your feedback on this document
+//               </div>
+//               <textarea
+//                 value={feedbackText}
+//                 onChange={e => setFeedbackText(e.target.value)}
+//                 placeholder="What needs to change? Any concerns, suggestions, or comments for the document owner..."
+//                 rows={3}
+//                 style={{
+//                   width: "100%", fontSize: 11, padding: "8px 10px", borderRadius: 7,
+//                   border: "1.5px solid #F0997B", background: "var(--color-background-primary)",
+//                   color: "var(--color-text-primary)", resize: "vertical",
+//                   fontFamily: "var(--font-sans)", outline: "none",
+//                   boxSizing: "border-box", marginBottom: 8,
+//                 }}
+//                 onFocus={e => (e.target.style.borderColor = "#D85A30")}
+//                 onBlur={e => (e.target.style.borderColor = "#F0997B")}
+//               />
+//               <div style={{ display: "flex", gap: 6 }}>
+//                 <button
+//                   onClick={handleSubmitFeedback}
+//                   disabled={!feedbackText.trim() || submittingFeedback}
+//                   style={{
+//                     padding: "7px 14px", fontSize: 11, borderRadius: 7, border: "none",
+//                     fontWeight: 500,
+//                     background: !feedbackText.trim() || submittingFeedback ? "#E8E8E8" : "#D85A30",
+//                     color: !feedbackText.trim() || submittingFeedback ? "#999" : "#fff",
+//                     cursor: !feedbackText.trim() || submittingFeedback ? "not-allowed" : "pointer",
+//                   }}
+//                 >
+//                   {submittingFeedback ? "Submitting..." : "Submit feedback"}
+//                 </button>
+//                 <button
+//                   onClick={() => { setShowFeedback(false); setFeedbackText(""); }}
+//                   style={{ padding: "7px 12px", fontSize: 11, borderRadius: 7,
+//                            border: "1.5px solid #C0C0C0", background: "transparent",
+//                            color: "var(--color-text-secondary)", cursor: "pointer" }}
+//                 >
+//                   Cancel
+//                 </button>
+//               </div>
+//             </div>
+//           )}
+//         </div>
+//       )}
+
+//       {/* Footer */}
+//       <div style={{ display: "flex", justifyContent: "space-between",
+//                     fontSize: 11, marginTop: isOwner ? 8 : 4 }}>
+//         <span style={{ color: "var(--color-text-secondary)" }}>
+//           {doc.OwnerName || "Unassigned"}
+//         </span>
+//         <span style={{ color: isStalled ? "#A32D2D" : "var(--color-text-tertiary)",
+//                        fontWeight: isStalled ? 500 : 400 }}>
+//           {daysIn}d {isStalled && "— stalled"}
+//         </span>
+//       </div>
+//     </div>
+//   );
+// };
+
+
 const LifecycleCard = ({
   doc, stageConfig, currentUserOid,
   onViewDetails, onProgress, onUpload, onReassign,
   progressPending,
 }) => {
   const uploadRef  = useRef();
-  const [uploading, setUploading] = useState(false);
-  const [uploadError, setUploadError] = useState("");
-  const [showFeedback, setShowFeedback] = useState(false);
-  const [feedbackText, setFeedbackText] = useState("");
+  const [uploading,      setUploading]      = useState(false);
+  const [uploadError,    setUploadError]    = useState("");
+  const [downloading,    setDownloading]    = useState(false);
+  const [downloadError,  setDownloadError]  = useState("");
+  const [showFeedback,   setShowFeedback]   = useState(false);
+  const [feedbackText,   setFeedbackText]   = useState("");
   const [submittingFeedback, setSubmittingFeedback] = useState(false);
   const qc = useQueryClient();
-
+ 
   const isOwner    = doc.OwnerEntraId === currentUserOid;
   const daysIn     = doc.DaysInStage || 0;
   const isStalled  = daysIn > 14;
-  const canProgress= isOwner && doc.Revised;
+  const canProgress = isOwner && doc.Revised;
   const isSensitisation = doc.Stage === "Sensitisation";
   const triggerStyle = TRIGGER_LABELS[doc.Trigger] || TRIGGER_LABELS["Manual"];
-
-  // CDI failures parsed
+ 
   let cdiCount = 0;
   if (doc.CDIFailures) {
     try {
@@ -569,17 +944,14 @@ const LifecycleCard = ({
       cdiCount = Array.isArray(parsed) ? parsed.length : 1;
     } catch { cdiCount = 1; }
   }
-
-  // Parse sensitisation feedback
+ 
   let feedbackItems = [];
   if (doc.SensitisationFeedback) {
-    try {
-      feedbackItems = JSON.parse(doc.SensitisationFeedback);
-    } catch {
-      feedbackItems = [];
-    }
+    try { feedbackItems = JSON.parse(doc.SensitisationFeedback); }
+    catch { feedbackItems = []; }
   }
-
+ 
+  // ── Upload ──────────────────────────────────────────────────────────────────
   const handleFileSelect = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
@@ -595,18 +967,44 @@ const LifecycleCard = ({
       if (uploadRef.current) uploadRef.current.value = "";
     }
   };
-
+ 
+  // ── Download — authenticated fetch, never a bare <a href> ──────────────────
+  const handleDownload = async () => {
+    setDownloading(true);
+    setDownloadError("");
+    try {
+      const BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+      const filename = `${doc.DocumentCode || doc.id}_v1.0_DRAFT.docx`;
+ 
+      if (doc.SharePointFileUrl) {
+        // File already lives in SharePoint — the user is authenticated via
+        // their M365 browser session, so a direct tab open works fine.
+        window.open(doc.SharePointFileUrl, "_blank", "noreferrer");
+      } else {
+        // Stream via the backend endpoint using the MSAL bearer token.
+        await authenticatedDownload(
+          `${BASE}/api/v1/lifecycle/documents/${doc.id}/download`,
+          filename,
+        );
+      }
+    } catch (err) {
+      setDownloadError(err.message || "Download failed");
+    } finally {
+      setDownloading(false);
+    }
+  };
+ 
+  // ── Feedback ────────────────────────────────────────────────────────────────
   const handleSubmitFeedback = async () => {
     if (!feedbackText.trim()) return;
     setSubmittingFeedback(true);
     try {
-      const existing = feedbackItems;
       const newEntry = {
-        text:      feedbackText.trim(),
+        text: feedbackText.trim(),
         submittedAt: new Date().toISOString(),
         submittedBy: "You",
       };
-      const updated = [...existing, newEntry];
+      const updated = [...feedbackItems, newEntry];
       await lifecycleApi.updateFeedback(doc.id, JSON.stringify(updated));
       qc.invalidateQueries({ queryKey: ["lifecycle"] });
       setFeedbackText("");
@@ -617,13 +1015,13 @@ const LifecycleCard = ({
       setSubmittingFeedback(false);
     }
   };
-
+ 
   return (
     <div style={{
       background: "var(--color-background-primary)",
       border: isOwner ? `1.5px solid ${stageConfig.color}` : "1px solid #D0D0D0",
       borderRadius: 12, padding: "10px 12px",
-      boxShadow: isStalled ? `0 0 0 2px #F09595` : "none",
+      boxShadow: isStalled ? "0 0 0 2px #F09595" : "none",
     }}>
       {/* Your action badge */}
       {isOwner && (
@@ -632,8 +1030,8 @@ const LifecycleCard = ({
           Your action
         </div>
       )}
-
-      {/* Title + View details link */}
+ 
+      {/* Title + View details */}
       <div style={{ display: "flex", justifyContent: "space-between",
                     alignItems: "flex-start", marginBottom: 6, gap: 8 }}>
         <div style={{ fontSize: 12, fontWeight: 600, lineHeight: 1.4, flex: 1 }}>
@@ -650,8 +1048,8 @@ const LifecycleCard = ({
           View details
         </span>
       </div>
-
-      {/* Badges row */}
+ 
+      {/* Badges */}
       <div style={{ display: "flex", gap: 4, marginBottom: 6, flexWrap: "wrap" }}>
         {doc.Trigger && (
           <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 3, fontWeight: 500,
@@ -664,7 +1062,7 @@ const LifecycleCard = ({
         {doc.Revised      && <StatusBadge label="Revised" />}
         {doc.DocumentType && <StatusBadge label={doc.DocumentType} />}
       </div>
-
+ 
       {/* CDI failure notice */}
       {cdiCount > 0 && (
         <div style={{ padding: "6px 10px", background: "#FCEBEB", borderRadius: 6,
@@ -672,43 +1070,47 @@ const LifecycleCard = ({
           {cdiCount} CDI failure{cdiCount > 1 ? "s" : ""} to fix — click View details
         </div>
       )}
-
+ 
       {/* Gap link */}
       {doc.LinkedGapId && (
         <div style={{ fontSize: 10, color: "#3C3489", marginBottom: 6 }}>
           Gap: {doc.LinkedGapId}
         </div>
       )}
-
-      {/* Upload error */}
+ 
+      {/* Error banners */}
       {uploadError && (
         <div style={{ padding: "5px 8px", background: "#FCEBEB", borderRadius: 6,
                       fontSize: 11, color: "#791F1F", marginBottom: 6 }}>
           Upload failed: {uploadError}
         </div>
       )}
-
+      {downloadError && (
+        <div style={{ padding: "5px 8px", background: "#FCEBEB", borderRadius: 6,
+                      fontSize: 11, color: "#791F1F", marginBottom: 6 }}>
+          Download failed: {downloadError}
+        </div>
+      )}
+ 
       {/* Action buttons — owner only */}
       {isOwner && (
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginTop: 6 }}>
-
-          {/* Download */}
-          <a
-            href={doc.SharePointFileUrl || lifecycleApi.downloadUrl(doc.id)}
-            target="_blank"
-            rel="noreferrer"
+ 
+          {/* ── Download — authenticated, no bare <a href> ── */}
+          <button
+            onClick={handleDownload}
+            disabled={downloading}
             style={{
               padding: "7px", fontSize: 11, borderRadius: 7,
               border: "1.5px solid #C0C0C0", background: "transparent",
-              color: "var(--color-text-primary)", cursor: "pointer",
-              textDecoration: "none", textAlign: "center",
-              display: "block",
+              color: downloading ? "#999" : "var(--color-text-primary)",
+              cursor: downloading ? "not-allowed" : "pointer",
             }}
           >
-            Download ↓
-          </a>
-
-          {/* Upload */}
+            {downloading ? "Downloading..." : "Download ↓"}
+          </button>
+ 
+          {/* ── Upload ── */}
           <div>
             <input
               ref={uploadRef} type="file"
@@ -729,8 +1131,8 @@ const LifecycleCard = ({
               {uploading ? "Uploading..." : "Upload ↑"}
             </button>
           </div>
-
-          {/* Reassign */}
+ 
+          {/* ── Reassign ── */}
           <button
             onClick={() => onReassign(doc)}
             style={{
@@ -741,8 +1143,8 @@ const LifecycleCard = ({
           >
             Reassign
           </button>
-
-          {/* Progress */}
+ 
+          {/* ── Progress ── */}
           <button
             onClick={() => canProgress && onProgress(doc.id, doc.Stage)}
             disabled={!canProgress || progressPending}
@@ -759,11 +1161,10 @@ const LifecycleCard = ({
           </button>
         </div>
       )}
-
+ 
       {/* Sensitisation feedback panel */}
       {isSensitisation && (
         <div style={{ marginTop: 10 }}>
-          {/* Collected feedback */}
           {feedbackItems.length > 0 && (
             <div style={{ marginBottom: 8 }}>
               <div style={{ fontSize: 10, fontWeight: 600, color: "#D85A30",
@@ -789,8 +1190,7 @@ const LifecycleCard = ({
               </div>
             </div>
           )}
-
-          {/* Submit feedback button — visible to all, not just owner */}
+ 
           {!showFeedback && (
             <button
               onClick={() => setShowFeedback(true)}
@@ -803,7 +1203,7 @@ const LifecycleCard = ({
               + Add feedback or comment
             </button>
           )}
-
+ 
           {showFeedback && (
             <div style={{ padding: "10px 12px", background: "#FAECE7",
                           borderRadius: 8, border: "1px solid #F0997B" }}>
@@ -813,14 +1213,14 @@ const LifecycleCard = ({
               <textarea
                 value={feedbackText}
                 onChange={e => setFeedbackText(e.target.value)}
-                placeholder="What needs to change? Any concerns, suggestions, or comments for the document owner..."
+                placeholder="What needs to change? Any concerns, suggestions, or comments..."
                 rows={3}
                 style={{
                   width: "100%", fontSize: 11, padding: "8px 10px", borderRadius: 7,
                   border: "1.5px solid #F0997B", background: "var(--color-background-primary)",
                   color: "var(--color-text-primary)", resize: "vertical",
-                  fontFamily: "var(--font-sans)", outline: "none",
-                  boxSizing: "border-box", marginBottom: 8,
+                  fontFamily: "var(--font-sans)", outline: "none", boxSizing: "border-box",
+                  marginBottom: 8,
                 }}
                 onFocus={e => (e.target.style.borderColor = "#D85A30")}
                 onBlur={e => (e.target.style.borderColor = "#F0997B")}
@@ -852,7 +1252,7 @@ const LifecycleCard = ({
           )}
         </div>
       )}
-
+ 
       {/* Footer */}
       <div style={{ display: "flex", justifyContent: "space-between",
                     fontSize: 11, marginTop: isOwner ? 8 : 4 }}>
@@ -867,6 +1267,7 @@ const LifecycleCard = ({
     </div>
   );
 };
+ 
 
 // =============================================================================
 //  Reassign modal
