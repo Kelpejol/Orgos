@@ -5,6 +5,7 @@
 # File upload/download wired to SharePoint via Graph API.
 # =============================================================================
 
+import asyncio
 import logging
 from datetime import date, datetime, timezone
 from typing import Optional
@@ -24,6 +25,7 @@ from graph.client import (
     create_list_item,
     get_list_item,
     get_list_items,
+    resolve_user,
     update_list_item,
 )
 from graph.exceptions import GraphAPIError, GraphNotFoundError
@@ -56,14 +58,40 @@ def _days_since(dt_str: Optional[str]) -> int:
         return 0
     try:
         dt = datetime.fromisoformat(dt_str.replace("Z", "+00:00"))
-        return (datetime.now(timezone.utc) - dt).days
+        return max(0, (datetime.now(timezone.utc) - dt).days)
     except (ValueError, TypeError):
         return 0
 
 
-def _sp_to_doc(item: dict) -> dict:
-    """Convert a SharePoint list item into a clean lifecycle document dict."""
+async def _sp_to_doc(item: dict) -> dict:
+    """Convert a SharePoint list item into a clean lifecycle document dict.
+
+    Resolves OwnerEntraId → display name via Graph API (cached) when the
+    Owner text column is blank — covers records created before the name was
+    written, and records created via the OID-only path.
+    """
     f = item.get("fields", {})
+
+    # Owner — prefer stored name, fall back to OID resolution
+    owner_name = (f.get("Owner") or "").strip()
+    owner_oid  = f.get("OwnerEntraId", "")
+    if not owner_name and owner_oid:
+        try:
+            u = await resolve_user(owner_oid)
+            owner_name = u.get("display_name", "")
+        except Exception:
+            pass
+
+    # Approver — same pattern
+    approver_name = (f.get("Approver") or "").strip()
+    approver_oid  = f.get("ApproverEntraId", "")
+    if not approver_name and approver_oid:
+        try:
+            u = await resolve_user(approver_oid)
+            approver_name = u.get("display_name", "")
+        except Exception:
+            pass
+
     return {
         "id":               str(item["id"]),
         "Title":            f.get("Title", ""),
@@ -73,22 +101,20 @@ def _sp_to_doc(item: dict) -> dict:
         "Stage":            f.get("Stage", "Review"),
         "Trigger":          f.get("Trigger", "Manual"),
         "AIGenerated":      f.get("AIGenerated", False),
-        "CDIStatus": f.get("CDIStatus", "Pending"),
+        "CDIStatus":        f.get("CDIStatus", "Pending"),
         "Revised":          f.get("Revised", False),
         "DaysInStage":      _days_since(item.get("lastModifiedDateTime")),
-        "OwnerEntraId":     f.get("OwnerEntraId", ""),
-        "OwnerName":        f.get("Owner", ""),
+        "OwnerEntraId":     owner_oid,
+        "OwnerName":        owner_name,
         "Notes":            f.get("Notes", ""),
         "ApprovalStatus":   f.get("ApprovalStatus", ""),
-        "ApproverEntraId":  f.get("ApproverEntraId", ""),
-        "ApproverName":     f.get("Approver", ""),
+        "ApproverEntraId":  approver_oid,
+        "ApproverName":     approver_name,
         "SubmittedForApproval": f.get("SubmittedForApproval", ""),
         "ApprovedDate":     f.get("ApprovedDate", ""),
         "RejectionReason":  f.get("RejectionReason", ""),
         "SharePointFileUrl":f.get("SharePointFileUrl", ""),
-        # Phase 0 / CDI Fix context
         "CDIFailures":      f.get("CDIFailures", ""),
-        # Traceability fields
         "LinkedGapId":      f.get("LinkedGapId", ""),
         "LinkedNCId":       f.get("LinkedNCId", ""),
         "StandardsMapping": f.get("StandardsMapping", ""),
@@ -144,18 +170,16 @@ async def list_docs(
     """List all lifecycle documents, optionally filtered by stage or trigger type."""
     try:
         items = await get_list_items(_get_list_id(), _LIST_NAME)
-        docs  = [_sp_to_doc(i) for i in items]
+        # Resolve all owner names concurrently — resolve_user is cached so this is fast
+        docs = list(await asyncio.gather(*[_sp_to_doc(i) for i in items]))
 
         if stage:
             docs = [d for d in docs if d["Stage"] == stage]
         if trigger:
             docs = [d for d in docs if d["Trigger"] == trigger]
 
-        stage_order = {s: i for i, s in enumerate(STAGE_ORDER)}
-        docs.sort(key=lambda d: (
-            stage_order.get(d["Stage"], 99),
-            -(d["DaysInStage"] or 0),
-        ))
+        # Newest first — most recently created item at the top of each column
+        docs.sort(key=lambda d: d.get("created", ""), reverse=True)
         return docs
     except Exception as exc:
         _handle_error(exc, "list lifecycle documents")
@@ -168,7 +192,7 @@ async def get_doc(
 ) -> dict:
     try:
         item = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
-        return _sp_to_doc(item)
+        return await _sp_to_doc(item)
     except Exception as exc:
         _handle_error(exc, f"get lifecycle document {item_id}")
 
@@ -190,6 +214,7 @@ async def create_doc(
         "AIGenerated":  body.ai_generated,
         "Revised":      False,
         "OwnerEntraId": user.oid,
+        "Owner":        user.name,  # store display name so reads don't need OID resolution
     }
     for attr, col in [
         ("document_code",       "DocumentCode"),
@@ -208,7 +233,7 @@ async def create_doc(
 
     try:
         item = await create_list_item(_get_list_id(), _LIST_NAME, fields)
-        return _sp_to_doc(item)
+        return await _sp_to_doc(item)
     except Exception as exc:
         _handle_error(exc, "create lifecycle document")
 
@@ -225,19 +250,13 @@ async def progress_doc(
     """
     try:
         item = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
-        doc  = _sp_to_doc(item)
+        doc  = await _sp_to_doc(item)
 
         if doc["Stage"] != body.current_stage:
             raise HTTPException(
                 status_code=409,
                 detail=(f"Stage mismatch: document is in '{doc['Stage']}', "
                         f"not '{body.current_stage}'."),
-            )
-
-        if body.current_stage == "Review" and not doc.get("Revised"):
-            raise HTTPException(
-                status_code=422,
-                detail="Upload a revised version before progressing from Review.",
             )
 
         next_stage = NEXT_STAGE.get(body.current_stage)
@@ -254,7 +273,7 @@ async def progress_doc(
 
         await update_list_item(_get_list_id(), _LIST_NAME, item_id, fields)
         updated = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
-        return _sp_to_doc(updated)
+        return await _sp_to_doc(updated)
 
     except HTTPException:
         raise
@@ -269,12 +288,12 @@ async def reassign_doc(
     user: CurrentUser = Depends(get_current_user),
 ) -> dict:
     try:
-        fields = {"OwnerEntraId": body.owner_id}
+        fields: dict = {"OwnerEntraId": body.owner_id}
         if body.owner_name:
             fields["Owner"] = body.owner_name
         await update_list_item(_get_list_id(), _LIST_NAME, item_id, fields)
         updated = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
-        return _sp_to_doc(updated)
+        return await _sp_to_doc(updated)
     except Exception as exc:
         _handle_error(exc, f"reassign document {item_id}")
 
@@ -357,7 +376,7 @@ async def upload_doc_file(
     try:
         await update_list_item(_get_list_id(), _LIST_NAME, item_id, fields)
         updated = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
-        return _sp_to_doc(updated)
+        return await _sp_to_doc(updated)
     except Exception as exc:
         _handle_error(exc, f"update lifecycle item after upload {item_id}")
 
@@ -373,7 +392,7 @@ async def download_doc_file(
     """
     try:
         item = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
-        doc  = _sp_to_doc(item)
+        doc  = await _sp_to_doc(item)
         url  = doc.get("SharePointFileUrl")
         if not url:
             raise HTTPException(
@@ -412,7 +431,7 @@ async def update_feedback(
             {"SensitisationFeedback": body.feedback},
         )
         updated = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
-        return _sp_to_doc(updated)
+        return await _sp_to_doc(updated)
     except Exception as exc:
         _handle_error(exc, f"update feedback {item_id}")
 

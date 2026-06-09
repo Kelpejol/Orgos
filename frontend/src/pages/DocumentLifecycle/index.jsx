@@ -125,6 +125,21 @@ async function authenticatedDownload(url, filename) {
  
 
 // =============================================================================
+//  Date helper — turns "2026-05-05T07:00:00Z" into "5 May 2026"
+// =============================================================================
+
+function fmtDate(str) {
+  if (!str) return "—";
+  try {
+    const d = new Date(str);
+    if (isNaN(d.getTime())) return str;
+    return d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+  } catch {
+    return str;
+  }
+}
+
+// =============================================================================
 //  Hooks
 // =============================================================================
 
@@ -228,14 +243,15 @@ const DetailsModal = ({ doc, onClose }) => {
         <Field l="Stage"              v={doc.Stage} />
         <Field l="Owner"              v={doc.OwnerName || doc.OwnerEntraId || "—"} />
         <Field l="Trigger"            v={doc.Trigger} />
-        <Field l="Days in stage"      v={`${doc.DaysInStage || 0}d`} />
+        <Field l="Days in stage"      v={`${Math.max(0, doc.DaysInStage || 0)}d`} />
         {doc.StandardsMapping && <Field l="Standards"   v={doc.StandardsMapping} />}
         {doc.LinkedGapId  && <Field l="Linked gap"       v={doc.LinkedGapId} />}
         {doc.LinkedNCId   && <Field l="Linked NC"        v={doc.LinkedNCId} />}
         {doc.ApprovalStatus && <Field l="Approval status" v={doc.ApprovalStatus} />}
         {doc.ApproverName   && <Field l="Approver"       v={doc.ApproverName} />}
-        {doc.SubmittedForApproval && <Field l="Submitted for approval" v={doc.SubmittedForApproval} />}
-        {doc.ApprovedDate && <Field l="Approved date"    v={doc.ApprovedDate} />}
+        {doc.SubmittedForApproval && <Field l="Submitted for approval" v={fmtDate(doc.SubmittedForApproval)} />}
+        {doc.ApprovedDate && <Field l="Approved date"    v={fmtDate(doc.ApprovedDate)} />}
+        {doc.created && <Field l="Created"               v={fmtDate(doc.created)} />}
         {doc.Notes        && <Field l="Notes"            v={doc.Notes} />}
         {doc.RejectionReason && (
           <Field l="Rejection reason" v={doc.RejectionReason} color="#A32D2D" />
@@ -931,9 +947,9 @@ const LifecycleCard = ({
   const qc = useQueryClient();
  
   const isOwner    = doc.OwnerEntraId === currentUserOid;
-  const daysIn     = doc.DaysInStage || 0;
+  const daysIn     = Math.max(0, doc.DaysInStage || 0);
   const isStalled  = daysIn > 14;
-  const canProgress = isOwner && doc.Revised;
+  const canProgress = isOwner;
   const isSensitisation = doc.Stage === "Sensitisation";
   const triggerStyle = TRIGGER_LABELS[doc.Trigger] || TRIGGER_LABELS["Manual"];
  
@@ -1148,7 +1164,6 @@ const LifecycleCard = ({
           <button
             onClick={() => canProgress && onProgress(doc.id, doc.Stage)}
             disabled={!canProgress || progressPending}
-            title={!canProgress ? "Upload a revised version to unlock Progress" : undefined}
             style={{
               padding: "7px", fontSize: 11, borderRadius: 7, fontWeight: 500,
               border: canProgress && !progressPending ? "none" : "1.5px solid #E0E0E0",
@@ -1257,7 +1272,7 @@ const LifecycleCard = ({
       <div style={{ display: "flex", justifyContent: "space-between",
                     fontSize: 11, marginTop: isOwner ? 8 : 4 }}>
         <span style={{ color: "var(--color-text-secondary)" }}>
-          {doc.OwnerName || "Unassigned"}
+          {doc.OwnerName || doc.OwnerEntraId || "Unassigned"}
         </span>
         <span style={{ color: isStalled ? "#A32D2D" : "var(--color-text-tertiary)",
                        fontWeight: isStalled ? 500 : 400 }}>
