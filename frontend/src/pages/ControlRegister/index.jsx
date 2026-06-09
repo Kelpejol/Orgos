@@ -37,10 +37,16 @@ export default function ControlRegister() {
 
   const { data: controls = [], isLoading, error, refetch } = useControls();
 
+  const blockedCount = controls.filter(c => c.Status === "Blocked").length;
+
   const filtered = useMemo(() => {
     let list = controls;
     if (typeFilter !== "All") {
-      list = list.filter(c => c.ControlType === typeFilter);
+      if (typeFilter === "Blocked") {
+        list = list.filter(c => c.Status === "Blocked");
+      } else {
+        list = list.filter(c => c.ControlType === typeFilter);
+      }
     }
     if (search.trim()) {
       const q = search.toLowerCase();
@@ -125,14 +131,21 @@ export default function ControlRegister() {
 
       {/* Filters */}
       <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
-        {["All", "Preventive", "Detective", "Corrective", "Directive"].map(t => (
-          <button key={t} onClick={() => setTypeFilter(t)}
+        {[
+          { key: "All",       label: `All (${controls.length})` },
+          { key: "Preventive", label: `Preventive (${controls.filter(c => c.ControlType === "Preventive").length})` },
+          { key: "Detective",  label: `Detective (${controls.filter(c => c.ControlType === "Detective").length})` },
+          { key: "Corrective", label: `Corrective (${controls.filter(c => c.ControlType === "Corrective").length})` },
+          { key: "Directive",  label: `Directive (${controls.filter(c => c.ControlType === "Directive").length})` },
+          { key: "Blocked",   label: `Blocked (${blockedCount})` },
+        ].map(t => (
+          <button key={t.key} onClick={() => setTypeFilter(t.key)}
             style={{ padding: "5px 10px", fontSize: 11, borderRadius: 6, cursor: "pointer",
-                     fontWeight: typeFilter === t ? 600 : 400,
-                     border: typeFilter === t ? `1.5px solid ${(TYPE_COLORS[t] || {}).bd || "#378ADD"}` : "1.5px solid #C0C0C0",
-                     background: typeFilter === t ? (TYPE_COLORS[t] || {}).bg || "var(--color-background-info)" : "var(--color-background-primary)",
-                     color: typeFilter === t ? (TYPE_COLORS[t] || {}).color || "var(--color-text-info)" : "var(--color-text-secondary)" }}>
-            {t}
+                     fontWeight: typeFilter === t.key ? 600 : 400,
+                     border: typeFilter === t.key ? `1.5px solid ${(TYPE_COLORS[t.key] || {}).bd || "#378ADD"}` : "1.5px solid #C0C0C0",
+                     background: typeFilter === t.key ? (TYPE_COLORS[t.key] || {}).bg || "var(--color-background-info)" : "var(--color-background-primary)",
+                     color: typeFilter === t.key ? (TYPE_COLORS[t.key] || {}).color || "var(--color-text-info)" : "var(--color-text-secondary)" }}>
+            {t.label}
           </button>
         ))}
         <input

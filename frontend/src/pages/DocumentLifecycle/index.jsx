@@ -8,7 +8,7 @@
 
 import { useState, useRef } from "react";
 import { useMsal } from "@azure/msal-react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import StatusBadge from "../../components/shared/StatusBadge.jsx";
 import { Field } from "../../components/shared/Forms.jsx";
 import { LoadingState, ErrorState, EmptyState } from "../../components/shared/LoadingState.jsx";
@@ -32,9 +32,12 @@ const lifecycleApi = {
   create: (body) =>
     apiClient.post("/api/v1/lifecycle/documents", body).then(r => r.data),
 
-  progress: (id, currentStage) =>
+  progress: (id, currentStage, extra = {}) =>
     apiClient.patch(`/api/v1/lifecycle/documents/${id}/progress`,
-      { current_stage: currentStage }).then(r => r.data),
+      { current_stage: currentStage, ...extra }).then(r => r.data),
+
+  approve: (id, body = {}) =>
+    apiClient.post(`/api/v1/lifecycle/documents/${id}/approve`, body).then(r => r.data),
 
   reassign: (id, ownerId, ownerName) =>
     apiClient.patch(`/api/v1/lifecycle/documents/${id}/reassign`,
@@ -140,6 +143,75 @@ function fmtDate(str) {
 }
 
 // =============================================================================
+//  Feedback parser — handles both JSON (old OrgOS format) and plain text
+//  [Name — Date, Time] marker format written by stakeholders/external systems.
+// =============================================================================
+
+function parseFeedback(raw) {
+  if (!raw) return [];
+  // Try JSON array {text, submittedBy, submittedAt}
+  try {
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed) && parsed[0]?.text) {
+      return parsed.map(f => ({
+        author:    f.submittedBy || "",
+        timestamp: f.submittedAt ? fmtDate(f.submittedAt) : "",
+        text:      f.text || "",
+      }));
+    }
+  } catch { /**/ }
+  // Parse [Name — Date, Time] marker format
+  const entries = [];
+  const headerRe = /^\[([^\]]+?)\s*[—–\-]\s*([^\]]+)\]$/;
+  let current = null;
+  for (const line of raw.split(/\r?\n/)) {
+    const m = headerRe.exec(line.trim());
+    if (m) {
+      if (current) entries.push({ ...current, text: current.text.trim() });
+      current = { author: m[1].trim(), timestamp: m[2].trim(), text: "" };
+    } else if (current !== null) {
+      current.text += (current.text ? "\n" : "") + line;
+    }
+  }
+  if (current) entries.push({ ...current, text: current.text.trim() });
+  if (!entries.length && raw.trim()) {
+    return [{ author: "", timestamp: "", text: raw.trim() }];
+  }
+  return entries;
+}
+
+const FEEDBACK_PREVIEW = 160;
+
+const FeedbackEntry = ({ entry }) => {
+  const [expanded, setExpanded] = useState(false);
+  const long = entry.text.length > FEEDBACK_PREVIEW;
+  const display = expanded ? entry.text : entry.text.slice(0, FEEDBACK_PREVIEW);
+  return (
+    <div style={{
+      padding: "10px 12px", background: "#FAECE7", borderRadius: 8,
+      border: "0.5px solid #F0997B", fontSize: 11, color: "#712B13",
+    }}>
+      {(entry.author || entry.timestamp) && (
+        <div style={{ fontWeight: 600, marginBottom: 4, fontSize: 11, color: "#D85A30" }}>
+          {entry.author}{entry.timestamp ? ` — ${entry.timestamp}` : ""}
+        </div>
+      )}
+      <div style={{ lineHeight: 1.5, whiteSpace: "pre-wrap" }}>
+        {display}{long && !expanded ? "..." : ""}
+      </div>
+      {long && (
+        <button onClick={() => setExpanded(e => !e)} style={{
+          background: "none", border: "none", cursor: "pointer",
+          color: "#D85A30", fontSize: 10, fontWeight: 600, padding: "4px 0 0",
+        }}>
+          {expanded ? "See less ▲" : "See more ▼"}
+        </button>
+      )}
+    </div>
+  );
+};
+
+// =============================================================================
 //  Hooks
 // =============================================================================
 
@@ -148,14 +220,6 @@ function useLifecycleDocs() {
     queryKey: ["lifecycle"],
     queryFn:  () => lifecycleApi.list(),
     staleTime: 30_000,
-  });
-}
-
-function useProgress() {
-  const qc = useQueryClient();
-  return useMutation({
-    mutationFn: ({ id, stage }) => lifecycleApi.progress(id, stage),
-    onSuccess:  () => qc.invalidateQueries({ queryKey: ["lifecycle"] }),
   });
 }
 
@@ -348,12 +412,31 @@ const NewDocForm = ({ onSuccess, onCancel }) => {
     notes:             "",
     ai_generated:      false,
   });
-  const [saving, setSaving] = useState(false);
-  const [error,  setError]  = useState("");
+  const [saving,   setSaving]   = useState(false);
+  const [error,    setError]    = useState("");
+  const [aiResult, setAiResult] = useState(null); // holds draft API response after success
 
   const set = k => e => setForm(f => ({
     ...f, [k]: e.target.type === "checkbox" ? e.target.checked : e.target.value,
   }));
+
+  // Trigger a browser download from a base64-encoded docx string
+  const downloadBase64Docx = (b64, filename) => {
+    try {
+      const bytes  = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+      const blob   = new Blob([bytes], { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" });
+      const url    = URL.createObjectURL(blob);
+      const a      = document.createElement("a");
+      a.href       = url;
+      a.download   = filename || "draft.docx";
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch {
+      setError("Download failed — try again.");
+    }
+  };
 
   const handleCreate = async () => {
     if (!form.title.trim())  { setError("Document title is required."); return; }
@@ -363,7 +446,6 @@ const NewDocForm = ({ onSuccess, onCancel }) => {
     setError("");
     try {
       if (form.ai_generated) {
-        // Call Policy Drafter — creates lifecycle entry automatically
         const resp = await apiClient.post("/api/v1/agents/draft-document", {
           title:             form.title.trim(),
           doc_type:          form.document_type,
@@ -372,14 +454,10 @@ const NewDocForm = ({ onSuccess, onCancel }) => {
           standards_mapping: form.standards_mapping.trim() || undefined,
           trigger:           "Manual",
         });
-        // Show the generated draft to the user
-        const draft = resp.data;
-        alert(
-          `Draft generated — ${draft.doc_code}\n\n` +
-          `A Document Lifecycle entry has been created.\n` +
-          `Copy the draft from the API response into a Word document, ` +
-          `format per CDI standards, and upload via the lifecycle Upload button.`
-        );
+        // Store result to show inline success panel — no alert/copy-paste needed
+        setAiResult(resp.data);
+        qc.invalidateQueries({ queryKey: ["lifecycle"] });
+        // Don't call onSuccess() yet — keep form visible to show the result panel
       } else {
         await lifecycleApi.create({
           title:             form.title.trim(),
@@ -391,9 +469,9 @@ const NewDocForm = ({ onSuccess, onCancel }) => {
           notes:             form.notes.trim() || undefined,
           standards_mapping: form.standards_mapping.trim() || undefined,
         });
+        qc.invalidateQueries({ queryKey: ["lifecycle"] });
+        onSuccess();
       }
-      qc.invalidateQueries({ queryKey: ["lifecycle"] });
-      onSuccess();
     } catch (err) {
       setError(err.response?.data?.detail || err.message || "Failed to create. Please try again.");
     } finally {
@@ -429,7 +507,7 @@ const NewDocForm = ({ onSuccess, onCancel }) => {
             New controlled document
           </div>
           <div style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>
-            Creates a Review stage entry. Download the template, revise, upload, then progress to Sensitisation.
+            Creates a Review stage entry. Write or generate a draft, upload it, then progress to Sensitisation.
           </div>
         </div>
         <button onClick={onCancel}
@@ -454,6 +532,7 @@ const NewDocForm = ({ onSuccess, onCancel }) => {
         <input
           type="text" value={form.title} onChange={set("title")}
           placeholder="e.g. Access Control Policy and Procedures"
+          title="Full name of the document as it will appear in the Document Register and on the cover page."
           style={{ ...inp, fontSize: 13, padding: "10px 12px" }}
           onFocus={focus} onBlur={blur}
           autoFocus
@@ -467,6 +546,7 @@ const NewDocForm = ({ onSuccess, onCancel }) => {
             Document type <span style={{ color: "#A32D2D" }}>*</span>
           </label>
           <select value={form.document_type} onChange={set("document_type")}
+            title="Determines the type code in the document code (e.g. Policy → POL, Procedure → PRO) and controls what sections the AI generates."
             style={inp} onFocus={focus} onBlur={blur}>
             {DOC_TYPES.map(t => (
               <option key={t.value} value={t.value}>{t.value}</option>
@@ -481,6 +561,7 @@ const NewDocForm = ({ onSuccess, onCancel }) => {
             Department <span style={{ color: "#A32D2D" }}>*</span>
           </label>
           <select value={form.department} onChange={set("department")}
+            title="Sets the department code in the document code (e.g. SD, ISMS, HR) and scopes the document to the right team."
             style={inp} onFocus={focus} onBlur={blur}>
             <option value="">Select department...</option>
             {DEPARTMENTS.map(d => (
@@ -496,33 +577,38 @@ const NewDocForm = ({ onSuccess, onCancel }) => {
           <label style={lbl}>Document code</label>
           <input
             type="text" value={form.document_code} onChange={set("document_code")}
-            placeholder="Auto-generated if blank"
+            placeholder="Generated automatically — leave blank"
+            title="Leave blank and the system generates a unique code from the department, type, and title. Only set this manually if you are continuing a pre-existing document series."
             style={{ ...inp, fontFamily: "var(--font-mono)", fontSize: 11, letterSpacing: "0.3px" }}
             onFocus={focus} onBlur={blur}
           />
           <div style={{ fontSize: 10, color: "var(--color-text-tertiary)", marginTop: 4 }}>
-            Format: DRG-{form.department || "DEPT"}-{form.document_type === "Policy" ? "POL" : form.document_type === "Procedure" ? "PRO" : "DOC"}-XXX-01-26
+            Will be: DRG-{form.department || "DEPT"}-
+            {({ Policy:"POL", Procedure:"PRO", Combined:"POL", Manual:"MAN", Guideline:"GUI", Standard:"STD", SLA:"SLA" }[form.document_type] || "DOC")}
+            -[SHORT]-[NN]-26
           </div>
         </div>
         <div>
           <label style={lbl}>Standards mapping</label>
           <input
             type="text" value={form.standards_mapping} onChange={set("standards_mapping")}
-            placeholder="e.g. ISO 27001 A.5.18, NDPA S.39"
+            placeholder="Defaults to ISO 27001, ISO 9001, NDPA"
+            title="Which standards this document addresses. If left blank the system defaults to ISO 27001, ISO 9001, and NDPA. You can add specific clause references e.g. 'ISO 27001 A.5.18, NDPA S.39'."
             style={inp} onFocus={focus} onBlur={blur}
           />
           <div style={{ fontSize: 10, color: "var(--color-text-tertiary)", marginTop: 4 }}>
-            Which standards clauses does this document address?
+            Blank → defaults to ISO 27001, ISO 9001, NDPA
           </div>
         </div>
       </div>
 
-      {/* Notes */}
+      {/* Notes / brief */}
       <div style={{ marginBottom: 14 }}>
-        <label style={lbl}>Notes</label>
+        <label style={lbl}>Brief / notes</label>
         <textarea
           value={form.notes} onChange={set("notes")}
-          placeholder="What should this document cover? Any specific requirements, scope boundaries, or context for the author..."
+          placeholder="What should this document cover? Scope, key controls, any specific requirements or context for the author..."
+          title="Used as the brief when generating an AI draft. The more specific you are here, the better the output — e.g. 'covers user onboarding, password resets, and MFA enforcement for all cloud systems'."
           rows={3}
           style={{ ...inp, resize: "vertical", fontFamily: "var(--font-sans)", lineHeight: 1.5 }}
           onFocus={focus} onBlur={blur}
@@ -543,12 +629,11 @@ const NewDocForm = ({ onSuccess, onCancel }) => {
         <div>
           <div style={{ fontSize: 12, fontWeight: 500,
                         color: form.ai_generated ? "#085041" : "var(--color-text-primary)" }}>
-            Request AI-generated first draft
+            Generate first draft with Document Drafter
           </div>
           <div style={{ fontSize: 11, color: form.ai_generated ? "#085041" : "var(--color-text-secondary)",
                         marginTop: 2, opacity: 0.85 }}>
-            Policy Drafter agent will generate a CDI-compliant draft using the document type, department, and notes above.
-            Available when the GPU model is running. Your notes above are the brief.
+            Document Drafter agent generates a CDI-compliant first draft using the type, department, and brief above. Takes 30–60 seconds. The draft is not uploaded anywhere — you download it, revise it, then upload your final version.
           </div>
         </div>
       </div>
@@ -571,8 +656,88 @@ const NewDocForm = ({ onSuccess, onCancel }) => {
         </span>
       </div>
 
-      {/* Actions */}
-      <div style={{ display: "flex", gap: 10 }}>
+      {/* Document Drafter success panel — shown after the agent responds */}
+      {aiResult && (
+        <div style={{
+          padding: "14px 16px", background: "#E1F5EE", borderRadius: 10,
+          border: "1px solid #5DCAA5", marginBottom: 14,
+        }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}>
+            <div>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#085041", marginBottom: 2 }}>
+                Draft created — {aiResult.doc_code}
+              </div>
+              <div style={{ fontSize: 11, color: "#085041", opacity: 0.85 }}>
+                Review card is now in the Review column. Download the .docx, revise it, then upload it back.
+              </div>
+            </div>
+            <button onClick={() => { setAiResult(null); onSuccess(); }}
+              style={{ background: "none", border: "none", cursor: "pointer",
+                       fontSize: 16, color: "#085041", lineHeight: 1 }}>×</button>
+          </div>
+
+          {/* CDI check results */}
+          {aiResult.cdi_check && (
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 6,
+                            color: aiResult.cdi_check.status === "Passed" ? "#085041"
+                                 : aiResult.cdi_check.status === "Failed" ? "#A32D2D" : "#BA7517" }}>
+                CDI check: {aiResult.cdi_check.status}
+                {" "}({aiResult.cdi_check.pass_count} passed, {aiResult.cdi_check.fail_count} failed)
+              </div>
+              {aiResult.cdi_check.failures.length > 0 && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                  {aiResult.cdi_check.failures.map((f, i) => (
+                    <div key={i} style={{
+                      padding: "7px 10px", background: "#FCEBEB", borderRadius: 7,
+                      border: "0.5px solid #F09595", fontSize: 11, color: "#791F1F",
+                    }}>
+                      <span style={{ fontWeight: 600 }}>{f.check}</span> — {f.detail}
+                      {f.fix && (
+                        <div style={{ fontSize: 10, fontStyle: "italic", marginTop: 3, color: "#A32D2D" }}>
+                          Fix: {f.fix}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Download .docx */}
+          <div style={{ marginBottom: 10, fontSize: 11, color: "#085041", opacity: 0.8, lineHeight: 1.5 }}>
+            The draft is <strong>not yet on SharePoint</strong>. Download it, make your changes, then come back and use the Upload button on the lifecycle card to submit your revised version.
+          </div>
+
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {aiResult.docx_base64 && (
+              <button
+                onClick={() => downloadBase64Docx(aiResult.docx_base64, aiResult.filename)}
+                style={{
+                  padding: "8px 16px", fontSize: 12, borderRadius: 8, border: "none",
+                  background: "#085041", color: "#fff", cursor: "pointer", fontWeight: 600,
+                }}
+              >
+                Download .docx ↓
+              </button>
+            )}
+            <button
+              onClick={() => { setAiResult(null); onSuccess(); }}
+              style={{
+                padding: "8px 14px", fontSize: 12, borderRadius: 8,
+                border: "1.5px solid #C0C0C0", background: "transparent",
+                color: "var(--color-text-secondary)", cursor: "pointer",
+              }}
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Actions — hide once AI result is shown */}
+      {!aiResult && <div style={{ display: "flex", gap: 10 }}>
         <button
           onClick={handleCreate}
           disabled={saving || !form.title.trim() || !form.department}
@@ -586,7 +751,9 @@ const NewDocForm = ({ onSuccess, onCancel }) => {
             transition: "background 0.15s",
           }}
         >
-          {saving ? "Creating..." : "Create and enter Review →"}
+          {saving
+            ? (form.ai_generated ? "Drafting with AI... (may take 30–60s)" : "Creating...")
+            : "Create and enter Review →"}
         </button>
         <button onClick={onCancel}
           style={{ padding: "11px 18px", fontSize: 13, borderRadius: 9,
@@ -594,7 +761,7 @@ const NewDocForm = ({ onSuccess, onCancel }) => {
                    color: "var(--color-text-secondary)", cursor: "pointer" }}>
           Cancel
         </button>
-      </div>
+      </div>}
     </div>
   );
 };
@@ -933,26 +1100,28 @@ const NewDocForm = ({ onSuccess, onCancel }) => {
 
 const LifecycleCard = ({
   doc, stageConfig, currentUserOid,
-  onViewDetails, onProgress, onUpload, onReassign,
-  progressPending,
+  onViewDetails, onProgressClick, onReassign, onApprove,
 }) => {
   const uploadRef  = useRef();
-  const [uploading,      setUploading]      = useState(false);
-  const [uploadError,    setUploadError]    = useState("");
-  const [downloading,    setDownloading]    = useState(false);
-  const [downloadError,  setDownloadError]  = useState("");
-  const [showFeedback,   setShowFeedback]   = useState(false);
-  const [feedbackText,   setFeedbackText]   = useState("");
-  const [submittingFeedback, setSubmittingFeedback] = useState(false);
+  const [uploading,       setUploading]       = useState(false);
+  const [uploadError,     setUploadError]     = useState("");
+  const [uploadCdiResult, setUploadCdiResult] = useState(null);
+  const [downloading,     setDownloading]     = useState(false);
+  const [downloadError,   setDownloadError]   = useState("");
   const qc = useQueryClient();
  
-  const isOwner    = doc.OwnerEntraId === currentUserOid;
-  const daysIn     = Math.max(0, doc.DaysInStage || 0);
-  const isStalled  = daysIn > 14;
-  const canProgress = isOwner;
+  const isOwner         = doc.OwnerEntraId === currentUserOid;
+  const isUnowned       = !doc.OwnerEntraId;
+  const daysIn          = Math.max(0, doc.DaysInStage || 0);
+  const isStalled       = daysIn > 14;
+  const isReview        = doc.Stage === "Review";
   const isSensitisation = doc.Stage === "Sensitisation";
-  const triggerStyle = TRIGGER_LABELS[doc.Trigger] || TRIGGER_LABELS["Manual"];
- 
+  const isApproval      = doc.Stage === "Approval";
+  const isApproved      = doc.ApprovalStatus === "Approved";
+  const needsUpload     = isReview && !doc.Revised;
+  const canProgress     = isOwner && !needsUpload && !isApproval;
+  const triggerStyle    = TRIGGER_LABELS[doc.Trigger] || TRIGGER_LABELS["Manual"];
+
   let cdiCount = 0;
   if (doc.CDIFailures) {
     try {
@@ -960,21 +1129,34 @@ const LifecycleCard = ({
       cdiCount = Array.isArray(parsed) ? parsed.length : 1;
     } catch { cdiCount = 1; }
   }
+
+  const feedbackEntries = parseFeedback(doc.SensitisationFeedback);
  
-  let feedbackItems = [];
-  if (doc.SensitisationFeedback) {
-    try { feedbackItems = JSON.parse(doc.SensitisationFeedback); }
-    catch { feedbackItems = []; }
-  }
- 
-  // ── Upload ──────────────────────────────────────────────────────────────────
+  // ── Upload — CDI check runs server-side on every upload ────────────────────
   const handleFileSelect = async (e) => {
     const file = e.target.files[0];
     if (!file) return;
     setUploading(true);
     setUploadError("");
+    setUploadCdiResult(null);
     try {
-      await lifecycleApi.upload(doc.id, file);
+      const updated = await lifecycleApi.upload(doc.id, file);
+      // Surface the CDI result immediately from the upload response
+      if (updated?.CDIStatus) {
+        let failCount   = 0;
+        let errorDetail = "";
+        if (updated.CDIFailures) {
+          try {
+            const parsed = JSON.parse(updated.CDIFailures);
+            failCount = parsed.length;
+            // For Error status, grab the human-readable reason from the first entry
+            if (updated.CDIStatus === "Error" && parsed[0]?.detail) {
+              errorDetail = parsed[0].detail;
+            }
+          } catch { failCount = 1; }
+        }
+        setUploadCdiResult({ status: updated.CDIStatus, failCount, errorDetail });
+      }
       qc.invalidateQueries({ queryKey: ["lifecycle"] });
     } catch (err) {
       setUploadError(err.message || "Upload failed");
@@ -1010,32 +1192,14 @@ const LifecycleCard = ({
     }
   };
  
-  // ── Feedback ────────────────────────────────────────────────────────────────
-  const handleSubmitFeedback = async () => {
-    if (!feedbackText.trim()) return;
-    setSubmittingFeedback(true);
-    try {
-      const newEntry = {
-        text: feedbackText.trim(),
-        submittedAt: new Date().toISOString(),
-        submittedBy: "You",
-      };
-      const updated = [...feedbackItems, newEntry];
-      await lifecycleApi.updateFeedback(doc.id, JSON.stringify(updated));
-      qc.invalidateQueries({ queryKey: ["lifecycle"] });
-      setFeedbackText("");
-      setShowFeedback(false);
-    } catch (err) {
-      alert(err.message || "Failed to submit feedback.");
-    } finally {
-      setSubmittingFeedback(false);
-    }
-  };
- 
   return (
     <div style={{
       background: "var(--color-background-primary)",
-      border: isOwner ? `1.5px solid ${stageConfig.color}` : "1px solid #D0D0D0",
+      border: isOwner
+        ? `1.5px solid ${stageConfig.color}`
+        : isUnowned
+          ? "1.5px solid #FAC775"
+          : "1px solid #D0D0D0",
       borderRadius: 12, padding: "10px 12px",
       boxShadow: isStalled ? "0 0 0 2px #F09595" : "none",
     }}>
@@ -1107,167 +1271,211 @@ const LifecycleCard = ({
           Download failed: {downloadError}
         </div>
       )}
- 
-      {/* Action buttons — owner only */}
-      {isOwner && (
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginTop: 6 }}>
- 
-          {/* ── Download — authenticated, no bare <a href> ── */}
-          <button
-            onClick={handleDownload}
-            disabled={downloading}
-            style={{
-              padding: "7px", fontSize: 11, borderRadius: 7,
-              border: "1.5px solid #C0C0C0", background: "transparent",
-              color: downloading ? "#999" : "var(--color-text-primary)",
-              cursor: downloading ? "not-allowed" : "pointer",
-            }}
-          >
-            {downloading ? "Downloading..." : "Download ↓"}
-          </button>
- 
-          {/* ── Upload ── */}
-          <div>
-            <input
-              ref={uploadRef} type="file"
-              accept=".pdf,.docx,.doc"
-              style={{ display: "none" }}
-              onChange={handleFileSelect}
-            />
-            <button
-              onClick={() => uploadRef.current?.click()}
-              disabled={uploading}
-              style={{
-                width: "100%", padding: "7px", fontSize: 11, borderRadius: 7,
-                border: "1.5px solid #C0C0C0", background: "transparent",
-                color: uploading ? "#999" : "var(--color-text-primary)",
-                cursor: uploading ? "not-allowed" : "pointer",
-              }}
-            >
-              {uploading ? "Uploading..." : "Upload ↑"}
-            </button>
-          </div>
- 
-          {/* ── Reassign ── */}
-          <button
-            onClick={() => onReassign(doc)}
-            style={{
-              padding: "7px", fontSize: 11, borderRadius: 7,
-              border: "1.5px solid #C0C0C0", background: "transparent",
-              color: "var(--color-text-secondary)", cursor: "pointer",
-            }}
-          >
-            Reassign
-          </button>
- 
-          {/* ── Progress ── */}
-          <button
-            onClick={() => canProgress && onProgress(doc.id, doc.Stage)}
-            disabled={!canProgress || progressPending}
-            style={{
-              padding: "7px", fontSize: 11, borderRadius: 7, fontWeight: 500,
-              border: canProgress && !progressPending ? "none" : "1.5px solid #E0E0E0",
-              background: canProgress && !progressPending ? stageConfig.color : "transparent",
-              color: canProgress && !progressPending ? "#fff" : "#B0B0B0",
-              cursor: canProgress && !progressPending ? "pointer" : "not-allowed",
-            }}
-          >
-            {progressPending ? "Moving..." : "Progress →"}
-          </button>
+
+      {/* CDI result banner — shown immediately after upload completes */}
+      {uploadCdiResult && (
+        <div style={{
+          padding: "6px 10px", borderRadius: 6, fontSize: 11, marginBottom: 6,
+          display: "flex", justifyContent: "space-between", alignItems: "center",
+          background: uploadCdiResult.status === "Passed" ? "#E1F5EE" : uploadCdiResult.status === "Failed" ? "#FCEBEB" : "#FFF8E6",
+          border: `0.5px solid ${uploadCdiResult.status === "Passed" ? "#5DCAA5" : uploadCdiResult.status === "Failed" ? "#F09595" : "#FAC775"}`,
+          color: uploadCdiResult.status === "Passed" ? "#085041" : uploadCdiResult.status === "Failed" ? "#791F1F" : "#7A5000",
+        }}>
+          <span>
+            CDI check: <strong>{uploadCdiResult.status}</strong>
+            {uploadCdiResult.status === "Failed" && ` — ${uploadCdiResult.failCount} issue${uploadCdiResult.failCount !== 1 ? "s" : ""} to fix`}
+            {uploadCdiResult.status === "Passed" && " — document meets all CDI standards"}
+            {uploadCdiResult.status === "Error"  && ` — ${uploadCdiResult.errorDetail || "check could not run"}`}
+          </span>
+          <span role="button" onClick={() => setUploadCdiResult(null)}
+            style={{ cursor: "pointer", opacity: 0.6, marginLeft: 8, fontSize: 13 }}>×</span>
         </div>
       )}
  
-      {/* Sensitisation feedback panel */}
+      {/* ── Unowned: Claim / Reassign visible to all ── */}
+      {isUnowned && (
+        <div style={{ marginTop: 6 }}>
+          <div style={{ padding: "5px 8px", background: "#FFF8E6", borderRadius: 6, marginBottom: 6,
+                        border: "0.5px solid #FAC775", fontSize: 10, color: "#7A5000" }}>
+            No owner assigned — claim or reassign this document.
+          </div>
+          <button onClick={() => onReassign(doc)} style={{
+            width: "100%", padding: "7px", fontSize: 11, borderRadius: 7,
+            border: "1.5px solid #FAC775", background: "#FFF8E6",
+            color: "#7A5000", cursor: "pointer", fontWeight: 500,
+          }}>Claim / Reassign</button>
+        </div>
+      )}
+
+      {/* ── Sensitisation: stakeholders + feedback (read-only from SharePoint) ── */}
       {isSensitisation && (
-        <div style={{ marginTop: 10 }}>
-          {feedbackItems.length > 0 && (
-            <div style={{ marginBottom: 8 }}>
+        <div style={{ marginTop: 8 }}>
+          {/* Stakeholders */}
+          {(doc.Stakeholders || []).length > 0 && (
+            <div style={{ marginBottom: 10 }}>
               <div style={{ fontSize: 10, fontWeight: 600, color: "#D85A30",
-                            textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 6 }}>
-                Feedback received ({feedbackItems.length})
+                            textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 5 }}>
+                Stakeholders notified ({doc.Stakeholders.length})
               </div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                {feedbackItems.map((fb, i) => (
-                  <div key={i} style={{
-                    padding: "7px 10px", background: "#FAECE7", borderRadius: 7,
-                    border: "0.5px solid #F0997B", fontSize: 11, color: "#712B13",
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                {doc.Stakeholders.map((s, i) => (
+                  <span key={i} style={{
+                    fontSize: 10, padding: "2px 8px", borderRadius: 10,
+                    background: "#FAECE7", color: "#D85A30", border: "0.5px solid #F0997B",
                   }}>
-                    <div style={{ lineHeight: 1.4 }}>{fb.text}</div>
-                    <div style={{ fontSize: 10, opacity: 0.7, marginTop: 2 }}>
-                      {fb.submittedBy} · {fb.submittedAt
-                        ? new Date(fb.submittedAt).toLocaleDateString("en-GB", {
-                            day: "numeric", month: "short", year: "numeric",
-                          })
-                        : ""}
-                    </div>
-                  </div>
+                    {s.name || s.email || "Unknown"}
+                  </span>
                 ))}
               </div>
             </div>
           )}
- 
-          {!showFeedback && (
-            <button
-              onClick={() => setShowFeedback(true)}
-              style={{
-                width: "100%", padding: "7px", fontSize: 11, borderRadius: 7,
-                border: "1.5px solid #F0997B", background: "transparent",
-                color: "#D85A30", cursor: "pointer", fontWeight: 500,
-              }}
-            >
-              + Add feedback or comment
-            </button>
-          )}
- 
-          {showFeedback && (
-            <div style={{ padding: "10px 12px", background: "#FAECE7",
-                          borderRadius: 8, border: "1px solid #F0997B" }}>
-              <div style={{ fontSize: 11, fontWeight: 600, color: "#D85A30", marginBottom: 6 }}>
-                Your feedback on this document
+          {/* Feedback — read-only, written by stakeholders externally */}
+          <div style={{ marginBottom: 6 }}>
+            <div style={{ fontSize: 10, fontWeight: 600, color: "#D85A30",
+                          textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 5 }}>
+              Stakeholder feedback
+              {feedbackEntries.length > 0 && ` (${feedbackEntries.length})`}
+            </div>
+            {feedbackEntries.length === 0 ? (
+              <div style={{ fontSize: 10, color: "var(--color-text-tertiary)",
+                            padding: "6px 0", fontStyle: "italic" }}>
+                No feedback received yet from stakeholders.
               </div>
-              <textarea
-                value={feedbackText}
-                onChange={e => setFeedbackText(e.target.value)}
-                placeholder="What needs to change? Any concerns, suggestions, or comments..."
-                rows={3}
-                style={{
-                  width: "100%", fontSize: 11, padding: "8px 10px", borderRadius: 7,
-                  border: "1.5px solid #F0997B", background: "var(--color-background-primary)",
-                  color: "var(--color-text-primary)", resize: "vertical",
-                  fontFamily: "var(--font-sans)", outline: "none", boxSizing: "border-box",
-                  marginBottom: 8,
-                }}
-                onFocus={e => (e.target.style.borderColor = "#D85A30")}
-                onBlur={e => (e.target.style.borderColor = "#F0997B")}
-              />
-              <div style={{ display: "flex", gap: 6 }}>
-                <button
-                  onClick={handleSubmitFeedback}
-                  disabled={!feedbackText.trim() || submittingFeedback}
-                  style={{
-                    padding: "7px 14px", fontSize: 11, borderRadius: 7, border: "none",
-                    fontWeight: 500,
-                    background: !feedbackText.trim() || submittingFeedback ? "#E8E8E8" : "#D85A30",
-                    color: !feedbackText.trim() || submittingFeedback ? "#999" : "#fff",
-                    cursor: !feedbackText.trim() || submittingFeedback ? "not-allowed" : "pointer",
-                  }}
-                >
-                  {submittingFeedback ? "Submitting..." : "Submit feedback"}
-                </button>
-                <button
-                  onClick={() => { setShowFeedback(false); setFeedbackText(""); }}
-                  style={{ padding: "7px 12px", fontSize: 11, borderRadius: 7,
-                           border: "1.5px solid #C0C0C0", background: "transparent",
-                           color: "var(--color-text-secondary)", cursor: "pointer" }}
-                >
-                  Cancel
-                </button>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {feedbackEntries.map((f, i) => <FeedbackEntry key={i} entry={f} />)}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ── Approval: approver info + approved state ── */}
+      {isApproval && (
+        <div style={{ marginTop: 8 }}>
+          {doc.ApproverName && !isApproved && (
+            <div style={{ padding: "8px 12px", background: "#F4EEFB", borderRadius: 8,
+                          border: "0.5px solid #C9A8E0", marginBottom: 8 }}>
+              <div style={{ fontSize: 10, fontWeight: 600, color: "#6B2FA0", marginBottom: 2 }}>
+                Pending approval from
+              </div>
+              <div style={{ fontSize: 12, fontWeight: 500, color: "#4A1F73" }}>
+                {doc.ApproverName}
+              </div>
+              {doc.SubmittedForApproval && (
+                <div style={{ fontSize: 10, color: "#6B2FA0", opacity: 0.7, marginTop: 2 }}>
+                  Submitted {fmtDate(doc.SubmittedForApproval)}
+                </div>
+              )}
+            </div>
+          )}
+          {isApproved && (
+            <div style={{ padding: "8px 12px", background: "#E1F5EE", borderRadius: 8,
+                          border: "0.5px solid #5DCAA5", marginBottom: 8 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: "#085041" }}>
+                ✓ Approved {doc.ApprovedDate ? `— ${fmtDate(doc.ApprovedDate)}` : ""}
+              </div>
+              <div style={{ fontSize: 10, color: "#085041", opacity: 0.8, marginTop: 2 }}>
+                Approved by {doc.ApproverName || "—"} · Added to Document Register
               </div>
             </div>
           )}
         </div>
       )}
- 
+
+      {/* ── Owner action buttons ── */}
+      {isOwner && (
+        <div style={{ marginTop: 8 }}>
+
+          {/* Review + Sensitisation: View / Upload / Reassign / Progress or Approve */}
+          {(isReview || isSensitisation) && (
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+              {/* View */}
+              {doc.SharePointFileUrl || doc.Revised ? (
+                <button onClick={handleDownload} disabled={downloading} style={{
+                  padding: "7px", fontSize: 11, borderRadius: 7,
+                  border: "1.5px solid #C0C0C0", background: "transparent",
+                  color: downloading ? "#999" : "var(--color-text-primary)",
+                  cursor: downloading ? "not-allowed" : "pointer",
+                }}>{downloading ? "Opening..." : "View ↗"}</button>
+              ) : (
+                <div style={{
+                  padding: "7px", fontSize: 10, borderRadius: 7, textAlign: "center",
+                  border: `1px dashed ${needsUpload ? "#FAC775" : "#D0D0D0"}`,
+                  color: needsUpload ? "#7A5000" : "var(--color-text-tertiary)",
+                  background: needsUpload ? "#FFFBF0" : "transparent",
+                }}>
+                  {needsUpload ? "Upload required to progress" : "No file yet"}
+                </div>
+              )}
+              {/* Upload (Review only) */}
+              {isReview ? (
+                <div>
+                  <input ref={uploadRef} type="file" accept=".pdf,.docx,.doc"
+                    style={{ display: "none" }} onChange={handleFileSelect} />
+                  <button onClick={() => uploadRef.current?.click()} disabled={uploading} style={{
+                    width: "100%", padding: "7px", fontSize: 11, borderRadius: 7,
+                    border: "1.5px solid #C0C0C0", background: "transparent",
+                    color: uploading ? "#999" : "var(--color-text-primary)",
+                    cursor: uploading ? "not-allowed" : "pointer",
+                  }}>{uploading ? "Uploading & checking CDI..." : "Upload ↑"}</button>
+                </div>
+              ) : (
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "center",
+                              fontSize: 10, color: "var(--color-text-tertiary)" }}>
+                  — no upload needed
+                </div>
+              )}
+              {/* Reassign */}
+              <button onClick={() => onReassign(doc)} style={{
+                padding: "7px", fontSize: 11, borderRadius: 7,
+                border: "1.5px solid #C0C0C0", background: "transparent",
+                color: "var(--color-text-secondary)", cursor: "pointer",
+              }}>Reassign</button>
+              {/* Progress → opens stage-specific modal */}
+              <button
+                onClick={() => canProgress && onProgressClick(doc)}
+                disabled={!canProgress}
+                title={needsUpload ? "Upload a revised version before progressing" : undefined}
+                style={{
+                  padding: "7px", fontSize: 11, borderRadius: 7, fontWeight: 500,
+                  border: canProgress ? "none" : "1.5px solid #E0E0E0",
+                  background: canProgress ? stageConfig.color : "transparent",
+                  color: canProgress ? "#fff" : "#B0B0B0",
+                  cursor: canProgress ? "pointer" : "not-allowed",
+                }}
+              >
+                {needsUpload ? "Upload first →" : "Progress →"}
+              </button>
+            </div>
+          )}
+
+          {/* Approval stage: no Progress, Reassign + Approve */}
+          {isApproval && !isApproved && (
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+              {doc.SharePointFileUrl && (
+                <button onClick={handleDownload} disabled={downloading} style={{
+                  padding: "7px", fontSize: 11, borderRadius: 7,
+                  border: "1.5px solid #C0C0C0", background: "transparent",
+                  color: downloading ? "#999" : "var(--color-text-primary)",
+                  cursor: downloading ? "not-allowed" : "pointer",
+                }}>{downloading ? "Opening..." : "View ↗"}</button>
+              )}
+              <button onClick={() => onReassign(doc)} style={{
+                padding: "7px", fontSize: 11, borderRadius: 7,
+                border: "1.5px solid #C0C0C0", background: "transparent",
+                color: "var(--color-text-secondary)", cursor: "pointer",
+              }}>Reassign</button>
+              <button onClick={() => onApprove(doc)} style={{
+                padding: "7px", fontSize: 11, borderRadius: 7, fontWeight: 600,
+                border: "none", background: "#993556", color: "#fff", cursor: "pointer",
+                gridColumn: doc.SharePointFileUrl ? "auto" : "1 / -1",
+              }}>Mark as Approved ✓</button>
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Footer */}
       <div style={{ display: "flex", justifyContent: "space-between",
                     fontSize: 11, marginTop: isOwner ? 8 : 4 }}>
@@ -1450,31 +1658,457 @@ const ReassignModal = ({ doc, onSave, onClose }) => {
 };
 
 // =============================================================================
+//  StakeholdersModal — Review → Sensitisation
+//  Collect one or more Dragnet email addresses, resolve each via Graph API,
+//  then submit to the progress endpoint with the stakeholders list.
+// =============================================================================
+
+const StakeholdersModal = ({ doc, onClose, onDone }) => {
+  const qc = useQueryClient();
+  const [email,        setEmail]        = useState("");
+  const [looking,      setLooking]      = useState(false);
+  const [resolved,     setResolved]     = useState(null);
+  const [lookupError,  setLookupError]  = useState("");
+  const [stakeholders, setStakeholders] = useState([]);
+  const [saving,       setSaving]       = useState(false);
+  const [error,        setError]        = useState("");
+
+  const handleLookup = async () => {
+    if (!email.trim()) return;
+    setLooking(true); setLookupError(""); setResolved(null);
+    try {
+      const r = await apiClient.get("/api/v1/grc/users/resolve", { params: { email: email.trim() } });
+      setResolved(r.data);
+    } catch {
+      setLookupError(`No M365 account found for "${email.trim()}"`);
+    } finally { setLooking(false); }
+  };
+
+  const handleAdd = () => {
+    if (!resolved) return;
+    if (stakeholders.some(s => s.oid === resolved.oid)) {
+      setLookupError("This person is already in the list."); return;
+    }
+    setStakeholders(prev => [...prev, { oid: resolved.oid, name: resolved.display_name, email: resolved.email }]);
+    setEmail(""); setResolved(null); setLookupError("");
+  };
+
+  const handleRemove = (oid) => setStakeholders(prev => prev.filter(s => s.oid !== oid));
+
+  const handleSubmit = async () => {
+    if (stakeholders.length === 0) { setError("Add at least one stakeholder."); return; }
+    setSaving(true); setError("");
+    try {
+      await lifecycleApi.progress(doc.id, "Review", { stakeholders });
+      qc.invalidateQueries({ queryKey: ["lifecycle"] });
+      onDone();
+    } catch (err) {
+      setError(err.response?.data?.detail || err.message || "Failed to progress document.");
+      setSaving(false);
+    }
+  };
+
+  const inp = {
+    flex: 1, fontSize: 12, padding: "9px 11px", borderRadius: 8,
+    border: "1.5px solid #C0C0C0", background: "var(--color-background-primary)",
+    color: "var(--color-text-primary)", outline: "none",
+  };
+
+  return (
+    <div onClick={onClose} style={{
+      position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000,
+      display: "flex", alignItems: "center", justifyContent: "center", padding: 20,
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        background: "var(--color-background-primary)", borderRadius: 14,
+        padding: "24px 28px", maxWidth: 480, width: "100%", maxHeight: "88vh",
+        overflowY: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.25)",
+      }}>
+        {/* Header */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 4 }}>Progress to Sensitisation</div>
+            <div style={{ fontSize: 12, color: "var(--color-text-secondary)", maxWidth: 360, lineHeight: 1.4 }}>
+              {doc.Title}
+            </div>
+          </div>
+          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 20, color: "var(--color-text-tertiary)", lineHeight: 1 }}>×</button>
+        </div>
+
+        <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 14, lineHeight: 1.5 }}>
+          Select the people who need to review this document before it takes effect.
+          They will be recorded as stakeholders for this sensitisation round.
+        </div>
+
+        {/* Error banner */}
+        {error && (
+          <div style={{ padding: "9px 12px", background: "#FCEBEB", border: "1px solid #F09595",
+                        borderRadius: 8, fontSize: 12, color: "#791F1F", marginBottom: 12 }}>
+            {error}
+          </div>
+        )}
+
+        {/* Email lookup */}
+        <div style={{ marginBottom: 12 }}>
+          <label style={{ display: "block", fontSize: 11, fontWeight: 600,
+                          color: "var(--color-text-secondary)", marginBottom: 5,
+                          textTransform: "uppercase", letterSpacing: "0.5px" }}>
+            Add stakeholder — Dragnet M365 email
+          </label>
+          <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>
+            <input
+              type="email" value={email}
+              onChange={e => { setEmail(e.target.value); setResolved(null); setLookupError(""); }}
+              onKeyDown={e => e.key === "Enter" && handleLookup()}
+              placeholder="firstname.lastname@dragnet-solutions.com"
+              style={inp}
+              onFocus={e => (e.target.style.borderColor = "#D85A30")}
+              onBlur={e => (e.target.style.borderColor = "#C0C0C0")}
+            />
+            <button onClick={handleLookup} disabled={!email.trim() || looking} style={{
+              padding: "9px 14px", fontSize: 12, borderRadius: 8, border: "none", fontWeight: 500,
+              background: !email.trim() || looking ? "#E8E8E8" : "#D85A30",
+              color: !email.trim() || looking ? "#999" : "#fff",
+              cursor: !email.trim() || looking ? "not-allowed" : "pointer", flexShrink: 0,
+            }}>{looking ? "Looking..." : "Look up"}</button>
+          </div>
+          {lookupError && <div style={{ fontSize: 11, color: "#A32D2D" }}>{lookupError}</div>}
+
+          {/* Resolved person + Add */}
+          {resolved && (
+            <div style={{
+              padding: "10px 14px", background: "#FAECE7", borderRadius: 10,
+              border: "1px solid #F0997B", marginTop: 8,
+              display: "flex", justifyContent: "space-between", alignItems: "center",
+            }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: "#712B13" }}>{resolved.display_name}</div>
+                <div style={{ fontSize: 11, color: "#712B13", opacity: 0.8, marginTop: 1 }}>
+                  {resolved.job_title && `${resolved.job_title} · `}{resolved.email}
+                </div>
+              </div>
+              <button onClick={handleAdd} style={{
+                padding: "6px 12px", fontSize: 11, borderRadius: 7, border: "none",
+                background: "#D85A30", color: "#fff", cursor: "pointer", fontWeight: 500, flexShrink: 0, marginLeft: 10,
+              }}>Add +</button>
+            </div>
+          )}
+        </div>
+
+        {/* Stakeholders list */}
+        {stakeholders.length > 0 && (
+          <div style={{ marginBottom: 16 }}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: "var(--color-text-secondary)",
+                          textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 8 }}>
+              Selected ({stakeholders.length})
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+              {stakeholders.map(s => (
+                <div key={s.oid} style={{
+                  display: "flex", justifyContent: "space-between", alignItems: "center",
+                  padding: "8px 12px", background: "var(--color-background-secondary)",
+                  borderRadius: 8, border: "0.5px solid var(--color-border-tertiary)",
+                }}>
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 500 }}>{s.name}</div>
+                    <div style={{ fontSize: 10, color: "var(--color-text-tertiary)", marginTop: 1 }}>{s.email}</div>
+                  </div>
+                  <button onClick={() => handleRemove(s.oid)} style={{
+                    background: "none", border: "none", cursor: "pointer",
+                    color: "var(--color-text-tertiary)", fontSize: 16, lineHeight: 1,
+                  }}>×</button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Actions */}
+        <div style={{ display: "flex", gap: 10 }}>
+          <button
+            onClick={handleSubmit}
+            disabled={saving || stakeholders.length === 0}
+            style={{
+              flex: 1, padding: "11px", fontSize: 13, borderRadius: 9, border: "none", fontWeight: 600,
+              background: saving || stakeholders.length === 0 ? "#E8E8E8" : "#D85A30",
+              color: saving || stakeholders.length === 0 ? "#999" : "#fff",
+              cursor: saving || stakeholders.length === 0 ? "not-allowed" : "pointer",
+            }}
+          >
+            {saving ? "Progressing..." : `Proceed to Sensitisation with ${stakeholders.length} stakeholder${stakeholders.length !== 1 ? "s" : ""}`}
+          </button>
+          <button onClick={onClose} style={{
+            padding: "11px 16px", fontSize: 13, borderRadius: 9,
+            border: "1.5px solid #D0D0D0", background: "transparent",
+            color: "var(--color-text-secondary)", cursor: "pointer",
+          }}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+
+// =============================================================================
+//  ApproverModal — Sensitisation → Approval
+//  Collect a single approver email, resolve via Graph API, submit to progress.
+// =============================================================================
+
+const ApproverModal = ({ doc, onClose, onDone }) => {
+  const qc = useQueryClient();
+  const [email,       setEmail]       = useState("");
+  const [looking,     setLooking]     = useState(false);
+  const [resolved,    setResolved]    = useState(null);
+  const [lookupError, setLookupError] = useState("");
+  const [saving,      setSaving]      = useState(false);
+  const [error,       setError]       = useState("");
+
+  const handleLookup = async () => {
+    if (!email.trim()) return;
+    setLooking(true); setLookupError(""); setResolved(null);
+    try {
+      const r = await apiClient.get("/api/v1/grc/users/resolve", { params: { email: email.trim() } });
+      setResolved(r.data);
+    } catch {
+      setLookupError(`No M365 account found for "${email.trim()}"`);
+    } finally { setLooking(false); }
+  };
+
+  const handleSubmit = async () => {
+    if (!resolved) { setError("Look up an approver first."); return; }
+    setSaving(true); setError("");
+    try {
+      await lifecycleApi.progress(doc.id, "Sensitisation", {
+        approver_id:   resolved.oid,
+        approver_name: resolved.display_name,
+      });
+      qc.invalidateQueries({ queryKey: ["lifecycle"] });
+      onDone();
+    } catch (err) {
+      setError(err.response?.data?.detail || err.message || "Failed to progress document.");
+      setSaving(false);
+    }
+  };
+
+  const inp = {
+    flex: 1, fontSize: 12, padding: "9px 11px", borderRadius: 8,
+    border: "1.5px solid #C0C0C0", background: "var(--color-background-primary)",
+    color: "var(--color-text-primary)", outline: "none",
+  };
+
+  return (
+    <div onClick={onClose} style={{
+      position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000,
+      display: "flex", alignItems: "center", justifyContent: "center", padding: 20,
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        background: "var(--color-background-primary)", borderRadius: 14,
+        padding: "24px 28px", maxWidth: 440, width: "100%",
+        boxShadow: "0 20px 60px rgba(0,0,0,0.25)",
+      }}>
+        {/* Header */}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 4 }}>Submit for Approval</div>
+            <div style={{ fontSize: 12, color: "var(--color-text-secondary)", maxWidth: 330, lineHeight: 1.4 }}>
+              {doc.Title}
+            </div>
+          </div>
+          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 20, color: "var(--color-text-tertiary)", lineHeight: 1 }}>×</button>
+        </div>
+
+        <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 14, lineHeight: 1.5 }}>
+          Select the person who will formally sign off this document.
+          They will be recorded as the approver on the document cover page.
+        </div>
+
+        {error && (
+          <div style={{ padding: "9px 12px", background: "#FCEBEB", border: "1px solid #F09595",
+                        borderRadius: 8, fontSize: 12, color: "#791F1F", marginBottom: 12 }}>
+            {error}
+          </div>
+        )}
+
+        {/* Email lookup */}
+        <div style={{ marginBottom: 16 }}>
+          <label style={{ display: "block", fontSize: 11, fontWeight: 600,
+                          color: "var(--color-text-secondary)", marginBottom: 5,
+                          textTransform: "uppercase", letterSpacing: "0.5px" }}>
+            Approver — Dragnet M365 email
+          </label>
+          <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>
+            <input
+              type="email" value={email}
+              onChange={e => { setEmail(e.target.value); setResolved(null); setLookupError(""); }}
+              onKeyDown={e => e.key === "Enter" && handleLookup()}
+              placeholder="firstname.lastname@dragnet-solutions.com"
+              style={inp}
+              onFocus={e => (e.target.style.borderColor = "#993556")}
+              onBlur={e => (e.target.style.borderColor = "#C0C0C0")}
+            />
+            <button onClick={handleLookup} disabled={!email.trim() || looking} style={{
+              padding: "9px 14px", fontSize: 12, borderRadius: 8, border: "none", fontWeight: 500,
+              background: !email.trim() || looking ? "#E8E8E8" : "#993556",
+              color: !email.trim() || looking ? "#999" : "#fff",
+              cursor: !email.trim() || looking ? "not-allowed" : "pointer", flexShrink: 0,
+            }}>{looking ? "Looking..." : "Look up"}</button>
+          </div>
+          {lookupError && <div style={{ fontSize: 11, color: "#A32D2D" }}>{lookupError}</div>}
+
+          {resolved && (
+            <div style={{
+              padding: "12px 14px", background: "#FBEAF0", borderRadius: 10,
+              border: "1px solid #E8A0BD", marginTop: 8,
+              display: "flex", justifyContent: "space-between", alignItems: "center",
+            }}>
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: "#5A1A36" }}>{resolved.display_name}</div>
+                <div style={{ fontSize: 11, color: "#5A1A36", opacity: 0.8, marginTop: 1 }}>
+                  {resolved.job_title && `${resolved.job_title} · `}{resolved.email}
+                </div>
+              </div>
+              <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 5,
+                             background: "#993556", color: "#fff", fontWeight: 500 }}>✓ Found</span>
+            </div>
+          )}
+        </div>
+
+        {/* Actions */}
+        <div style={{ display: "flex", gap: 10 }}>
+          <button
+            onClick={handleSubmit}
+            disabled={saving || !resolved}
+            style={{
+              flex: 1, padding: "11px", fontSize: 13, borderRadius: 9, border: "none", fontWeight: 600,
+              background: saving || !resolved ? "#E8E8E8" : "#993556",
+              color: saving || !resolved ? "#999" : "#fff",
+              cursor: saving || !resolved ? "not-allowed" : "pointer",
+            }}
+          >
+            {saving ? "Submitting..." : `Submit for Approval${resolved ? ` — ${resolved.display_name}` : ""}`}
+          </button>
+          <button onClick={onClose} style={{
+            padding: "11px 16px", fontSize: 13, borderRadius: 9,
+            border: "1.5px solid #D0D0D0", background: "transparent",
+            color: "var(--color-text-secondary)", cursor: "pointer",
+          }}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+
+// =============================================================================
+//  ApproveConfirmModal — Approval stage → Mark as Approved
+// =============================================================================
+
+const ApproveConfirmModal = ({ doc, onClose, onDone }) => {
+  const qc = useQueryClient();
+  const [notes,  setNotes]  = useState("");
+  const [saving, setSaving] = useState(false);
+  const [error,  setError]  = useState("");
+
+  const handleApprove = async () => {
+    setSaving(true); setError("");
+    try {
+      await lifecycleApi.approve(doc.id, { notes: notes.trim() || undefined });
+      qc.invalidateQueries({ queryKey: ["lifecycle"] });
+      onDone();
+    } catch (err) {
+      setError(err.response?.data?.detail || err.message || "Approval failed.");
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div onClick={onClose} style={{
+      position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000,
+      display: "flex", alignItems: "center", justifyContent: "center", padding: 20,
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        background: "var(--color-background-primary)", borderRadius: 14,
+        padding: "24px 28px", maxWidth: 420, width: "100%",
+        boxShadow: "0 20px 60px rgba(0,0,0,0.25)",
+      }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14 }}>
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 4 }}>Mark as Approved</div>
+            <div style={{ fontSize: 12, color: "var(--color-text-secondary)", maxWidth: 320, lineHeight: 1.4 }}>
+              {doc.Title}
+            </div>
+          </div>
+          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 20, color: "var(--color-text-tertiary)" }}>×</button>
+        </div>
+        <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 14, lineHeight: 1.5 }}>
+          This will mark the document as Approved and create an entry in the Document Register.
+          This action cannot be undone.
+        </div>
+        {error && (
+          <div style={{ padding: "9px 12px", background: "#FCEBEB", border: "1px solid #F09595",
+                        borderRadius: 8, fontSize: 12, color: "#791F1F", marginBottom: 12 }}>
+            {error}
+          </div>
+        )}
+        <div style={{ marginBottom: 14 }}>
+          <label style={{ display: "block", fontSize: 11, fontWeight: 600,
+                          color: "var(--color-text-secondary)", marginBottom: 5 }}>
+            Approval note (optional)
+          </label>
+          <textarea
+            value={notes} onChange={e => setNotes(e.target.value)}
+            placeholder="Any notes or conditions on this approval..."
+            rows={3}
+            style={{
+              width: "100%", fontSize: 12, padding: "9px 11px", borderRadius: 8,
+              border: "1.5px solid #C0C0C0", background: "var(--color-background-primary)",
+              color: "var(--color-text-primary)", resize: "vertical",
+              fontFamily: "var(--font-sans)", outline: "none", boxSizing: "border-box",
+            }}
+            onFocus={e => (e.target.style.borderColor = "#993556")}
+            onBlur={e => (e.target.style.borderColor = "#C0C0C0")}
+          />
+        </div>
+        <div style={{ display: "flex", gap: 10 }}>
+          <button onClick={handleApprove} disabled={saving} style={{
+            flex: 1, padding: "11px", fontSize: 13, borderRadius: 9, border: "none", fontWeight: 600,
+            background: saving ? "#E8E8E8" : "#1D9E75",
+            color: saving ? "#999" : "#fff", cursor: saving ? "not-allowed" : "pointer",
+          }}>{saving ? "Approving..." : "Confirm Approval ✓"}</button>
+          <button onClick={onClose} style={{
+            padding: "11px 16px", fontSize: 13, borderRadius: 9,
+            border: "1.5px solid #D0D0D0", background: "transparent",
+            color: "var(--color-text-secondary)", cursor: "pointer",
+          }}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+
+// =============================================================================
 //  Main component
 // =============================================================================
 
 export default function DocumentLifecycle() {
-  const [showForm,     setShowForm]     = useState(false);
-  const [detailsDoc,   setDetailsDoc]   = useState(null);
-  const [reassignDoc,  setReassignDoc]  = useState(null);
+  const [showForm,      setShowForm]      = useState(false);
+  const [detailsDoc,    setDetailsDoc]    = useState(null);
+  const [reassignDoc,   setReassignDoc]   = useState(null);
+  const [progressingDoc, setProgressingDoc] = useState(null); // doc whose Progress → was clicked
+  const [approvingDoc,  setApprovingDoc]  = useState(null);   // doc being approved
 
   const { oid: currentUserOid } = useCurrentUser();
   const { data: docs = [], isLoading, error, refetch } = useLifecycleDocs();
-  const progress = useProgress();
-  const qc       = useQueryClient();
-
-  const handleProgress = async (id, stage) => {
-    try {
-      await progress.mutateAsync({ id, stage });
-    } catch (err) {
-      alert(err.message || "Could not progress document.");
-    }
-  };
+  const qc = useQueryClient();
 
   const handleReassign = async (id, ownerOid, ownerName) => {
     await lifecycleApi.reassign(id, ownerOid, ownerName);
     qc.invalidateQueries({ queryKey: ["lifecycle"] });
   };
+
+  const closeProgress = () => setProgressingDoc(null);
+  const closeApprove  = () => setApprovingDoc(null);
 
   if (isLoading) return <LoadingState message="Loading document lifecycle..." />;
   if (error)     return <ErrorState error={error} onRetry={refetch} />;
@@ -1554,10 +2188,9 @@ export default function DocumentLifecycle() {
                         stageConfig={stage}
                         currentUserOid={currentUserOid}
                         onViewDetails={setDetailsDoc}
-                        onProgress={handleProgress}
-                        onUpload={() => {}} // handled inside card via file input
+                        onProgressClick={setProgressingDoc}
                         onReassign={setReassignDoc}
-                        progressPending={progress.isPending}
+                        onApprove={setApprovingDoc}
                       />
                     ))
                   )}
@@ -1568,13 +2201,38 @@ export default function DocumentLifecycle() {
         </div>
       )}
 
-      {/* Modals */}
+      {/* ── Modals ── */}
       <DetailsModal doc={detailsDoc} onClose={() => setDetailsDoc(null)} />
+
       {reassignDoc && (
         <ReassignModal
           doc={reassignDoc}
           onSave={handleReassign}
           onClose={() => setReassignDoc(null)}
+        />
+      )}
+
+      {/* Progress modal — picks StakeholdersModal or ApproverModal based on stage */}
+      {progressingDoc?.Stage === "Review" && (
+        <StakeholdersModal
+          doc={progressingDoc}
+          onClose={closeProgress}
+          onDone={closeProgress}
+        />
+      )}
+      {progressingDoc?.Stage === "Sensitisation" && (
+        <ApproverModal
+          doc={progressingDoc}
+          onClose={closeProgress}
+          onDone={closeProgress}
+        />
+      )}
+
+      {approvingDoc && (
+        <ApproveConfirmModal
+          doc={approvingDoc}
+          onClose={closeApprove}
+          onDone={closeApprove}
         />
       )}
     </>

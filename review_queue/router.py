@@ -186,7 +186,7 @@ async def _zone1_accept_cascade(item: dict, user: CurrentUser, overrides: dict) 
     created = []
 
     control_stmt = overrides.get("control_statement") or item.get("ControlStatement", "")
-    control_type = overrides.get("control_type")      or item.get("ControlType", "Directive")
+    control_type = overrides.get("control_type")      or item.get("ControlType", "")
     owner_role   = overrides.get("proposed_owner")    or item.get("ProposedOwnerRole", "")
     iso_clause   = overrides.get("iso_clause")        or item.get("ISOClause", "")
     evidence_type= overrides.get("evidence_type")     or item.get("EvidenceType", "")
@@ -218,7 +218,14 @@ async def _zone1_accept_cascade(item: dict, user: CurrentUser, overrides: dict) 
 
     # 2. Evidence Tracker — only if evidence is defined
     ev_id = None
-    if evidence_type and not item.get("EvidenceUndefined"):
+    evidence_undefined = item.get("EvidenceUndefined")
+    if isinstance(evidence_undefined, str):
+        evidence_undefined = evidence_undefined.lower() == "true"
+    evidence_undefined = bool(evidence_undefined)
+    if evidence_type and evidence_undefined and item.get("EvidenceType"):
+        evidence_undefined = False
+
+    if evidence_type and not evidence_undefined:
         try:
             ev_fields = {
                 "Title":               evd_desc[:255] if evd_desc else f"Evidence for: {control_stmt[:200]}",

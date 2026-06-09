@@ -6,6 +6,7 @@
 # =============================================================================
 
 import asyncio
+import json
 import logging
 from datetime import date, datetime, timezone
 from typing import Optional
@@ -19,6 +20,7 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
 from auth.validator import CurrentUser, get_current_user
+from agents.cdi_checker.service import run_cdi_check
 from config import settings
 from graph.auth import get_graph_access_token
 from graph.client import (
@@ -63,6 +65,47 @@ def _days_since(dt_str: Optional[str]) -> int:
         return 0
 
 
+def _field_text(value) -> str:
+    """Return a displayable string from a SharePoint text/person field."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        return (
+            value.get("displayName")
+            or value.get("DisplayName")
+            or value.get("title")
+            or value.get("Title")
+            or ""
+        ).strip()
+    return str(value).strip()
+
+
+async def _resolve_display_name(entra_oid: str, fallback: str = "") -> str:
+    """Resolve an Entra ID object ID into a display name for SharePoint text fields."""
+    fallback = _field_text(fallback)
+    if not entra_oid:
+        return fallback
+    try:
+        resolved = await resolve_user(entra_oid)
+        return _field_text(resolved.get("display_name")) or fallback
+    except Exception as exc:
+        logger.warning(f"Could not resolve display name for Entra ID {entra_oid}: {exc}")
+        return fallback
+
+
+async def _write_owner_text_field(item_id: str, owner_oid: str, fallback: str = "") -> str:
+    """
+    Resolve OwnerEntraId and populate SharePoint's Owner text field.
+    OwnerEntraId remains the stable ID; Owner is the human-readable name.
+    """
+    owner_name = await _resolve_display_name(owner_oid, fallback)
+    if owner_name and item_id and settings.is_list_configured(_get_list_id()):
+        await update_list_item(_get_list_id(), _LIST_NAME, item_id, {"Owner": owner_name})
+    return owner_name
+
+
 async def _sp_to_doc(item: dict) -> dict:
     """Convert a SharePoint list item into a clean lifecycle document dict.
 
@@ -72,28 +115,54 @@ async def _sp_to_doc(item: dict) -> dict:
     """
     f = item.get("fields", {})
 
-    # Owner — prefer stored name, fall back to OID resolution
-    owner_name = (f.get("Owner") or "").strip()
+    item_id   = str(item.get("id", ""))
+    list_id   = _get_list_id()
+    writeback: dict = {}   # collected fields to write back when SP columns are empty
+
+    # Owner — prefer stored name, fall back to OID resolution, write back if empty
+    owner_name = _field_text(f.get("Owner"))
     owner_oid  = f.get("OwnerEntraId", "")
     if not owner_name and owner_oid:
-        try:
-            u = await resolve_user(owner_oid)
-            owner_name = u.get("display_name", "")
-        except Exception:
-            pass
+        owner_name = await _resolve_display_name(owner_oid)
+        if owner_name:
+            try:
+                await _write_owner_text_field(item_id, owner_oid, owner_name)
+            except Exception as exc:
+                logger.warning(
+                    f"Could not backfill lifecycle Owner text field for item {item_id}: {exc}"
+                )
 
     # Approver — same pattern
-    approver_name = (f.get("Approver") or "").strip()
+    approver_name = _field_text(f.get("Approver"))
     approver_oid  = f.get("ApproverEntraId", "")
     if not approver_name and approver_oid:
+        approver_name = await _resolve_display_name(approver_oid)
+        if approver_name:
+            writeback["Approver"] = approver_name
+
+    # Write back resolved approver names so SharePoint columns are not left empty.
+    # Owner is a Person/Group field and is handled separately above.
+    if writeback and item_id and settings.is_list_configured(list_id):
         try:
-            u = await resolve_user(approver_oid)
-            approver_name = u.get("display_name", "")
+            await update_list_item(list_id, _LIST_NAME, item_id, writeback)
+        except Exception as exc:
+            logger.warning(
+                f"Could not backfill lifecycle owner/approver names for item {item_id}: {exc}"
+            )
+
+    # Parse stakeholders (JSON array in multi-line text column)
+    stakeholders: list[dict] = []
+    raw_stakeholders = f.get("Stakeholders", "")
+    if raw_stakeholders:
+        try:
+            stakeholders = json.loads(raw_stakeholders)
+            if not isinstance(stakeholders, list):
+                stakeholders = []
         except Exception:
-            pass
+            stakeholders = []
 
     return {
-        "id":               str(item["id"]),
+        "id":               item_id,
         "Title":            f.get("Title", ""),
         "DocumentCode":     f.get("DocumentCode", ""),
         "DocumentType":     f.get("DocumentType", ""),
@@ -120,6 +189,7 @@ async def _sp_to_doc(item: dict) -> dict:
         "StandardsMapping": f.get("StandardsMapping", ""),
         "LinkedDocumentRegisterItem": f.get("LinkedDocumentRegisterItem", ""),
         "SensitisationFeedback": f.get("SensitisationFeedback", ""),
+        "Stakeholders":     stakeholders,
         "created":          item.get("createdDateTime", ""),
         "modified":         item.get("lastModifiedDateTime", ""),
     }
@@ -150,11 +220,20 @@ class CreateDoc(BaseModel):
 class ProgressDoc(BaseModel):
     current_stage:    str
     rejection_reason: Optional[str] = None
+    # Review → Sensitisation: list of [{oid, name, email}, ...]
+    stakeholders:     Optional[list[dict]] = None
+    # Sensitisation → Approval
+    approver_id:      Optional[str] = None
+    approver_name:    Optional[str] = None
 
 
 class ReassignDoc(BaseModel):
     owner_id:   str
     owner_name: Optional[str] = None
+
+
+class ApproveDoc(BaseModel):
+    notes: Optional[str] = None
 
 
 # =============================================================================
@@ -207,6 +286,8 @@ async def create_doc(
     CDI Fix entries carry the CDI failures so the card shows exactly what to fix.
     Gap Remediation and NC entries carry their source IDs for traceability.
     """
+    owner_name = await _resolve_display_name(user.oid, user.name)
+
     fields: dict = {
         "Title":        body.title,
         "Stage":        "Review",
@@ -214,7 +295,7 @@ async def create_doc(
         "AIGenerated":  body.ai_generated,
         "Revised":      False,
         "OwnerEntraId": user.oid,
-        "Owner":        user.name,  # store display name so reads don't need OID resolution
+        "Owner":        owner_name,
     }
     for attr, col in [
         ("document_code",       "DocumentCode"),
@@ -233,6 +314,16 @@ async def create_doc(
 
     try:
         item = await create_list_item(_get_list_id(), _LIST_NAME, fields)
+        item_id = str(item.get("id", ""))
+        if item_id:
+            try:
+                await _write_owner_text_field(item_id, user.oid, owner_name)
+            except Exception as exc:
+                logger.warning(
+                    f"Lifecycle item {item_id} created, but Owner text field "
+                    f"could not be populated: {exc}"
+                )
+            item = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
         return await _sp_to_doc(item)
     except Exception as exc:
         _handle_error(exc, "create lifecycle document")
@@ -245,8 +336,10 @@ async def progress_doc(
     user: CurrentUser = Depends(get_current_user),
 ) -> dict:
     """
-    Advance a document to the next stage.
-    Blocks progression from Review if no file has been uploaded (Revised = False).
+    Advance a document to the next stage with stage-specific validation.
+      Review → Sensitisation: requires at least one stakeholder + uploaded file.
+      Sensitisation → Approval: requires an approver.
+      Approval: blocked — use POST /approve to complete.
     """
     try:
         item = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
@@ -259,17 +352,47 @@ async def progress_doc(
                         f"not '{body.current_stage}'."),
             )
 
+        if body.current_stage == "Review":
+            if not doc.get("Revised"):
+                raise HTTPException(
+                    status_code=422,
+                    detail="Upload a revised version before progressing from Review.",
+                )
+            if not body.stakeholders:
+                raise HTTPException(
+                    status_code=422,
+                    detail="At least one stakeholder must be selected before progressing to Sensitisation.",
+                )
+
+        if body.current_stage == "Sensitisation":
+            if not body.approver_id:
+                raise HTTPException(
+                    status_code=422,
+                    detail="An approver must be selected before progressing to Approval.",
+                )
+
         next_stage = NEXT_STAGE.get(body.current_stage)
         if not next_stage:
             raise HTTPException(
                 status_code=422,
-                detail="Document is in Approval stage. Use the Teams approval flow to complete.",
+                detail="Document is in Approval stage — use the Approve action to complete.",
             )
 
         fields: dict = {"Stage": next_stage}
-        if next_stage == "Approval":
+
+        if body.current_stage == "Review" and body.stakeholders:
+            fields["Stakeholders"] = json.dumps(body.stakeholders)
+
+        if body.current_stage == "Sensitisation":
+            approver_name = await _resolve_display_name(
+                body.approver_id,
+                body.approver_name or "",
+            )
             fields["SubmittedForApproval"] = date.today().isoformat()
             fields["ApprovalStatus"]       = "Pending"
+            fields["ApproverEntraId"]      = body.approver_id
+            if approver_name:
+                fields["Approver"] = approver_name
 
         await update_list_item(_get_list_id(), _LIST_NAME, item_id, fields)
         updated = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
@@ -281,6 +404,80 @@ async def progress_doc(
         _handle_error(exc, f"progress document {item_id}")
 
 
+@router.post("/documents/{item_id}/approve")
+async def approve_doc(
+    item_id: str,
+    body: ApproveDoc,
+    user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    """
+    Mark a document as Approved and create a Document Register entry.
+    Only valid when the document is in Approval stage.
+    """
+    try:
+        item = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
+        doc  = await _sp_to_doc(item)
+
+        if doc["Stage"] != "Approval":
+            raise HTTPException(
+                status_code=422,
+                detail=f"Document must be in Approval stage to approve (currently '{doc['Stage']}').",
+            )
+
+        # Mark approved
+        approver_name = await _resolve_display_name(user.oid, user.name)
+
+        fields: dict = {
+            "ApprovalStatus": "Approved",
+            "ApprovedDate":   date.today().isoformat(),
+            "ApproverEntraId": user.oid,
+            "Approver":        approver_name,
+        }
+        if body.notes:
+            fields["Notes"] = (doc.get("Notes") or "") + f"\n\nApproval note: {body.notes}"
+
+        await update_list_item(_get_list_id(), _LIST_NAME, item_id, fields)
+
+        # Create Document Register entry
+        if settings.is_list_configured(settings.document_register_list_id):
+            dr_fields: dict = {
+                "Title":              doc["Title"],
+                "DocumentCode":       doc["DocumentCode"],
+                "DocumentType":       doc["DocumentType"],
+                "Department":         doc["Department"],
+                "Status":             "Active",
+                "OwnerEntraId":       doc["OwnerEntraId"],
+                "Owner":              doc["OwnerName"],
+                "EffectiveDate":      date.today().isoformat(),
+                "ApplicableStandards": doc["StandardsMapping"],
+                "Source":             "Document Lifecycle",
+            }
+            if doc["SharePointFileUrl"]:
+                dr_fields["SharePointUrl"] = doc["SharePointFileUrl"]
+            try:
+                await create_list_item(
+                    settings.document_register_list_id,
+                    "Document Register",
+                    dr_fields,
+                )
+                logger.info(
+                    f"Document Register entry created for approved lifecycle "
+                    f"{item_id}: {doc['DocumentCode']}"
+                )
+            except Exception as exc:
+                logger.warning(
+                    f"Lifecycle {item_id} approved but Document Register write failed: {exc}"
+                )
+
+        updated = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
+        return await _sp_to_doc(updated)
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _handle_error(exc, f"approve document {item_id}")
+
+
 @router.patch("/documents/{item_id}/reassign")
 async def reassign_doc(
     item_id: str,
@@ -288,10 +485,18 @@ async def reassign_doc(
     user: CurrentUser = Depends(get_current_user),
 ) -> dict:
     try:
+        owner_name = await _resolve_display_name(body.owner_id, body.owner_name or "")
         fields: dict = {"OwnerEntraId": body.owner_id}
-        if body.owner_name:
-            fields["Owner"] = body.owner_name
+        if owner_name:
+            fields["Owner"] = owner_name
         await update_list_item(_get_list_id(), _LIST_NAME, item_id, fields)
+        try:
+            await _write_owner_text_field(item_id, body.owner_id, owner_name)
+        except Exception as exc:
+            logger.warning(
+                f"Lifecycle item {item_id} reassigned, but Owner text field "
+                f"could not be populated: {exc}"
+            )
         updated = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
         return await _sp_to_doc(updated)
     except Exception as exc:
@@ -321,32 +526,46 @@ async def upload_doc_file(
         logger.exception(f"SharePoint upload failed for lifecycle {item_id}")
         raise HTTPException(status_code=503, detail=f"SharePoint upload failed: {exc}")
 
-    # Run CDI check automatically
+    # Run CDI check automatically.
+    # Each fetch is wrapped independently so a misconfigured list ID or network
+    # blip on a supporting call never blocks the check from running.
     cdi_status   = "Pending"
     cdi_failures = ""
     try:
-        from agents.cdi_checker.service import run_cdi_check
-        from graph.client import get_list_items
-        # Fetch role titles for CDI-07 check
-        role_items  = await get_list_items(
-            settings.role_register_list_id, "Role Register"
-        )
-        role_titles = [
-            i.get("fields", {}).get("Title", "")
-            for i in role_items
-            if i.get("fields", {}).get("Title")
-        ]
-        item_data = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
-        doc_code  = item_data.get("fields", {}).get("DocumentCode", "")
+        # Role titles for CDI-07/16 — gracefully skip if list not configured yet
+        try:
+            role_items  = await get_list_items(settings.role_register_list_id, "Role Register")
+            role_titles = [
+                i.get("fields", {}).get("Title", "")
+                for i in role_items
+                if i.get("fields", {}).get("Title")
+            ]
+        except Exception as exc:
+            logger.debug(f"Role Register unavailable for CDI check ({exc}); proceeding without role validation")
+            role_titles = []
+
+        # Doc code for CDI-01 — gracefully fall back to empty string
+        try:
+            item_data = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
+            doc_code  = item_data.get("fields", {}).get("DocumentCode", "")
+        except Exception:
+            doc_code = ""
+
         cdi_result = await run_cdi_check(file_bytes, filename, doc_code, role_titles)
 
         if cdi_result.get("error"):
-            cdi_status = "Error"
+            cdi_status   = "Error"
+            # Store the reason in CDIFailures so it surfaces in the UI
+            cdi_failures = json.dumps([{
+                "check":  "CDI",
+                "detail": cdi_result["error"],
+                "fix":    "Resolve the issue above, then re-upload the document.",
+            }])
+            logger.warning(f"CDI check error for lifecycle {item_id}: {cdi_result['error']}")
         elif cdi_result["passed"]:
             cdi_status   = "Passed"
-            cdi_failures = ""
+            cdi_failures = ""          # clear any failures from a previous upload
         else:
-            import json
             cdi_status   = "Failed"
             cdi_failures = json.dumps([
                 {
@@ -362,16 +581,17 @@ async def upload_doc_file(
         )
     except Exception as exc:
         logger.warning(f"CDI check failed to run for {item_id}: {exc}")
-        cdi_status = "Error"
+        cdi_status   = "Error"
+        cdi_failures = ""
 
-    # Update lifecycle item
+    # Update lifecycle item — always write CDIFailures so stale failures from a
+    # previous upload are cleared when the re-upload passes CDI.
     fields: dict = {
         "SharePointFileUrl": file_url,
         "Revised":           True,
         "CDIStatus":         cdi_status,
+        "CDIFailures":       cdi_failures,   # empty string clears old failures on pass
     }
-    if cdi_failures:
-        fields["CDIFailures"] = cdi_failures
 
     try:
         await update_list_item(_get_list_id(), _LIST_NAME, item_id, fields)

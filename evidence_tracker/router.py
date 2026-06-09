@@ -10,11 +10,13 @@ import logging
 from datetime import date, datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+import httpx
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from auth.validator import CurrentUser, get_current_user
 from config import settings
+from graph.auth import get_graph_access_token
 from graph.client import (
     create_list_item,
     get_list_item,
@@ -59,6 +61,8 @@ def _sp_to_evd(item: dict) -> dict:
         "OwnerEntraId":        f.get("OwnerEntraId", ""),
         "ValidationCriteria":  f.get("ValidationCriteria", ""),
         "EvidenceLink":        f.get("EvidenceLink", ""),
+        "EvidenceUrl":         f.get("EvidenceLink", ""),
+        "evidenceUrl":         f.get("EvidenceLink", ""),
         "Status":              f.get("Status", "Pending"),
         "LinkedControlId":     f.get("LinkedControlId", ""),
         "NextDue":             f.get("NextDue", ""),
@@ -129,6 +133,40 @@ class VerifyEvidence(BaseModel):
     rejection_note: Optional[str] = None  # Required if accepted=False
 
 
+def _safe_filename(filename: str) -> str:
+    cleaned = "".join(c if c.isalnum() or c in (" ", ".", "-", "_") else "_" for c in filename)
+    return cleaned.strip(" .") or "evidence-file"
+
+
+async def _upload_evidence_to_sharepoint(
+    item_id: str,
+    filename: str,
+    file_bytes: bytes,
+) -> str:
+    """
+    Upload evidence to SharePoint and return the source webUrl.
+    Path: /EVID-{item_id}-{filename}
+    """
+    token = await get_graph_access_token()
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/octet-stream",
+    }
+    upload_path = f"EVID-{item_id}-{_safe_filename(filename)}"
+    upload_url = (
+        f"{settings.graph_base_url}/sites/{settings.sharepoint_site_id}"
+        f"/drive/root:/{upload_path}:/content"
+    )
+
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        resp = await client.put(upload_url, headers=headers, content=file_bytes)
+        resp.raise_for_status()
+
+    web_url = resp.json().get("webUrl", "")
+    logger.info(f"Uploaded evidence '{filename}' for item {item_id}: {web_url}")
+    return web_url
+
+
 @router.patch("/api/v1/evidence/{item_id}/submit")
 async def submit_evidence(
     item_id: str,
@@ -162,6 +200,48 @@ async def submit_evidence(
         raise
     except Exception as exc:
         _handle(exc, f"submit evidence {item_id}")
+
+
+@router.post("/api/v1/evidence/{item_id}/upload")
+async def upload_evidence(
+    item_id: str,
+    file: UploadFile = File(...),
+    submission_notes: Optional[str] = Form(None),
+    user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    """
+    Owner uploads collected evidence to SharePoint.
+    The returned SharePoint webUrl is stored as the evidence source URL.
+    """
+    file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=422, detail="Evidence file is required.")
+
+    filename = file.filename or f"evidence_{item_id}"
+
+    try:
+        evidence_url = await _upload_evidence_to_sharepoint(item_id, filename, file_bytes)
+    except Exception as exc:
+        logger.exception(f"SharePoint evidence upload failed for {item_id}")
+        raise HTTPException(status_code=503, detail=f"SharePoint upload failed: {exc}")
+
+    try:
+        fields: dict = {
+            "EvidenceLink":   evidence_url,
+            "Status":         "Submitted",
+            "LastCollected":  date.today().isoformat(),
+            "RejectionNote":  "",
+        }
+        if submission_notes:
+            fields["SubmissionNotes"] = submission_notes
+
+        await update_list_item(_list_id(), _LIST_NAME, item_id, fields)
+        updated = await get_list_item(_list_id(), _LIST_NAME, item_id)
+        return _sp_to_evd(updated)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _handle(exc, f"save uploaded evidence {item_id}")
 
 
 @router.patch("/api/v1/evidence/{item_id}/verify")

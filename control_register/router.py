@@ -114,6 +114,11 @@ class AcceptControl(BaseModel):
     owner_role:        Optional[str] = None
     risk_implication:  Optional[str] = None
     escalation_note:   Optional[str] = None
+    evidence_type:          Optional[str] = None
+    evidence_description:   Optional[str] = None
+    evidence_source_system: Optional[str] = None
+    evidence_format:        Optional[str] = None
+    evidence_frequency:     Optional[str] = None
 
 
 class RejectItem(BaseModel):
@@ -123,6 +128,9 @@ class RejectItem(BaseModel):
 
 class RequestSecondReview(BaseModel):
     rationale: str
+    reviewer_oid: Optional[str] = None
+    reviewer_name: Optional[str] = None
+    reviewer_email: Optional[str] = None
 
 
 # =============================================================================
@@ -237,7 +245,7 @@ async def accept_control(
 
         # Use edited values if provided, otherwise use AI-extracted values
         control_statement = body.control_statement or q_fields.get("ControlStatement", "")
-        control_type      = body.control_type      or q_fields.get("ControlType", "Directive")
+        control_type      = body.control_type      or q_fields.get("ControlType", "")
         iso_clause        = body.iso_clause        or q_fields.get("ISOClause", "")
         owner_role        = body.owner_role        or q_fields.get("ProposedOwnerRole", "")
         risk_implication  = body.risk_implication  or q_fields.get("RiskStatement", "")
@@ -287,19 +295,33 @@ async def accept_control(
 
         # Step 4 — create Evidence Tracker entry (if evidence fields present)
         evd_id = ""
-        evd_type   = q_fields.get("EvidenceType", "")
-        evd_desc   = q_fields.get("EvidenceDescription", "")
-        evd_sys    = q_fields.get("EvidenceSourceSystem", "")
-        evd_format = q_fields.get("EvidenceFormat", "")
-        evd_freq   = q_fields.get("EvidenceFrequency", "")
+        evd_type   = body.evidence_type          or q_fields.get("EvidenceType", "")
+        evd_desc   = body.evidence_description   or q_fields.get("EvidenceDescription", "")
+        evd_sys    = body.evidence_source_system or q_fields.get("EvidenceSourceSystem", "")
+        evd_format = body.evidence_format        or q_fields.get("EvidenceFormat", "")
+        evd_freq   = body.evidence_frequency     or q_fields.get("EvidenceFrequency", "")
         evd_method = q_fields.get("EvidenceCollectionMethod", "")
         evd_owner  = q_fields.get("EvidenceOwnerRole", "") or owner_role
         evd_crit   = q_fields.get("EvidenceValidationCriteria", "")
+        is_edit_accept = any([
+            body.control_statement,
+            body.control_type,
+            body.iso_clause,
+            body.owner_role,
+            body.risk_implication,
+            body.escalation_note,
+            body.evidence_type,
+            body.evidence_description,
+            body.evidence_source_system,
+            body.evidence_format,
+            body.evidence_frequency,
+        ])
 
-        if evd_desc and evd_type:
+        if evd_type:
             evd_owner_oid = await _resolve_owner_entra_id(evd_owner)
+            evd_title = evd_desc[:255] if evd_desc else f"Evidence for: {control_statement[:200]}"
             evd_fields = {
-                "Title":               evd_desc[:255],
+                "Title":               evd_title,
                 "EvidenceDescription": evd_desc,
                 "EvidenceType":        evd_type,
                 "SourceSystem":        evd_sys,
@@ -319,7 +341,7 @@ async def accept_control(
             logger.info(f"Evidence Tracker entry created: {evd_id}")
         else:
             logger.info(
-                f"No evidence fields on queue item {item_id} — "
+                f"No evidence type on queue item {item_id} — "
                 "Evidence Tracker entry skipped."
             )
 
@@ -330,13 +352,36 @@ async def accept_control(
             + (f" | Status: Blocked — owner '{owner_role}' unassigned" if control_status == "Blocked" else "")
         )
 
-        await update_list_item(_q_list_id(), _Q_LIST_NAME, item_id, {
+        queue_updates = {
             "ReviewStatus":    "Accepted",
-            "Decision":        "Accept" if not body.control_statement else "Edit and Accept",
+            "Decision":        "Edit and Accept" if is_edit_accept else "Accept",
             "DecisionRationale": body.rationale,
             "ReviewedByEntraId": user.oid,
             "CascadeResult":   cascade_summary,
+        }
+        edited_field_updates = {
+            "ControlStatement": body.control_statement,
+            "ControlType": body.control_type,
+            "ISOClause": body.iso_clause,
+            "ProposedOwnerRole": body.owner_role,
+            "RiskStatement": body.risk_implication,
+            "EvidenceType": body.evidence_type,
+            "EvidenceDescription": body.evidence_description,
+            "EvidenceSourceSystem": body.evidence_source_system,
+            "EvidenceFormat": body.evidence_format,
+            "EvidenceFrequency": body.evidence_frequency,
+        }
+        queue_updates.update({
+            field: value
+            for field, value in edited_field_updates.items()
+            if value
         })
+        if control_type and evd_type:
+            queue_updates["CompletenessFlag"] = "COMPLETE"
+            queue_updates["DeficiencyReason"] = ""
+            queue_updates["EvidenceUndefined"] = False
+
+        await update_list_item(_q_list_id(), _Q_LIST_NAME, item_id, queue_updates)
 
         # Step 6 — write audit log
         await _write_audit_log(
@@ -345,7 +390,7 @@ async def accept_control(
             item_type=q_fields.get("ItemType", "Extraction"),
             zone="1",
             ai_confidence=confidence,
-            decision="Accept" if not body.control_statement else "Edit and Accept",
+            decision="Edit and Accept" if is_edit_accept else "Accept",
             rationale=body.rationale,
             cascade_result=cascade_summary,
             state_from="Pending Review",
@@ -444,6 +489,13 @@ async def request_second_review(
             "ReviewedByEntraId": user.oid,
         })
 
+        reviewer_summary = ""
+        if body.reviewer_name or body.reviewer_email:
+            reviewer_summary = " Requested reviewer: " + (
+                f"{body.reviewer_name} ({body.reviewer_email})" if body.reviewer_name and body.reviewer_email
+                else body.reviewer_name or body.reviewer_email
+            )
+
         await _write_audit_log(
             reviewer=user,
             item_id=item_id,
@@ -452,7 +504,7 @@ async def request_second_review(
             ai_confidence=float(q_fields.get("ConfidenceScore") or 0),
             decision="Request Second Review",
             rationale=body.rationale,
-            cascade_result="Flagged for second reviewer.",
+            cascade_result="Flagged for second reviewer." + reviewer_summary,
             state_from="Pending Review",
             state_to="Second Review Requested",
         )

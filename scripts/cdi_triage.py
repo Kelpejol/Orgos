@@ -156,21 +156,53 @@ async def fetch_role_titles() -> list[str]:
         return []
 
 
+async def resolve_owner_by_email(email: str) -> tuple[str, str]:
+    """
+    Resolve a Microsoft 365 email to (entra_oid, display_name) via Graph API.
+    Returns ("", "") if the email cannot be resolved — lifecycle entry will
+    fall back to showing 'System (CDI Triage)' and remain reassignable.
+    """
+    if not email:
+        return "", ""
+    try:
+        headers = await get_headers()
+        url = f"{settings.graph_base_url}/users/{email}"
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            resp = await client.get(url, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+            oid  = data.get("id", "")
+            name = data.get("displayName", "") or data.get("userPrincipalName", email)
+            return oid, name
+    except Exception as exc:
+        logger.warning(f"Could not resolve owner email '{email}': {exc}")
+        return "", ""
+
+
 # =============================================================================
 #  Create entries on pass/fail
 # =============================================================================
 
-async def create_document_register_entry(filename: str, doc_code: str, web_url: str) -> None:
+async def create_document_register_entry(
+    filename: str,
+    doc_code: str,
+    web_url: str,
+    owner_oid: str = "",
+    owner_name: str = "",
+) -> None:
     """CDI PASS — document enters Document Register directly."""
-    fields = {
-        "Title":          filename,
-        "DocumentCode":   doc_code,
-        "Status":         "Active",
-        "EffectiveDate":  date.today().isoformat(),
-        "ReviewDate":     "",  # Will need to be filled manually or extracted
-        "SharePointUrl":  web_url,
-        "Source":         "CDI Triage Phase 0",
+    fields: dict = {
+        "Title":         filename,
+        "DocumentCode":  doc_code,
+        "Status":        "Active",
+        "EffectiveDate": date.today().isoformat(),
+        "SharePointUrl": web_url,
+        "Source":        "CDI Triage Phase 0",
     }
+    if owner_oid:
+        fields["OwnerEntraId"] = owner_oid
+    if owner_name:
+        fields["Owner"] = owner_name
     try:
         await create_list_item(settings.document_register_list_id, "Document Register", fields)
         logger.info(f"Document Register entry created for: {doc_code}")
@@ -178,8 +210,14 @@ async def create_document_register_entry(filename: str, doc_code: str, web_url: 
         logger.error(f"Failed to create Document Register entry for {doc_code}: {exc}")
 
 
-async def create_lifecycle_entry(filename: str, doc_code: str, web_url: str,
-                                  cdi_failures: list[dict]) -> None:
+async def create_lifecycle_entry(
+    filename: str,
+    doc_code: str,
+    web_url: str,
+    cdi_failures: list[dict],
+    owner_oid: str = "",
+    owner_name: str = "",
+) -> None:
     """CDI FAIL — document enters Document Lifecycle with failures listed."""
     failures_json = json.dumps([
         {
@@ -190,17 +228,29 @@ async def create_lifecycle_entry(filename: str, doc_code: str, web_url: str,
         for f in cdi_failures if f["result"] == "FAIL"
     ])
 
-    fields = {
-        "Title":              filename,
-        "DocumentCode":       doc_code,
-        "Stage":              "Review",
-        "Trigger":            "CDI Fix",
-        "AIGenerated":        False,
-        "Revised":            False,
-        "CDIFailures":        failures_json,
-        "SharePointFileUrl":  web_url,
-        "Notes":              f"Entered via Phase 0 CDI triage. {len(cdi_failures)} CDI failures to resolve.",
+    # Use the supplied owner if available; fall back to a meaningful system label
+    # so the card shows "System (CDI Triage)" rather than "Unassigned" and the
+    # amber Claim/Reassign button appears for anyone to pick it up.
+    effective_owner_name = owner_name or "System (CDI Triage)"
+
+    fields: dict = {
+        "Title":             filename,
+        "DocumentCode":      doc_code,
+        "Stage":             "Review",
+        "Trigger":           "CDI Fix",
+        "AIGenerated":       False,
+        "Revised":           True,   # file is already in SharePoint — it IS the revised version
+        "CDIFailures":       failures_json,
+        "SharePointFileUrl": web_url,
+        "Owner":             effective_owner_name,
+        "Notes": (
+            f"Entered via Phase 0 CDI triage. "
+            f"{len([f for f in cdi_failures if f['result'] == 'FAIL'])} CDI failures to resolve."
+        ),
     }
+    if owner_oid:
+        fields["OwnerEntraId"] = owner_oid
+
     try:
         await create_list_item(settings.document_lifecycle_list_id, "Document Lifecycle", fields)
         logger.info(f"Document Lifecycle entry created for: {doc_code} ({len(cdi_failures)} failures)")
@@ -217,6 +267,7 @@ async def run_triage(
     folder_filter: Optional[str] = None,
     dry_run: bool = False,
     limit: Optional[int] = None,
+    owner_email: Optional[str] = None,
 ) -> None:
     await startup()
 
@@ -225,9 +276,10 @@ async def run_triage(
 
     print("\n" + "="*60)
     print("OrgOS — CDI Triage (Phase 0)")
-    if dry_run: print("MODE: DRY RUN")
+    if dry_run:       print("MODE: DRY RUN")
     if folder_filter: print(f"FOLDER FILTER: {folder_filter}")
-    if limit: print(f"BATCH LIMIT: {limit}")
+    if limit:         print(f"BATCH LIMIT: {limit}")
+    if owner_email:   print(f"OWNER EMAIL: {owner_email}")
     if processed_ids: print(f"RESUMING — {len(processed_ids)} already processed")
     print("="*60 + "\n")
 
@@ -236,6 +288,13 @@ async def run_triage(
         site_id, drive_id = await resolve_drive()
         role_titles        = await fetch_role_titles()
         print(f"Connected. {len(role_titles)} roles loaded from Role Register.\n")
+
+        # Resolve the owner who triggered this triage run
+        owner_oid, owner_name = await resolve_owner_by_email(owner_email or "")
+        if owner_email and owner_oid:
+            print(f"Owner resolved: {owner_name} ({owner_oid})\n")
+        elif owner_email:
+            print(f"WARNING: Could not resolve '{owner_email}' — lifecycle entries will show 'System (CDI Triage)'\n")
 
         # Find root folder
         headers = await get_headers()
@@ -293,13 +352,19 @@ async def run_triage(
                     print(f"              → ERROR: {result['error']}")
                     processed_ids.add(file_id)
                 elif result["passed"]:
-                    print(f"              → PASS  ({result['pass_count']}/15 checks)")
-                    await create_document_register_entry(filename, doc_code, web_url)
+                    print(f"              → PASS  ({result['pass_count']}/{result['total_checks']} checks)")
+                    await create_document_register_entry(
+                        filename, doc_code, web_url,
+                        owner_oid=owner_oid, owner_name=owner_name,
+                    )
                     passed_count += 1
                 else:
                     fails = [c for c in result["checks"] if c["result"] == "FAIL"]
                     print(f"              → FAIL  ({result['fail_count']} failures — enters Lifecycle for fix)")
-                    await create_lifecycle_entry(filename, doc_code, web_url, fails)
+                    await create_lifecycle_entry(
+                        filename, doc_code, web_url, fails,
+                        owner_oid=owner_oid, owner_name=owner_name,
+                    )
                     failed_count += 1
 
                 processed_ids.add(file_id)
@@ -328,11 +393,31 @@ async def run_triage(
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="CDI Triage — Phase 0")
-    parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--folder",  type=str, default=None)
-    parser.add_argument("--limit",   type=int, default=None)
-    parser.add_argument("--reset",   action="store_true")
+    parser = argparse.ArgumentParser(
+        description="CDI Triage — Phase 0",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  python scripts/cdi_triage.py --owner-email you@dragnet-solutions.com
+  python scripts/cdi_triage.py --owner-email you@dragnet-solutions.com --folder "Policies"
+  python scripts/cdi_triage.py --dry-run
+  python scripts/cdi_triage.py --reset
+        """,
+    )
+    parser.add_argument("--dry-run",     action="store_true",
+                        help="Preview files without running checks or creating entries")
+    parser.add_argument("--folder",      type=str, default=None,
+                        help="Only process files in folders matching this name")
+    parser.add_argument("--limit",       type=int, default=None,
+                        help="Stop after processing this many files")
+    parser.add_argument("--reset",       action="store_true",
+                        help="Clear the checkpoint file and start fresh")
+    parser.add_argument("--owner-email", type=str, default=None,
+                        help="M365 email of the person running the triage. "
+                             "Lifecycle entries created for CDI-failing docs will be "
+                             "attributed to this person so they appear on their "
+                             "Review column and can be reassigned. "
+                             "E.g. --owner-email firstname.lastname@dragnet-solutions.com")
     args = parser.parse_args()
 
     if args.reset:
@@ -342,4 +427,5 @@ if __name__ == "__main__":
         folder_filter=args.folder,
         dry_run=args.dry_run,
         limit=args.limit,
+        owner_email=args.owner_email,
     ))

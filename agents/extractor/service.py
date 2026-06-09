@@ -57,13 +57,13 @@ def extract_text_from_pdf(file_bytes: bytes) -> str:
 
 def extract_text_from_docx(file_bytes: bytes) -> str:
     try:
-        from docx import Document
-        doc = Document(io.BytesIO(file_bytes))
-        full = "\n".join(p.text for p in doc.paragraphs if p.text.strip())
+        import mammoth
+        result = mammoth.extract_raw_text(io.BytesIO(file_bytes))
+        full = result.value or ""
         logger.info(f"DOCX: {len(full)} chars")
         return full
     except ImportError as exc:
-        raise RuntimeError("python-docx not installed. Run: pip install python-docx") from exc
+        raise RuntimeError("mammoth not installed. Run: pip install mammoth") from exc
 
 
 # =============================================================================
@@ -385,7 +385,23 @@ async def _write_to_queue(
             if item.get("evidence_validation_criteria"):
                 fields["EvidenceValidationCriteria"] = str(item["evidence_validation_criteria"])[:500]
 
-            fields["EvidenceUndefined"] = bool(item.get("evidence_undefined", True))
+            evidence_present = any(
+                item.get(key)
+                for key in [
+                    "evidence_type",
+                    "evidence_description",
+                    "source_system",
+                    "evidence_format",
+                    "evidence_frequency",
+                    "evidence_collection_method",
+                    "evidence_owner_role",
+                    "evidence_validation_criteria",
+                ]
+            )
+            evidence_undefined = item.get("evidence_undefined")
+            if evidence_undefined is None:
+                evidence_undefined = not evidence_present
+            fields["EvidenceUndefined"] = bool(evidence_undefined)
             if item.get("evidence_undefined_reason"):
                 fields["EvidenceUndefinedReason"] = item["evidence_undefined_reason"]
 

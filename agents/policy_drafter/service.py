@@ -230,7 +230,7 @@
 #       full_text (complete draft as plain text)
 #     """
 #     role_titles = role_titles or []
-#     logger.info(f"Policy Drafter starting: '{title}' ({doc_type}, {department})")
+#     logger.info(f"Document Drafter starting: '{title}' ({doc_type}, {department})")
 
 #     doc_code = _generate_doc_code(department, doc_type, title, serial)
 
@@ -327,7 +327,7 @@
 #         "records":         records,
 #     }
 
-#     logger.info(f"Policy Drafter complete: {doc_code}")
+#     logger.info(f"Document Drafter complete: {doc_code}")
 
 #     return {
 #         "doc_code":         doc_code,
@@ -423,34 +423,37 @@ async def _generate_purpose(
     title: str, doc_type: str, department: str, notes: str,
     standards_mapping: str,
 ) -> str:
+    effective_standards = standards_mapping or "ISO 27001, ISO 9001, NDPA"
     prompt = f"""You are a compliance document writer for Dragnet Solutions Limited, a Nigerian technology company.
 Write the Purpose section for a {doc_type} titled "{title}".
 Department: {department}
-Standards this document addresses: {standards_mapping or 'Not specified'}
+Standards this document addresses: {effective_standards}
 Brief from requestor: {notes or 'No additional brief provided'}
 
-The Purpose section must:
-- State in ONE paragraph why this document exists
-- Use directive language: "This {doc_type} establishes..." or "The purpose of this {doc_type} is to..."
-- Reference the standards it addresses
-- Be 3-5 sentences maximum
-- Never use "should" or "may" — use "shall" or "must" only
+Rules:
+- ONE paragraph, 3-5 sentences maximum
+- Opening must be: "This {doc_type} establishes..." or "The purpose of this {doc_type} is to..."
+- You MUST name the standards explicitly: write "{effective_standards}" somewhere in the text
+- Use only "shall" or "must" — NEVER "should" or "may"
 
 Write only the Purpose section text, no heading, no preamble."""
     return await _ollama(prompt, max_tokens=300)
 
 
 async def _generate_scope(
-    title: str, doc_type: str, department: str,
+    title: str, doc_type: str, department: str, role_titles: list[str],
 ) -> str:
+    roles_sample = ", ".join(role_titles[:4]) if role_titles else "ISMS Lead, Department Head"
     prompt = f"""Write the Scope section for a {doc_type} titled "{title}" for Dragnet Solutions Limited.
 Department: {department}
+Role titles available: {roles_sample}
 
-The Scope section must:
-- Be specific about who this applies to (all staff, specific department, contractors, third parties)
-- Be specific about what systems, processes, or activities it covers
-- Be 2-4 sentences
-- Use "This {doc_type} applies to..." as the opening
+Rules:
+- Open with: "This {doc_type} applies to..."
+- Name specific roles where possible, e.g. "the {roles_sample.split(',')[0].strip()} and all direct reports"
+- You may also reference "all Dragnet team members" or "all contractors with access to Dragnet systems"
+- BANNED WORDS — do NOT write any of these: employees, personnel, staff, management, administration, the team, leadership, stakeholders
+- 2-4 sentences, specific about systems and activities covered
 
 Write only the Scope section text, no heading, no preamble."""
     return await _ollama(prompt, max_tokens=200)
@@ -460,45 +463,51 @@ async def _generate_policy_statement(
     title: str, doc_type: str, notes: str, standards_mapping: str,
     role_titles: list[str],
 ) -> str:
-    roles_sample = ", ".join(role_titles[:8]) if role_titles else "ISMS Lead, Department Head, All Staff"
-    prompt = f"""You are a compliance document writer for Dragnet Solutions Limited.
-Write the Policy Statement section for a {doc_type} titled "{title}".
-Standards: {standards_mapping or 'ISO 27001, ISO 9001'}
-Brief: {notes or 'Standard policy statement'}
-Available role titles from Role Register: {roles_sample}
+    effective_standards = standards_mapping or "ISO 27001, ISO 9001, NDPA"
+    roles_list = role_titles[:10] if role_titles else ["ISMS Lead", "Department Head", "Compliance Officer"]
+    roles_formatted = "\n".join(f"  - {r}" for r in roles_list)
+    prompt = f"""You are writing the Policy Statement section for a {doc_type} titled "{title}" for Dragnet Solutions Limited.
+Brief: {notes or 'Standard policy controls'}
 
-The Policy Statement must:
-- Contain 4-8 specific, actionable control statements
-- Each statement must use "shall" or "must" (never "should" or "may")
-- Each statement must assign responsibility to a NAMED ROLE from the Role Register above
-- Each statement must be measurable and auditable
-- Format each statement as a numbered list
+PERMITTED ROLE TITLES (use these EXACT strings — no others):
+{roles_formatted}
 
-Example format:
-1. The ISMS Lead shall review all user access rights quarterly and produce a signed access review report per department.
-2. Department Heads must ensure all new starters complete information security awareness training within their first week.
+REQUIRED STANDARDS: {effective_standards}
 
-Write only the numbered control statements, no other text."""
-    return await _ollama(prompt, max_tokens=600)
+MANDATORY RULES — violating any of these causes the document to FAIL quality review:
+1. BANNED WORDS: Never write "employees", "personnel", "staff", "management", "administration", "the team", "leadership", "stakeholders", "responsible parties", "appropriate personnel". Use ONLY the exact role titles listed above.
+2. Every statement MUST end with a standards clause in parentheses, e.g. (ISO 27001 A.5.18) or (ISO 9001 8.1) or (NDPA S.39).
+3. Every statement MUST use "shall" or "must" — never "should", "may", "where possible", "as appropriate".
+4. Every statement MUST assign responsibility to one of the EXACT role titles above.
+5. Write 5-8 numbered statements. Each must be specific and auditable.
+
+CORRECT example:
+1. The {roles_list[0]} shall review all user access rights quarterly and produce a signed access review report. (ISO 27001 A.5.18)
+2. The {roles_list[min(1, len(roles_list)-1)]} must ensure all new joiners complete mandatory onboarding training within five working days of their start date. (ISO 9001 7.2)
+
+Write ONLY the numbered control statements. No headings, no preamble, no other text."""
+    return await _ollama(prompt, max_tokens=700)
 
 
 async def _generate_responsibilities(
     title: str, role_titles: list[str], policy_statement: str,
 ) -> str:
-    roles_sample = ", ".join(role_titles[:6]) if role_titles else "ISMS Lead, Department Head, All Staff"
-    prompt = f"""Based on these control statements from the policy "{title}":
+    roles_list = role_titles[:8] if role_titles else ["ISMS Lead", "Department Head", "Compliance Officer"]
+    roles_formatted = "\n".join(f"  - {r}" for r in roles_list)
+    prompt = f"""Write the Responsibilities section for the policy "{title}" based on these control statements:
 
 {policy_statement}
 
-Write the Responsibilities section assigning each control to a named role.
-Available roles: {roles_sample}
+PERMITTED ROLE TITLES (use these EXACT strings — no others):
+{roles_formatted}
 
-Format as:
-[Role Title]
-- Responsibility 1
-- Responsibility 2
+MANDATORY RULES:
+- Use ONLY the exact role titles above. BANNED: "employees", "personnel", "staff", "management", "administration", "the team", "leadership", "stakeholders". Using any banned word FAILS the quality check.
+- Format:
+[Exact Role Title]
+- Specific responsibility derived from the control statements above
+- Another responsibility if applicable
 
-Only use roles from the available roles list above.
 Write only the responsibilities content, no heading, no preamble."""
     return await _ollama(prompt, max_tokens=500)
 
@@ -542,19 +551,35 @@ Write only the records list, no heading, no preamble."""
 
 
 # =============================================================================
-#  Document code generator
+#  Document code helpers
 # =============================================================================
+
+def _doc_code_parts(department: str, doc_type: str, title: str) -> tuple[str, str, str]:
+    """Return (dept_code, type_code, short_ref) — the variable parts of the doc code."""
+    dept      = DEPT_CODES.get(department, department[:4].upper())
+    type_code = TYPE_CODES.get(doc_type, "DOC")
+    words     = [
+        w for w in title.upper().split()
+        if len(w) > 3 and w not in (
+            "WITH", "FROM", "THAT", "THIS", "THEIR", "HAVE", "BEEN", "WILL",
+            "SHALL", "MUST", "POLICY", "PROCEDURE", "GUIDELINES", "STANDARD",
+        )
+    ]
+    short = "".join(w[:3] for w in words[:2]) if words else "GEN"
+    return dept, type_code, short
+
+
+def generate_doc_code_base(department: str, doc_type: str, title: str) -> str:
+    """Return the base prefix WITHOUT serial and year — used for collision detection."""
+    dept, type_code, short = _doc_code_parts(department, doc_type, title)
+    return f"DRG-{dept}-{type_code}-{short}"
+
 
 def _generate_doc_code(
     department: str, doc_type: str, title: str, serial: str = "01",
 ) -> str:
-    dept = DEPT_CODES.get(department, department[:4].upper())
-    type_code = TYPE_CODES.get(doc_type, "DOC")
-    words = [w for w in title.upper().split() if len(w) > 3 and w not in
-             ("WITH", "FROM", "THAT", "THIS", "THEIR", "HAVE", "BEEN", "WILL",
-              "SHALL", "MUST", "POLICY", "PROCEDURE", "GUIDELINES")]
-    short = "".join(w[:3] for w in words[:2]) if words else "GEN"
-    year  = "26"
+    dept, type_code, short = _doc_code_parts(department, doc_type, title)
+    year = "26"
     return f"DRG-{dept}-{type_code}-{short}-{serial}-{year}"
 
 
@@ -580,20 +605,23 @@ async def draft_document(
       full_text (plain text), docx_buffer (BytesIO — ready to serve / upload)
     """
     role_titles = role_titles or []
-    logger.info(f"Policy Drafter starting: '{title}' ({doc_type}, {department})")
+    logger.info(f"Document Drafter starting: '{title}' ({doc_type}, {department})")
 
     doc_code = _generate_doc_code(department, doc_type, title, serial)
 
+    # Default standards if not provided — ensures CDI-09 passes
+    effective_standards = standards_mapping or "ISO 27001, ISO 9001, NDPA"
+
     # ── Generate all sections via Ollama ─────────────────────────────────────
     logger.info("Generating Purpose...")
-    purpose = await _generate_purpose(title, doc_type, department, notes, standards_mapping)
+    purpose = await _generate_purpose(title, doc_type, department, notes, effective_standards)
 
     logger.info("Generating Scope...")
-    scope = await _generate_scope(title, doc_type, department)
+    scope = await _generate_scope(title, doc_type, department, role_titles)
 
     logger.info("Generating Policy Statement...")
     policy_statement = await _generate_policy_statement(
-        title, doc_type, notes, standards_mapping, role_titles
+        title, doc_type, notes, effective_standards, role_titles
     )
 
     logger.info("Generating Responsibilities...")
@@ -660,16 +688,16 @@ END OF DOCUMENT — {doc_code} v1.0 DRAFT"""
 
     # ── Build the formatted .docx ─────────────────────────────────────────────
     draft_meta = {
-        "doc_code":         doc_code,
-        "title":            title,
-        "doc_type":         doc_type,
-        "department":       department,
-        "standards_mapping":standards_mapping,
-        "sections":         sections,
+        "doc_code":          doc_code,
+        "title":             title,
+        "doc_type":          doc_type,
+        "department":        department,
+        "standards_mapping": effective_standards,   # always non-empty — CDI-09 cover page
+        "sections":          sections,
     }
     logger.info("Building .docx...")
     docx_buffer = build_docx(draft_meta)
-    logger.info(f"Policy Drafter complete: {doc_code}")
+    logger.info(f"Document Drafter complete: {doc_code}")
 
     return {
         **draft_meta,

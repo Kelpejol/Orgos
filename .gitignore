@@ -47,3 +47,6 @@ logs/
 
 # OS
 Thumbs.db
+
+# Kortex — auto-generated context file
+.kortex/

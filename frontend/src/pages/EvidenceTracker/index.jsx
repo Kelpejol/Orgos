@@ -22,11 +22,35 @@ const evidenceApi = {
   list: (params) =>
     apiClient.get("/api/v1/evidence", { params }).then(r => r.data),
 
-  submit: (id, evidenceLink, notes) =>
-    apiClient.patch(`/api/v1/evidence/${id}/submit`, {
-      evidence_link: evidenceLink,
-      submission_notes: notes || undefined,
-    }).then(r => r.data),
+  submit: async (id, file, notes) => {
+    const { msalInstance } = await import("../../main.jsx");
+    const { apiTokenRequest } = await import("../../authConfig.js");
+    const accounts = msalInstance.getAllAccounts();
+    if (!accounts.length) throw new Error("Not authenticated");
+
+    let tokenResp;
+    try {
+      tokenResp = await msalInstance.acquireTokenSilent({ ...apiTokenRequest, account: accounts[0] });
+    } catch {
+      tokenResp = await msalInstance.acquireTokenPopup(apiTokenRequest);
+    }
+
+    const form = new FormData();
+    form.append("file", file);
+    if (notes) form.append("submission_notes", notes);
+
+    const BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+    const resp = await fetch(`${BASE}/api/v1/evidence/${id}/upload`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${tokenResp.accessToken}` },
+      body: form,
+    });
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({}));
+      throw new Error(err.detail || `Upload failed: ${resp.status}`);
+    }
+    return resp.json();
+  },
 
   verify: (id, accepted, rejectionNote) =>
     apiClient.patch(`/api/v1/evidence/${id}/verify`, {
@@ -90,19 +114,31 @@ const EVID_TYPE_LABELS = {
   RPT: "Report/assessment",
 };
 
+const formatDateOnly = (value) => {
+  if (!value) return "";
+  const [datePart] = String(value).split("T");
+  const [year, month, day] = datePart.split("-").map(Number);
+  if (!year || !month || !day) return value;
+  return new Intl.DateTimeFormat(undefined, {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  }).format(new Date(year, month - 1, day));
+};
+
 // =============================================================================
 //  Submit panel
 // =============================================================================
 
 const SubmitPanel = ({ item, onSubmit, onClose, isPending }) => {
-  const [link,  setLink]  = useState("");
+  const [file,  setFile]  = useState(null);
   const [notes, setNotes] = useState("");
   const [error, setError] = useState("");
 
   const handleSubmit = async () => {
-    if (!link.trim()) { setError("Evidence link is required."); return; }
+    if (!file) { setError("Evidence file is required."); return; }
     setError("");
-    await onSubmit(item.id, link.trim(), notes.trim());
+    await onSubmit(item.id, file, notes.trim());
   };
 
   return (
@@ -124,18 +160,23 @@ const SubmitPanel = ({ item, onSubmit, onClose, isPending }) => {
         <label style={{ display: "block", fontSize: 10, fontWeight: 500,
                         color: "var(--color-text-secondary)", marginBottom: 3,
                         textTransform: "uppercase", letterSpacing: "0.4px" }}>
-          Evidence link <span style={{ color: "#A32D2D" }}>*</span>
+          Evidence file <span style={{ color: "#A32D2D" }}>*</span>
         </label>
         <input
-          type="url" value={link} onChange={e => setLink(e.target.value)}
-          placeholder="Paste URL to artefact in SharePoint, Intune, GitHub, etc."
+          type="file"
+          onChange={e => setFile(e.target.files?.[0] || null)}
           style={{ width: "100%", fontSize: 12, padding: "8px 10px", borderRadius: 8,
-                   border: `1.5px solid ${link.trim() ? "#5DCAA5" : "#C0C0C0"}`,
+                   border: `1.5px solid ${file ? "#5DCAA5" : "#C0C0C0"}`,
                    background: "var(--color-background-primary)",
                    color: "var(--color-text-primary)", outline: "none", boxSizing: "border-box" }}
           onFocus={e => (e.target.style.borderColor = "#378ADD")}
-          onBlur={e => (e.target.style.borderColor = link.trim() ? "#5DCAA5" : "#C0C0C0")}
+          onBlur={e => (e.target.style.borderColor = file ? "#5DCAA5" : "#C0C0C0")}
         />
+        {file && (
+          <div style={{ fontSize: 10, color: "#0C447C", marginTop: 4 }}>
+            {file.name} · {Math.ceil(file.size / 1024)} KB
+          </div>
+        )}
       </div>
       <div style={{ marginBottom: 10 }}>
         <label style={{ display: "block", fontSize: 10, fontWeight: 500,
@@ -152,13 +193,13 @@ const SubmitPanel = ({ item, onSubmit, onClose, isPending }) => {
                    fontFamily: "var(--font-sans)", outline: "none", boxSizing: "border-box" }} />
       </div>
       <div style={{ display: "flex", gap: 8 }}>
-        <button onClick={handleSubmit} disabled={isPending || !link.trim()}
+        <button onClick={handleSubmit} disabled={isPending || !file}
           style={{ padding: "8px 16px", fontSize: 12, borderRadius: 8, border: "none",
                    fontWeight: 500,
-                   background: isPending || !link.trim() ? "#E8E8E8" : "#1D9E75",
-                   color: isPending || !link.trim() ? "#999" : "#fff",
-                   cursor: isPending || !link.trim() ? "not-allowed" : "pointer" }}>
-          {isPending ? "Submitting..." : "Submit for review"}
+                   background: isPending || !file ? "#E8E8E8" : "#1D9E75",
+                   color: isPending || !file ? "#999" : "#fff",
+                   cursor: isPending || !file ? "not-allowed" : "pointer" }}>
+          {isPending ? "Uploading..." : "Upload for review"}
         </button>
         <button onClick={onClose}
           style={{ padding: "8px 12px", fontSize: 12, borderRadius: 8,
@@ -197,9 +238,9 @@ const VerifyPanel = ({ item, onVerify, onClose, isPending }) => {
           Check: {item.ValidationCriteria}
         </div>
       )}
-      {item.EvidenceLink && (
+      {(item.EvidenceUrl || item.EvidenceLink) && (
         <div style={{ marginBottom: 10 }}>
-          <a href={item.EvidenceLink} target="_blank" rel="noreferrer"
+          <a href={item.EvidenceUrl || item.EvidenceLink} target="_blank" rel="noreferrer"
             style={{ fontSize: 12, color: "#3C3489", textDecoration: "underline" }}>
             Open submitted evidence ↗
           </a>
@@ -346,16 +387,15 @@ const EvidenceCard = ({ item, currentOid, isCompliance, onSubmit, onVerify, acti
           <Field l="Source system"  v={item.SourceSystem} />
           <Field l="Format"         v={item.EvidenceFormat} />
           <Field l="Frequency"      v={item.Frequency} />
-          <Field l="Collection"     v={item.CollectionMethod} />
           {item.ValidationCriteria && <Field l="Acceptance criteria" v={item.ValidationCriteria} />}
-          {item.NextDue && <Field l="Next due"       v={item.NextDue} />}
-          {item.LastCollected && <Field l="Last collected" v={item.LastCollected} />}
+          {item.NextDue && <Field l="Next due"       v={formatDateOnly(item.NextDue)} />}
+          {item.LastCollected && <Field l="Last collected" v={formatDateOnly(item.LastCollected)} />}
           {item.VerifiedBy && <Field l="Verified by"   v={item.VerifiedBy} />}
 
-          {/* Evidence link */}
-          {item.EvidenceLink && (
+          {/* Evidence source URL */}
+          {(item.EvidenceUrl || item.EvidenceLink) && (
             <div style={{ marginTop: 8 }}>
-              <a href={item.EvidenceLink} target="_blank" rel="noreferrer"
+              <a href={item.EvidenceUrl || item.EvidenceLink} target="_blank" rel="noreferrer"
                 style={{ fontSize: 12, color: "var(--color-text-info)", textDecoration: "underline" }}>
                 View submitted evidence ↗
               </a>
@@ -374,8 +414,8 @@ const EvidenceCard = ({ item, currentOid, isCompliance, onSubmit, onVerify, acti
           {showSubmit && (
             <SubmitPanel
               item={item}
-              onSubmit={async (id, link, notes) => {
-                await onSubmit(id, link, notes);
+              onSubmit={async (id, selectedFile, notes) => {
+                await onSubmit(id, selectedFile, notes);
                 setShowSubmit(false);
               }}
               onClose={() => setShowSubmit(false)}
@@ -447,10 +487,10 @@ export default function EvidenceTracker() {
     return list;
   }, [view, views, all, search]);
 
-  const handleSubmit = async (id, link, notes) => {
+  const handleSubmit = async (id, file, notes) => {
     setActionItemId(id);
     try {
-      await evidenceApi.submit(id, link, notes);
+      await evidenceApi.submit(id, file, notes);
       qc.invalidateQueries({ queryKey: ["evidence"] });
     } catch (err) {
       alert(err.response?.data?.detail || err.message || "Submit failed.");
