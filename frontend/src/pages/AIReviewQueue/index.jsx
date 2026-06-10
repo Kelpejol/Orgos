@@ -8,7 +8,6 @@
 // =============================================================================
 
 import { useState, useMemo } from "react";
-import { useMsal } from "@azure/msal-react";
 import StatusBadge from "../../components/shared/StatusBadge.jsx";
 import { Field } from "../../components/shared/Forms.jsx";
 import {
@@ -16,6 +15,7 @@ import {
   ErrorState,
   EmptyState,
 } from "../../components/shared/LoadingState.jsx";
+import { useCurrentUserRole } from "../../hooks/useCurrentUserRole.js";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import apiClient from "../../api/grcApi.js";
 
@@ -58,17 +58,6 @@ function useDecide() {
       queryClient.invalidateQueries({ queryKey: ["queue"] });
     },
   });
-}
-
-function useUserRoles() {
-  const { accounts } = useMsal();
-  const claims = accounts[0]?.idTokenClaims || {};
-  const roles = claims.roles || [];
-  return {
-    isAdmin: roles.includes("OrgOS.Admin"),
-    isCompliance:
-      roles.includes("Compliance.Lead") || roles.includes("OrgOS.Admin"),
-  };
 }
 
 // =============================================================================
@@ -474,20 +463,20 @@ const QueueCard = ({ item, isCompliance, onDecide, isPending }) => {
               isPending={isPending}
             />
           ) : (
-            // <div style={{
-            //   padding: "10px 14px", background: "var(--color-background-secondary)",
-            //   borderRadius: 8, marginBottom: 14,
-            //   fontSize: 12, color: "var(--color-text-tertiary)",
-            //   border: "1px dashed var(--color-border-tertiary)",
-            // }}>
-            //   Compliance Lead role required to make decisions on queue items.
-            // </div>
-
-            <DecisionPanel
-              item={item}
-              onDecide={onDecide}
-              isPending={isPending}
-            />
+            <div
+              style={{
+                padding: "10px 14px",
+                background: "var(--color-background-secondary)",
+                borderRadius: 8,
+                marginBottom: 14,
+                fontSize: 12,
+                color: "var(--color-text-tertiary)",
+                border: "1px dashed var(--color-border-tertiary)",
+              }}
+            >
+              Compliance Lead role required to make decisions on queue items.
+              Contact the Compliance team to have this item reviewed.
+            </div>
           )}
 
           {/* ── DIVIDER ── */}
@@ -746,7 +735,7 @@ const TabContent = ({ itemType, isCompliance }) => {
 
 export default function AIReviewQueue() {
   const [activeTab, setActiveTab] = useState("Extraction");
-  const { isCompliance } = useUserRoles();
+  const { isCompliance } = useCurrentUserRole();
 
   const tabs = [
     {

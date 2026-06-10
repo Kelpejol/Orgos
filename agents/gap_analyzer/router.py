@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from auth.validator import CurrentUser, get_current_user
+from auth.validator import CurrentUser, require_compliance_lead
 from agents.gap_analyzer.service import run_gap_analysis
 
 logger = logging.getLogger(__name__)
@@ -21,7 +21,7 @@ _last_run: dict = {}
 
 @router.post("/gap-analysis/run")
 async def trigger_gap_analysis(
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(require_compliance_lead),
 ) -> dict:
     """
     Trigger the Gap Analyzer agent.
@@ -54,7 +54,7 @@ async def trigger_gap_analysis(
 
 @router.get("/gap-analysis/status")
 async def gap_analysis_status(
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(require_compliance_lead),
 ) -> dict:
     if not _last_run:
         return {"status": "never_run", "message": "Gap Analyzer has not been run yet."}

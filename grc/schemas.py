@@ -188,23 +188,23 @@ class RoleRead(RoleBase):
 # =============================================================================
 
 class ObligationType(str, Enum):
-    STATUTORY = "Statutory"
-    LICENSING = "Licensing"
+    STATUTORY     = "Statutory"
+    LICENSING     = "Licensing"
     CERTIFICATION = "Certification"
-    REGULATORY = "Regulatory"
+    REGULATORY    = "Regulatory"
 
 
 class ObligationRecurrence(str, Enum):
-    MONTHLY = "Monthly"
+    MONTHLY   = "Monthly"
     QUARTERLY = "Quarterly"
-    ANNUAL = "Annual"
-    ONCE = "Once"
+    ANNUAL    = "Annual"
+    ONCE      = "Once"
 
 
 class ObligationStatus(str, Enum):
-    OVERDUE = "Overdue"
-    DUE_SOON = "Due Soon"
-    UPCOMING = "Upcoming"
+    OVERDUE   = "Overdue"
+    DUE_SOON  = "Due Soon"
+    UPCOMING  = "Upcoming"
     COMPLETED = "Completed"
 
 
@@ -218,29 +218,65 @@ class ObligationBase(BaseModel):
     )
     due_date: date
     recurrence: ObligationRecurrence
+    source_document_code: Optional[str] = Field(
+        default=None,
+        description="Document Register code or external reference that created this obligation",
+    )
+    notes: Optional[str] = Field(
+        default=None,
+        description="Freeform notes, context, or penalty information",
+    )
 
 
 class ObligationCreate(ObligationBase):
     owner_id: str = Field(description="Entra ID object ID of responsible person")
+    linked_contract_id: Optional[str] = Field(
+        default=None,
+        description="SharePoint item ID of the contract that created this obligation",
+    )
 
 
 class ObligationUpdate(BaseModel):
-    obligation_name: Optional[str] = None
-    type: Optional[ObligationType] = None
-    authority: Optional[str] = None
-    due_date: Optional[date] = None
-    recurrence: Optional[ObligationRecurrence] = None
-    owner_id: Optional[str] = None
+    """PATCH — all fields optional."""
+    obligation_name:      Optional[str]                  = None
+    type:                 Optional[ObligationType]        = None
+    authority:            Optional[str]                  = None
+    due_date:             Optional[date]                 = None
+    recurrence:           Optional[ObligationRecurrence] = None
+    owner_id:             Optional[str]                  = None
+    source_document_code: Optional[str]                  = None
+    notes:                Optional[str]                  = None
+
+
+class CompleteObligation(BaseModel):
+    """Body for PATCH /compliance/{id}/complete."""
+    completion_notes: Optional[str] = Field(
+        default=None,
+        description="Evidence, reference, or confirmation note for this completion",
+    )
+
+
+class EscalateObligation(BaseModel):
+    """Body for POST /compliance/{id}/escalate — creates a Gap Analysis item."""
+    escalation_notes: Optional[str] = Field(
+        default=None,
+        description="Reason for escalation / expected impact",
+    )
 
 
 class ObligationRead(ObligationBase):
     model_config = ConfigDict(from_attributes=True)
 
-    id: str
-    owner: Optional[PersonRef] = None
-    status: ObligationStatus  # Calculated — never manually set
-    created: Optional[datetime] = None
-    modified: Optional[datetime] = None
+    id:                  str
+    owner:               Optional[PersonRef]   = None
+    status:              ObligationStatus       # Calculated — never manually set
+    completed_date:      Optional[date]        = None
+    completed_by_name:   Optional[str]         = None
+    completion_notes:    Optional[str]         = None
+    linked_contract_id:  Optional[str]        = None
+    escalated_gap_id:    Optional[str]        = None
+    created:             Optional[datetime]    = None
+    modified:            Optional[datetime]    = None
 
 
 # =============================================================================
@@ -248,31 +284,65 @@ class ObligationRead(ObligationBase):
 # =============================================================================
 
 class ContractType(str, Enum):
-    CLIENT = "Client"
-    VENDOR = "Vendor"
-    PARTNER = "Partner"
+    CLIENT     = "Client"
+    VENDOR     = "Vendor"
+    PARTNER    = "Partner"
     EMPLOYMENT = "Employment"
-    NDA = "NDA"
-    OTHER = "Other"
+    NDA        = "NDA"
+    OTHER      = "Other"
 
 
 class ContractStatus(str, Enum):
-    ACTIVE = "Active"
-    EXPIRED = "Expired"
-    UNDER_REVIEW = "Under Review"
-    TERMINATED = "Terminated"
+    ACTIVE        = "Active"
+    EXPIRED       = "Expired"
+    UNDER_REVIEW  = "Under Review"
+    TERMINATED    = "Terminated"
     EXPIRING_SOON = "Expiring Soon"
+    SUPERSEDED    = "Superseded"
+
+
+class ContractLifecycleStatus(str, Enum):
+    """Manual lifecycle state that overrides date-based expiry calculation."""
+    ACTIVE       = "Active"
+    UNDER_REVIEW = "Under Review"
+    TERMINATED   = "Terminated"
+    SUPERSEDED   = "Superseded"
 
 
 class ContractBase(BaseModel):
-    contract_reference: str = Field(description="Internal reference code")
-    title: str = Field(description="Contract title / description")
-    counterparty: str = Field(description="Other party name")
-    contract_type: ContractType
-    start_date: Optional[date] = None
-    end_date: Optional[date] = Field(description="Contract expiry date")
-    review_date: Optional[date] = None
-    applicable_standards: list[str] = Field(default_factory=list)
+    contract_reference:   str                           = Field(description="Internal reference code")
+    title:                str                           = Field(description="Contract title / description")
+    counterparty:         str                           = Field(description="Other party name")
+    contract_type:        ContractType
+    start_date:           Optional[date]               = None
+    end_date:             Optional[date]               = Field(default=None, description="Contract expiry date")
+    renewal_notice_date:  Optional[date]               = Field(
+        default=None,
+        description="Last date by which renewal notice must be sent",
+    )
+    review_date:          Optional[date]               = None
+    auto_renewal:         bool                         = Field(
+        default=False,
+        description="True if contract auto-renews unless cancelled",
+    )
+    notice_period_days:   Optional[int]                = Field(
+        default=None,
+        description="Days of notice required before expiry to prevent auto-renewal or to terminate",
+    )
+    lifecycle_status:     ContractLifecycleStatus      = Field(
+        default=ContractLifecycleStatus.ACTIVE,
+        description="Manual lifecycle status — overrides date-based expiry calculation",
+    )
+    applicable_standards: list[str]                   = Field(default_factory=list)
+    sharepoint_url:       Optional[str]               = Field(
+        default=None,
+        description="URL to signed contract file in SharePoint",
+    )
+    source_document_code: Optional[str]               = Field(
+        default=None,
+        description="Document Register code if this contract is linked to a registered document",
+    )
+    notes:                Optional[str]               = None
 
 
 class ContractCreate(ContractBase):
@@ -280,25 +350,48 @@ class ContractCreate(ContractBase):
 
 
 class ContractUpdate(BaseModel):
-    title: Optional[str] = None
-    counterparty: Optional[str] = None
-    contract_type: Optional[ContractType] = None
-    owner_id: Optional[str] = None
-    start_date: Optional[date] = None
-    end_date: Optional[date] = None
-    review_date: Optional[date] = None
-    applicable_standards: Optional[list[str]] = None
+    """PATCH — all fields optional."""
+    title:                Optional[str]                      = None
+    counterparty:         Optional[str]                      = None
+    contract_type:        Optional[ContractType]             = None
+    owner_id:             Optional[str]                      = None
+    start_date:           Optional[date]                     = None
+    end_date:             Optional[date]                     = None
+    renewal_notice_date:  Optional[date]                     = None
+    review_date:          Optional[date]                     = None
+    auto_renewal:         Optional[bool]                     = None
+    notice_period_days:   Optional[int]                      = None
+    lifecycle_status:     Optional[ContractLifecycleStatus]  = None
+    applicable_standards: Optional[list[str]]                = None
+    sharepoint_url:       Optional[str]                      = None
+    source_document_code: Optional[str]                      = None
+    notes:                Optional[str]                      = None
+
+
+class ContractAddObligation(BaseModel):
+    """Body for POST /contracts/{id}/add-obligation — creates a Calendar item from a contract."""
+    obligation_name: str
+    type:            ObligationType
+    authority:       str
+    due_date:        date
+    recurrence:      ObligationRecurrence
+    owner_id:        str = Field(description="Entra ID OID of the obligation owner")
+    notes:           Optional[str] = None
 
 
 class ContractRead(ContractBase):
     model_config = ConfigDict(from_attributes=True)
 
-    id: str
-    owner: Optional[PersonRef] = None
-    status: ContractStatus  # Calculated
-    linked_controls_count: int = Field(default=0)
-    created: Optional[datetime] = None
-    modified: Optional[datetime] = None
+    id:                   str
+    owner:                Optional[PersonRef] = None
+    status:               ContractStatus       # Effective combined status (lifecycle + expiry)
+    linked_controls_count: int                 = Field(default=0)
+    renewal_notice_overdue: bool               = Field(
+        default=False,
+        description="True if renewal_notice_date has passed and contract is still active",
+    )
+    created:              Optional[datetime]   = None
+    modified:             Optional[datetime]   = None
 
 
 # =============================================================================

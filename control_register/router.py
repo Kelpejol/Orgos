@@ -33,12 +33,14 @@ _CR_LIST_NAME  = "Control Register"
 _EVD_LIST_NAME = "Evidence Tracker"
 _LOG_LIST_NAME = "Audit Log"
 _Q_LIST_NAME   = "AI Review Queue"
+_RR_LIST_NAME  = "Role Register"
 
 
 def _cr_list_id()  -> str: return settings.control_register_list_id
 def _evd_list_id() -> str: return settings.evidence_tracker_list_id
 def _log_list_id() -> str: return settings.audit_log_list_id
 def _q_list_id()   -> str: return settings.ai_review_queue_list_id
+def _rr_list_id()  -> str: return settings.role_register_list_id
 
 
 def _handle(exc: Exception, ctx: str):
@@ -76,12 +78,67 @@ def _sp_to_control(item: dict) -> dict:
 #  Control Register endpoints
 # =============================================================================
 
+async def _role_holder_map() -> dict[str, str]:
+    """Return normalised role title -> current holder Entra ID."""
+    try:
+        roles = await get_list_items(_rr_list_id(), _RR_LIST_NAME)
+    except Exception as exc:
+        logger.warning(f"Could not fetch Role Register for control owner sync: {exc}")
+        return {}
+
+    holders: dict[str, str] = {}
+    for role in roles:
+        fields = role.get("fields", {})
+        title = fields.get("Title", "")
+        if not title:
+            continue
+        holders[title.strip().lower()] = fields.get("CurrentHolderEntraId", "") or ""
+    return holders
+
+
+async def _sync_control_owner_statuses(items: list[dict]) -> list[dict]:
+    """
+    Repair stale Control Register ownership status after role harmonisation.
+    If OwnerRole points to an assigned Role Register entry, the control must be Active.
+    """
+    holders = await _role_holder_map()
+    if not holders:
+        return items
+
+    synced: list[dict] = []
+    for item in items:
+        fields = dict(item.get("fields", {}))
+        owner_role = fields.get("OwnerRole", "")
+        if not owner_role:
+            synced.append(item)
+            continue
+
+        holder_oid = holders.get(owner_role.strip().lower(), "")
+        expected_status = "Active" if holder_oid else "Blocked"
+        updates = {}
+        if fields.get("OwnerEntraId", "") != holder_oid:
+            updates["OwnerEntraId"] = holder_oid
+        if fields.get("Status", "") != expected_status:
+            updates["Status"] = expected_status
+
+        if updates:
+            try:
+                await update_list_item(_cr_list_id(), _CR_LIST_NAME, str(item["id"]), updates)
+                fields.update(updates)
+                item = {**item, "fields": fields}
+            except Exception as exc:
+                logger.warning(f"Could not sync owner status for control {item.get('id')}: {exc}")
+
+        synced.append(item)
+    return synced
+
 @router.get("/api/v1/controls")
 async def list_controls(
     user: CurrentUser = Depends(get_current_user),
 ) -> list[dict]:
     try:
         items = await get_list_items(_cr_list_id(), _CR_LIST_NAME)
+        items = await _sync_control_owner_statuses(items)
         controls = [_sp_to_control(i) for i in items]
         controls.sort(key=lambda c: c["created"], reverse=True)
         return controls
@@ -96,6 +153,7 @@ async def get_control(
 ) -> dict:
     try:
         item = await get_list_item(_cr_list_id(), _CR_LIST_NAME, item_id)
+        item = (await _sync_control_owner_statuses([item]))[0]
         return _sp_to_control(item)
     except Exception as exc:
         _handle(exc, f"get control {item_id}")

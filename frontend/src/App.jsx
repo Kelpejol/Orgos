@@ -5,11 +5,13 @@
 // Tier 2–4 screens: prototype components kept intact (will be wired in later tiers).
 // =============================================================================
 
-import { useState, useMemo } from "react";
+import { useState } from "react";
 import { useIsAuthenticated, useMsal } from "@azure/msal-react";
 import { loginRequest } from "./authConfig.js";
 import Sidebar from "./components/layout/Sidebar.jsx";
 import TopBar from "./components/layout/TopBar.jsx";
+import { useCurrentUserRole } from "./hooks/useCurrentUserRole.js";
+import AccessDenied from "./pages/shared/AccessDenied.jsx";
 
 // Tier 1 — wired pages
 import DocumentRegister from "./pages/DocumentRegister/index.jsx";
@@ -27,12 +29,6 @@ import Harmonisation from "./pages/Harmonisation/index.jsx";
 import StrategicRisks from "./pages/StrategicRisks/index.jsx";
 import StandardsMap from "./pages/StandardsMap/index.jsx";
 import GapAnalysis from "./pages/GapAnalysis/index.jsx";
-// ── Prototype components kept intact for Tier 2–4 screens ────────────────
-// These will be replaced with wired page components in later build phases.
-// They use the same data arrays from the approved prototype for demo purposes.
-
-const USER = "Bobby Ikazoboh";
-const IS_COMP = true;
 
 const SC = {
   Overdue: { bg: "#FCEBEB", tx: "#791F1F", bd: "#F09595" },
@@ -377,20 +373,49 @@ function LoginScreen() {
   );
 }
 
+// Routes that require at minimum the Compliance.Lead role
+const COMPLIANCE_ONLY_ROUTES = new Set([
+  "lifecycle",
+  "extraction",
+  "assignment",
+  "harmonisation",
+]);
+
+// Human-readable names for AccessDenied screen
+const ROUTE_NAMES = {
+  lifecycle:     "Document Lifecycle",
+  extraction:    "Extraction Review",
+  assignment:    "Assignment & Ownership",
+  harmonisation: "Harmonisation",
+};
+
 // ── Main app ─────────────────────────────────────────────────────────────────
 export default function OrgOS() {
   const isAuthenticated = useIsAuthenticated();
-  // Change initial state from "dash" to "workhub":
   const [nav, setNav] = useState("workhub");
   const [collapsed, setCollapsed] = useState(
     typeof window !== "undefined" && window.innerWidth < 768,
   );
+
+  // Must be called unconditionally — hook runs regardless of auth state
+  const { isCompliance } = useCurrentUserRole();
 
   if (!isAuthenticated) return <LoginScreen />;
 
   const go = (id) => setNav(id);
 
   const renderScreen = () => {
+    // Guard compliance-only routes — Standard Users see AccessDenied
+    if (COMPLIANCE_ONLY_ROUTES.has(nav) && !isCompliance) {
+      return (
+        <AccessDenied
+          pageName={ROUTE_NAMES[nav]}
+          requiredRole="Compliance"
+          onBack={() => go("workhub")}
+        />
+      );
+    }
+
     switch (nav) {
       case "workhub":
         return <WorkHub go={go} />;
@@ -405,7 +430,7 @@ export default function OrgOS() {
       case "lifecycle":
         return <DocumentLifecycle />;
       case "extraction":
-        return <ExtractionReview />;
+        return <AIReviewQueue />;
       case "assignment":
         return <AssignmentOwnership />;
       case "harmonisation":

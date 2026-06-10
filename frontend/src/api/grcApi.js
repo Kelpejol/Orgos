@@ -139,7 +139,7 @@ export const rolesApi = {
 // =============================================================================
 
 export const complianceApi = {
-  /** @param {{ type?: string }} params */
+  /** @param {{ type?: string, authority?: string }} params */
   list: (params = {}) =>
     apiClient.get("/api/v1/grc/compliance", { params }).then((r) => r.data),
 
@@ -167,6 +167,32 @@ export const complianceApi = {
     apiClient
       .patch(`/api/v1/grc/compliance/${id}`, updates)
       .then((r) => r.data),
+
+  /**
+   * Mark an obligation as completed.
+   * For recurring obligations, rolls the due date forward one period.
+   * @param {string} id
+   * @param {{ completion_notes?: string }} body
+   */
+  complete: (id, body = {}) =>
+    apiClient
+      .patch(`/api/v1/grc/compliance/${id}/complete`, body)
+      .then((r) => r.data),
+
+  /**
+   * Escalate an overdue obligation to Gap Analysis.
+   * Idempotent — repeated calls return the existing gap ID.
+   * @param {string} id
+   * @param {{ escalation_notes?: string }} body
+   */
+  escalate: (id, body = {}) =>
+    apiClient
+      .post(`/api/v1/grc/compliance/${id}/escalate`, body)
+      .then((r) => r.data),
+
+  /** @param {string} id */
+  softDelete: (id) =>
+    apiClient.delete(`/api/v1/grc/compliance/${id}`).then((r) => r.data),
 };
 
 // =============================================================================
@@ -174,7 +200,7 @@ export const complianceApi = {
 // =============================================================================
 
 export const contractsApi = {
-  /** @param {{ type?: string }} params */
+  /** @param {{ type?: string, lifecycle_status?: string }} params */
   list: (params = {}) =>
     apiClient.get("/api/v1/grc/contracts", { params }).then((r) => r.data),
 
@@ -195,6 +221,33 @@ export const contractsApi = {
    */
   update: (id, updates) =>
     apiClient.patch(`/api/v1/grc/contracts/${id}`, updates).then((r) => r.data),
+
+  /**
+   * Update contract lifecycle status (Terminate, Under Review, Supersede).
+   * Requires Compliance Lead role.
+   * @param {string} id
+   * @param {string} lifecycleStatus — "Active" | "Under Review" | "Terminated" | "Superseded"
+   */
+  updateLifecycle: (id, lifecycleStatus) =>
+    apiClient
+      .patch(`/api/v1/grc/contracts/${id}/lifecycle`, JSON.stringify(lifecycleStatus), {
+        headers: { "Content-Type": "application/json" },
+      })
+      .then((r) => r.data),
+
+  /**
+   * Create a Compliance Calendar obligation linked to this contract.
+   * @param {string} id — contract SharePoint item ID
+   * @param {Object} body — { obligation_name, type, authority, due_date, recurrence, owner_id, notes? }
+   */
+  addObligation: (id, body) =>
+    apiClient
+      .post(`/api/v1/grc/contracts/${id}/add-obligation`, body)
+      .then((r) => r.data),
+
+  /** @param {string} id */
+  softDelete: (id) =>
+    apiClient.delete(`/api/v1/grc/contracts/${id}`).then((r) => r.data),
 };
 
 // =============================================================================

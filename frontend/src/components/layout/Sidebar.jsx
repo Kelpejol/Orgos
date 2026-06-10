@@ -1,25 +1,29 @@
 // =============================================================================
 // components/layout/Sidebar.jsx
-// Navigation sidebar — matches prototype exactly.
-// Collapsible, grouped by tier, highlights active screen.
+// Navigation sidebar — collapsible, grouped by tier, highlights active screen.
+// Items marked complianceOnly are hidden from Standard Users.
+// Items marked adminOnly are hidden from Standard Users AND Compliance users.
 // =============================================================================
 
-const NAV = [
-  { id: "workhub", label: "Work hub", tier: 0 },
-  { id: "doc", label: "Document register", tier: 1 },
-  { id: "role", label: "Role register", tier: 1 },
-  { id: "cal", label: "Compliance calendar", tier: 1 },
-  { id: "contract", label: "Contract register", tier: 1 },
-  { id: "lifecycle", label: "Document lifecycle", tier: 2 },
-  { id: "extraction", label: "Extraction review", tier: 2 },
-  { id: "assignment", label: "Assignment & ownership", tier: 2 },
-  { id: "harmonisation", label: "Harmonisation", tier: 2 },
-  { id: "control", label: "Control register", tier: 3 },
-  { id: "evidence", label: "Evidence tracker", tier: 3 },
+import { useCurrentUserRole } from "../../hooks/useCurrentUserRole";
 
-  { id: "risk", label: "Strategic risks", tier: 3 },
-  { id: "standards", label: "Standards map", tier: 3 },
-  { id: "gap", label: "Gap analysis", tier: 4 },
+// complianceOnly: hidden from Standard Users
+// adminOnly: hidden from Standard Users AND Compliance
+const NAV = [
+  { id: "workhub",       label: "Work hub",                tier: 0 },
+  { id: "doc",           label: "Document register",        tier: 1 },
+  { id: "role",          label: "Role register",            tier: 1 },
+  { id: "cal",           label: "Compliance calendar",      tier: 1 },
+  { id: "contract",      label: "Contract register",        tier: 1 },
+  { id: "lifecycle",     label: "Document lifecycle",       tier: 2, complianceOnly: true },
+  { id: "extraction",    label: "Extraction review",        tier: 2, complianceOnly: true },
+  { id: "assignment",    label: "Assignment & ownership",   tier: 2, complianceOnly: true },
+  { id: "harmonisation", label: "Harmonisation",            tier: 2, complianceOnly: true },
+  { id: "control",       label: "Control register",         tier: 3 },
+  { id: "evidence",      label: "Evidence tracker",         tier: 3 },
+  { id: "risk",          label: "Strategic risks",          tier: 3 },
+  { id: "standards",     label: "Standards map",            tier: 3 },
+  { id: "gap",           label: "Gap analysis",             tier: 4 },
 ];
 
 const TIER_LABELS = {
@@ -42,8 +46,17 @@ const TIER_COLOURS = {
  * @param {{ nav: string, setNav: Function, collapsed: boolean, setCollapsed: Function }} props
  */
 export default function Sidebar({ nav, setNav, collapsed, setCollapsed }) {
+  const { isCompliance, isAdmin } = useCurrentUserRole();
+
+  // Filter nav items based on role
+  const visibleNav = NAV.filter((item) => {
+    if (item.adminOnly)      return isAdmin;
+    if (item.complianceOnly) return isCompliance; // isCompliance is true for admins too
+    return true;
+  });
+
   const grouped = {};
-  NAV.forEach((n) => {
+  visibleNav.forEach((n) => {
     if (!grouped[n.tier]) grouped[n.tier] = [];
     grouped[n.tier].push(n);
   });

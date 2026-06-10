@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from auth.validator import CurrentUser, get_current_user
+from auth.validator import CurrentUser, require_compliance_lead
 from agents.classifier.service import run_classifier
 
 logger = logging.getLogger(__name__)
@@ -22,7 +22,7 @@ _last_run: dict = {}
 
 @router.post("/classify")
 async def trigger_classifier(
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(require_compliance_lead),
 ) -> dict:
     """
     Trigger the Classifier agent manually.
@@ -54,7 +54,7 @@ async def trigger_classifier(
 
 @router.get("/classify/status")
 async def classifier_status(
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(require_compliance_lead),
 ) -> dict:
     """Returns the result of the last Classifier run."""
     if not _last_run:

@@ -164,7 +164,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from typing import Optional
 
-from auth.validator import CurrentUser, get_current_user
+from auth.validator import CurrentUser, get_current_user, require_compliance_lead
 from agents.policy_drafter.service import draft_document, generate_doc_code_base
 from agents.cdi_checker.service import run_cdi_check
 from config import settings
@@ -268,7 +268,7 @@ class DraftRequest(BaseModel):
 @router.post("/draft-document")
 async def draft_document_endpoint(
     body: DraftRequest,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(require_compliance_lead),
 ) -> dict:
     """
     1. Compute the next serial for this doc code base (auto-increment).

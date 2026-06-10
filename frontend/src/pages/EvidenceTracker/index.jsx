@@ -7,11 +7,11 @@
 // =============================================================================
 
 import { useState, useMemo } from "react";
-import { useMsal } from "@azure/msal-react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import StatusBadge from "../../components/shared/StatusBadge.jsx";
 import { Field } from "../../components/shared/Forms.jsx";
 import { LoadingState, ErrorState, EmptyState } from "../../components/shared/LoadingState.jsx";
+import { useCurrentUserRole } from "../../hooks/useCurrentUserRole.js";
 import apiClient from "../../api/grcApi.js";
 
 // =============================================================================
@@ -62,17 +62,6 @@ const evidenceApi = {
 // =============================================================================
 //  Hooks
 // =============================================================================
-
-function useCurrentUser() {
-  const { accounts } = useMsal();
-  const a = accounts[0];
-  const roles = a?.idTokenClaims?.roles || [];
-  return {
-    oid:          a?.idTokenClaims?.oid || a?.localAccountId || "",
-    name:         a?.name || "",
-    isCompliance: roles.includes("Compliance.Lead") || roles.includes("OrgOS.Admin"),
-  };
-}
 
 function useEvidence() {
   return useQuery({
@@ -458,7 +447,7 @@ export default function EvidenceTracker() {
   const [search, setSearch] = useState("");
   const [actionItemId, setActionItemId] = useState(null);
 
-  const { oid, isCompliance } = useCurrentUser();
+  const { oid, isCompliance } = useCurrentUserRole();
   const qc = useQueryClient();
   const { data: all = [], isLoading, error, refetch } = useEvidence();
 

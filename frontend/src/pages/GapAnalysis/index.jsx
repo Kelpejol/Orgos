@@ -3,15 +3,15 @@
 // Gap Analysis — wired to SharePoint.
 // Shows compliance gaps identified by the Gap Analyzer agent or manual entry.
 // Each gap has a full remediation package (Bobby's amendment) for human review.
-// Decisions: Accept & remediate, Accept risk (→ Strategic Risk Register), Reassign
+// Decisions: Approve remediation (→ Document Lifecycle), Accept risk (→ Strategic Risk Register)
 // =============================================================================
 
 import { useState, useMemo } from "react";
-import { useMsal } from "@azure/msal-react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import StatusBadge from "../../components/shared/StatusBadge.jsx";
 import { Field } from "../../components/shared/Forms.jsx";
 import { LoadingState, ErrorState, EmptyState } from "../../components/shared/LoadingState.jsx";
+import { useCurrentUserRole } from "../../hooks/useCurrentUserRole.js";
 import apiClient from "../../api/grcApi.js";
 
 // =============================================================================
@@ -19,27 +19,20 @@ import apiClient from "../../api/grcApi.js";
 // =============================================================================
 
 const gapApi = {
-  list:   (params = {}) =>
+  list: (params = {}) =>
     apiClient.get("/api/v1/gap-analysis", { params }).then(r => r.data),
 
   updateStatus: (id, body) =>
     apiClient.patch(`/api/v1/gap-analysis/${id}/status`, body).then(r => r.data),
 
-  acceptRisk: (id, rationale) =>
-    apiClient.post(`/api/v1/gap-analysis/${id}/accept-risk`, { rationale })
+  approveRemediation: (id, reviewer_notes) =>
+    apiClient
+      .post(`/api/v1/gap-analysis/${id}/approve-remediation`, { reviewer_notes: reviewer_notes || null })
       .then(r => r.data),
-};
 
-function useCurrentUser() {
-  const { accounts } = useMsal();
-  const a = accounts[0];
-  const roles = a?.idTokenClaims?.roles || [];
-  return {
-    oid:          a?.idTokenClaims?.oid || a?.localAccountId || "",
-    name:         a?.name || "",
-    isCompliance: roles.includes("Compliance.Lead") || roles.includes("OrgOS.Admin"),
-  };
-}
+  acceptRisk: (id, rationale) =>
+    apiClient.post(`/api/v1/gap-analysis/${id}/accept-risk`, { rationale }).then(r => r.data),
+};
 
 // =============================================================================
 //  Severity config
@@ -55,22 +48,46 @@ const SEV = {
 };
 
 const CAT_LABELS = {
-  "Missing artefact":    "No document governs this area",
-  "Control gap":         "Document exists but controls are inadequate",
-  "Evidence gap":        "Controls exist but evidence is not being collected",
-  "Ownership gap":       "Controls exist but the responsible role is unassigned",
+  "Missing artefact":       "No document governs this area",
+  "Control gap":            "Document exists but controls are inadequate",
+  "Evidence gap":           "Controls exist but evidence is not being collected",
+  "Ownership gap":          "Controls exist but the responsible role is unassigned",
   "Standards misalignment": "Controls exist but mapped to incorrect clauses",
-  "Obligation gap":      "Regulatory requirement not tracked in Compliance Calendar",
+  "Obligation gap":         "Regulatory requirement not tracked in Compliance Calendar",
 };
 
 // =============================================================================
-//  Remediation package viewer (Bobby's amendment — Gap Analyzer outputs full package)
+//  Remediation package viewer
 // =============================================================================
 
-const RemediationPackage = ({ packageJson, onAccept, onClose, isPending }) => {
-  const [rationale, setRationale] = useState("");
+function normalizePkg(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const toStr = (v) =>
+    typeof v === "string" ? v : v == null ? null : JSON.stringify(v);
+  const toArr = (v) => {
+    if (Array.isArray(v)) return v.map(i => (typeof i === "string" ? i : JSON.stringify(i)));
+    if (typeof v === "string") return v.split("\n").filter(Boolean);
+    return [];
+  };
+  return {
+    document:          toStr(raw.document),
+    controls:          toArr(raw.controls),
+    evidence:          toArr(raw.evidence),
+    roles:             toArr(raw.roles),
+    risk:              toStr(raw.risk),
+    target_date:       toStr(raw.target_date),
+    verification:      toStr(raw.verification),
+    standards_mapping: toStr(raw.standards_mapping),
+  };
+}
+
+const RemediationPackage = ({ packageJson, onApprove, onClose, isPending, approvalResult }) => {
+  const [notes, setNotes] = useState("");
   let pkg = null;
-  try { pkg = packageJson ? JSON.parse(packageJson) : null; } catch { pkg = null; }
+  try {
+    const raw = packageJson ? JSON.parse(packageJson) : null;
+    pkg = normalizePkg(raw);
+  } catch { pkg = null; }
 
   if (!pkg) return (
     <div style={{ padding: "10px 12px", background: "var(--color-background-secondary)",
@@ -136,15 +153,25 @@ const RemediationPackage = ({ packageJson, onAccept, onClose, isPending }) => {
       )}
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8, marginBottom: 10 }}>
-        {pkg.target_date  && <Field l="Target date"  v={pkg.target_date} />}
-        {pkg.verification && <Field l="Verification" v={pkg.verification} />}
+        {pkg.target_date      && <Field l="Target date"   v={pkg.target_date} />}
+        {pkg.verification     && <Field l="Verification"  v={pkg.verification} />}
         {pkg.standards_mapping && <Field l="Closes clauses" v={pkg.standards_mapping} />}
       </div>
 
+      {/* Lifecycle created confirmation */}
+      {approvalResult?.lifecycle_id && (
+        <div style={{ padding: "8px 10px", background: "#C8ECD8", borderRadius: 6,
+                      fontSize: 11, color: "#085041", marginBottom: 10,
+                      border: "0.5px solid #5DCAA5" }}>
+          Document Lifecycle entry created — ID: <strong>{approvalResult.lifecycle_id}</strong>.
+          Find it in the Document Lifecycle page to begin review.
+        </div>
+      )}
+
       <textarea
-        value={rationale}
-        onChange={e => setRationale(e.target.value)}
-        placeholder="Reviewer notes (optional) — any edits to the package before accepting..."
+        value={notes}
+        onChange={e => setNotes(e.target.value)}
+        placeholder="Reviewer notes (optional) — any edits to the package before approving..."
         rows={2}
         style={{ width: "100%", fontSize: 12, padding: "8px 10px", borderRadius: 8,
                  border: "1.5px solid #5DCAA5", background: "var(--color-background-primary)",
@@ -154,13 +181,19 @@ const RemediationPackage = ({ packageJson, onAccept, onClose, isPending }) => {
       />
 
       <div style={{ display: "flex", gap: 8 }}>
-        <button onClick={() => onAccept(rationale)} disabled={isPending}
+        <button
+          onClick={() => onApprove(notes)}
+          disabled={isPending || !!approvalResult?.lifecycle_id}
           style={{ flex: 1, padding: "9px", fontSize: 12, borderRadius: 8,
                    border: "none", fontWeight: 600,
-                   background: isPending ? "#E8E8E8" : "#085041",
-                   color: isPending ? "#999" : "#fff",
-                   cursor: isPending ? "not-allowed" : "pointer" }}>
-          {isPending ? "Creating lifecycle entry..." : "Approve package → enter Document Lifecycle"}
+                   background: isPending || approvalResult?.lifecycle_id ? "#E8E8E8" : "#085041",
+                   color: isPending || approvalResult?.lifecycle_id ? "#999" : "#fff",
+                   cursor: isPending || approvalResult?.lifecycle_id ? "not-allowed" : "pointer" }}>
+          {isPending
+            ? "Creating lifecycle entry..."
+            : approvalResult?.lifecycle_id
+              ? "Approved ✓"
+              : "Approve package → enter Document Lifecycle"}
         </button>
         <button onClick={onClose}
           style={{ padding: "9px 14px", fontSize: 12, borderRadius: 8,
@@ -204,6 +237,11 @@ const AcceptRiskPanel = ({ onAccept, onClose, isPending }) => {
                  fontFamily: "var(--font-sans)", outline: "none",
                  boxSizing: "border-box", marginBottom: 10 }}
       />
+      {rationale.trim().length > 0 && !ratOk && (
+        <div style={{ fontSize: 10, color: "#A32D2D", marginBottom: 6 }}>
+          {20 - rationale.trim().length} more characters required.
+        </div>
+      )}
       <div style={{ display: "flex", gap: 8 }}>
         <button onClick={() => onAccept(rationale)} disabled={!ratOk || isPending}
           style={{ flex: 1, padding: "9px", fontSize: 12, borderRadius: 8,
@@ -228,25 +266,34 @@ const AcceptRiskPanel = ({ onAccept, onClose, isPending }) => {
 //  Gap card
 // =============================================================================
 
-const GapCard = ({ gap, isCompliance, onStatusUpdate, onAcceptRisk, actionId }) => {
+const GapCard = ({
+  gap, isCompliance, onStatusUpdate, onApproveRemediation, onAcceptRisk, actionId,
+}) => {
   const [expanded,        setExpanded]        = useState(false);
   const [showRemediation, setShowRemediation] = useState(false);
   const [showAcceptRisk,  setShowAcceptRisk]  = useState(false);
+  const [approvalResult,  setApprovalResult]  = useState(null);
   const isPending = actionId === gap.id;
 
   const sev      = SEV[gap.Severity] || SEV.Minor;
   const isOpen   = gap.Status === "Open" || gap.Status === "In progress";
   const isClosed = gap.Status === "Closed" || gap.Status === "Accepted risk";
 
+  const handleApprove = async (notes) => {
+    const result = await onApproveRemediation(gap.id, notes);
+    if (result) setApprovalResult(result);
+  };
+
   return (
-    <div style={{
-      border: `1px solid ${sev.bd}`,
-      borderLeft: `4px solid ${sev.color}`,
-      borderRadius: 12,
-      background: isClosed ? "var(--color-background-secondary)" : "var(--color-background-primary)",
-      opacity: isClosed ? 0.7 : 1,
-      transition: "box-shadow 0.15s",
-    }}
+    <div
+      style={{
+        border: `1px solid ${sev.bd}`,
+        borderLeft: `4px solid ${sev.color}`,
+        borderRadius: 12,
+        background: isClosed ? "var(--color-background-secondary)" : "var(--color-background-primary)",
+        opacity: isClosed ? 0.7 : 1,
+        transition: "box-shadow 0.15s",
+      }}
       onMouseEnter={e => !isClosed && (e.currentTarget.style.boxShadow = "0 4px 16px rgba(0,0,0,0.08)")}
       onMouseLeave={e => (e.currentTarget.style.boxShadow = "none")}
     >
@@ -287,6 +334,13 @@ const GapCard = ({ gap, isCompliance, onStatusUpdate, onAcceptRisk, actionId }) 
                 PACKAGE READY
               </span>
             )}
+            {gap.LinkedLifecycleId && (
+              <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3,
+                             background: "#E6F1FB", color: "#0C447C",
+                             border: "0.5px solid #85B7EB", fontWeight: 600 }}>
+                LIFECYCLE ACTIVE
+              </span>
+            )}
           </div>
           <span style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>
             {expanded ? "▲" : "▼"}
@@ -305,7 +359,7 @@ const GapCard = ({ gap, isCompliance, onStatusUpdate, onAcceptRisk, actionId }) 
 
         <div style={{ display: "flex", justifyContent: "space-between",
                       fontSize: 10, color: "var(--color-text-tertiary)" }}>
-          <span>{gap.GapCategory && CAT_LABELS[gap.GapCategory] || gap.GapCategory}</span>
+          <span>{gap.GapId && `${gap.GapId} · `}{CAT_LABELS[gap.GapCategory] || gap.GapCategory}</span>
           <span>{gap.TargetDate ? `Target: ${gap.TargetDate.split("T")[0]}` : ""}</span>
         </div>
       </div>
@@ -324,11 +378,9 @@ const GapCard = ({ gap, isCompliance, onStatusUpdate, onAcceptRisk, actionId }) 
           {/* Fields */}
           <Field l="Standard"    v={`${gap.Standard} ${gap.Clause}`} />
           <Field l="Category"    v={gap.GapCategory} />
-          {gap.AssignedTo && <Field l="Assigned to"  v={gap.AssignedTo} />}
-          {gap.TargetDate && <Field l="Target date"  v={gap.TargetDate.split("T")[0]} />}
-          {gap.VerificationMethod && (
-            <Field l="Verification"  v={gap.VerificationMethod} />
-          )}
+          {gap.AssignedTo && <Field l="Assigned to" v={gap.AssignedTo} />}
+          {gap.TargetDate && <Field l="Target date" v={gap.TargetDate.split("T")[0]} />}
+          {gap.VerificationMethod && <Field l="Verification" v={gap.VerificationMethod} />}
           {gap.RemediationHint && (
             <div style={{ padding: "7px 10px", background: "var(--color-background-secondary)",
                           borderRadius: 6, fontSize: 11, color: "var(--color-text-secondary)",
@@ -338,6 +390,12 @@ const GapCard = ({ gap, isCompliance, onStatusUpdate, onAcceptRisk, actionId }) 
           )}
           {gap.LinkedRiskId && (
             <Field l="Linked risk" v={gap.LinkedRiskId} color="#BA7517" />
+          )}
+          {gap.LinkedLifecycleId && (
+            <Field l="Linked lifecycle" v={gap.LinkedLifecycleId} color="#0C447C" />
+          )}
+          {gap.AcceptedBy && (
+            <Field l="Accepted by" v={`${gap.AcceptedBy}${gap.AcceptedDate ? ` on ${gap.AcceptedDate}` : ""}`} />
           )}
           {gap.ResolutionNotes && (
             <Field l="Resolution notes" v={gap.ResolutionNotes} />
@@ -359,8 +417,7 @@ const GapCard = ({ gap, isCompliance, onStatusUpdate, onAcceptRisk, actionId }) 
                 style={{ padding: "8px 14px", fontSize: 12, borderRadius: 8,
                          border: "1.5px solid #C0C0C0", background: "transparent",
                          color: "var(--color-text-secondary)",
-                         cursor: gap.Status === "In progress" || isPending
-                           ? "not-allowed" : "pointer" }}>
+                         cursor: gap.Status === "In progress" || isPending ? "not-allowed" : "pointer" }}>
                 Mark in progress
               </button>
               <button
@@ -387,14 +444,10 @@ const GapCard = ({ gap, isCompliance, onStatusUpdate, onAcceptRisk, actionId }) 
           {showRemediation && (
             <RemediationPackage
               packageJson={gap.ProposedRemediation}
-              onAccept={async (notes) => {
-                await onStatusUpdate(gap.id, "In progress",
-                  notes ? `Remediation package approved. Notes: ${notes}` : "Remediation package approved."
-                );
-                setShowRemediation(false);
-              }}
-              onClose={() => setShowRemediation(false)}
+              onApprove={handleApprove}
+              onClose={() => { setShowRemediation(false); setApprovalResult(null); }}
               isPending={isPending}
+              approvalResult={approvalResult}
             />
           )}
 
@@ -454,7 +507,10 @@ const RunGapAnalyzerButton = ({ onComplete }) => {
       </button>
       {result && (
         <div style={{ fontSize: 10, color: "#A32D2D", textAlign: "right" }}>
-          {result.gaps_found} gaps found · {result.gaps_written} written
+          {result.gaps_written} new · {result.gaps_skipped ?? 0} already tracked
+          {result.severity
+            ? ` · Critical: ${result.severity.Critical}, Major: ${result.severity.Major}`
+            : ""}
         </div>
       )}
       {error && <div style={{ fontSize: 10, color: "#A32D2D" }}>{error}</div>}
@@ -469,7 +525,7 @@ export default function GapAnalysis() {
   const [search,         setSearch]         = useState("");
   const [actionId,       setActionId]       = useState(null);
 
-  const { isCompliance } = useCurrentUser();
+  const { isCompliance } = useCurrentUserRole();
   const qc = useQueryClient();
 
   const { data: gaps = [], isLoading, error, refetch } = useQuery({
@@ -481,7 +537,7 @@ export default function GapAnalysis() {
   const filtered = useMemo(() => {
     let list = gaps;
     if (severityFilter !== "All") list = list.filter(g => g.Severity === severityFilter);
-    if (statusFilter === "open")  list = list.filter(g => ["Open", "In progress"].includes(g.Status));
+    if (statusFilter === "open")   list = list.filter(g => ["Open", "In progress"].includes(g.Status));
     if (statusFilter === "closed") list = list.filter(g => ["Closed", "Accepted risk"].includes(g.Status));
     if (standardFilter !== "All") list = list.filter(g => g.Standard === standardFilter);
     if (search.trim()) {
@@ -489,7 +545,8 @@ export default function GapAnalysis() {
       list = list.filter(g =>
         (g.Finding   || "").toLowerCase().includes(q) ||
         (g.Clause    || "").toLowerCase().includes(q) ||
-        (g.Impact    || "").toLowerCase().includes(q)
+        (g.Impact    || "").toLowerCase().includes(q) ||
+        (g.GapId     || "").toLowerCase().includes(q)
       );
     }
     return list;
@@ -512,6 +569,20 @@ export default function GapAnalysis() {
       qc.invalidateQueries({ queryKey: ["gaps"] });
     } catch (err) {
       alert(err.response?.data?.detail || err.message || "Update failed.");
+    } finally {
+      setActionId(null);
+    }
+  };
+
+  const handleApproveRemediation = async (id, reviewerNotes) => {
+    setActionId(id);
+    try {
+      const result = await gapApi.approveRemediation(id, reviewerNotes);
+      qc.invalidateQueries({ queryKey: ["gaps"] });
+      return result;
+    } catch (err) {
+      alert(err.response?.data?.detail || err.message || "Approve failed.");
+      return null;
     } finally {
       setActionId(null);
     }
@@ -603,7 +674,7 @@ export default function GapAnalysis() {
 
         {/* Severity */}
         {["All", "Critical", "Major", "Minor"].map(s => {
-          const sv = SEV[s];
+          const sv     = SEV[s];
           const active = severityFilter === s;
           return (
             <button key={s} onClick={() => setSeverityFilter(s)}
@@ -633,7 +704,7 @@ export default function GapAnalysis() {
 
         <input
           type="text" value={search} onChange={e => setSearch(e.target.value)}
-          placeholder="Search findings..."
+          placeholder="Search findings, clause, gap ID..."
           style={{ flex: 1, minWidth: 160, fontSize: 12, padding: "6px 12px", borderRadius: 8,
                    border: "1.5px solid #C0C0C0", background: "var(--color-background-primary)",
                    color: "var(--color-text-primary)", outline: "none" }}
@@ -657,6 +728,7 @@ export default function GapAnalysis() {
               gap={gap}
               isCompliance={isCompliance}
               onStatusUpdate={handleStatusUpdate}
+              onApproveRemediation={handleApproveRemediation}
               onAcceptRisk={handleAcceptRisk}
               actionId={actionId}
             />

@@ -1,17 +1,19 @@
 // =============================================================================
 // components/layout/TopBar.jsx
-// Top bar showing current user's name (resolved from MSAL) and logout button.
+// Top bar showing current user's name, role badge, and logout button.
 // =============================================================================
 
 import { useMsal } from "@azure/msal-react";
+import RoleBadge from "../shared/RoleBadge";
+import { useCurrentUserRole } from "../../hooks/useCurrentUserRole";
 
 /**
  * @param {{ currentScreen: string }} props
  */
 export default function TopBar({ currentScreen }) {
-  const { accounts, instance } = useMsal();
-  const user = accounts[0];
-  const displayName = user?.name || user?.username || "Unknown user";
+  const { instance } = useMsal();
+  const { name, email, roleLabel } = useCurrentUserRole();
+  const displayName = name || email || "Unknown user";
 
   const handleLogout = () => {
     instance.logoutPopup({ postLogoutRedirectUri: window.location.origin });
@@ -40,7 +42,7 @@ export default function TopBar({ currentScreen }) {
         Dragnet Solutions · OrgOS
       </span>
 
-      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
         <span
           style={{
             fontSize: 12,
@@ -49,6 +51,7 @@ export default function TopBar({ currentScreen }) {
         >
           {displayName}
         </span>
+        <RoleBadge roleLabel={roleLabel} />
         <button
           onClick={handleLogout}
           style={{

@@ -13,6 +13,9 @@ import {
   rolesApi,
 } from "../api/grcApi.js";
 
+// Re-export for convenience in pages that need raw API access
+export { complianceApi, contractsApi };
+
 // =============================================================================
 //  Query keys — centralised to avoid typos across components
 // =============================================================================
@@ -172,6 +175,49 @@ export const useUpdateObligation = () => {
   });
 };
 
+/**
+ * Mark an obligation complete. For recurring obligations, rolls the due date
+ * forward one period server-side.
+ */
+export const useCompleteObligation = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, completion_notes }) =>
+      complianceApi.complete(id, { completion_notes }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["obligations"] });
+    },
+  });
+};
+
+/**
+ * Escalate an overdue obligation to the Gap Analysis register.
+ * Idempotent — safe to call multiple times.
+ */
+export const useEscalateObligation = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, escalation_notes }) =>
+      complianceApi.escalate(id, { escalation_notes }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["obligations"] });
+      // Gap Analysis list has likely changed too
+      queryClient.invalidateQueries({ queryKey: ["gaps"] });
+    },
+  });
+};
+
+/** Soft-delete (Withdraw) an obligation. */
+export const useSoftDeleteObligation = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id) => complianceApi.softDelete(id),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["obligations"] });
+    },
+  });
+};
+
 // =============================================================================
 //  Contract Register hooks
 // =============================================================================
@@ -208,6 +254,48 @@ export const useUpdateContract = () => {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: ({ id, updates }) => contractsApi.update(id, updates),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["contracts"] });
+    },
+  });
+};
+
+/**
+ * Update contract lifecycle status — Terminate, put Under Review, or Supersede.
+ * Requires Compliance Lead role (enforced by backend).
+ */
+export const useUpdateContractLifecycle = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, lifecycleStatus }) =>
+      contractsApi.updateLifecycle(id, lifecycleStatus),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["contracts"] });
+    },
+  });
+};
+
+/**
+ * Create a Compliance Calendar entry linked to a contract.
+ * Invalidates both contracts and obligations.
+ */
+export const useAddContractObligation = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ contractId, obligation }) =>
+      contractsApi.addObligation(contractId, obligation),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["obligations"] });
+      queryClient.invalidateQueries({ queryKey: ["contracts"] });
+    },
+  });
+};
+
+/** Soft-delete (Withdraw) a contract. */
+export const useSoftDeleteContract = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (id) => contractsApi.softDelete(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["contracts"] });
     },

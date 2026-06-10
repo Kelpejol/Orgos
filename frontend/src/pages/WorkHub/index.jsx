@@ -12,6 +12,7 @@ import {
   ErrorState,
   LoadingState,
 } from "../../components/shared/LoadingState.jsx";
+import { useCurrentUserRole } from "../../hooks/useCurrentUserRole.js";
 import apiClient from "../../api/grcApi.js";
 
 // =============================================================================
@@ -173,16 +174,22 @@ const Stat = ({ label, value, color }) => (
 // =============================================================================
 
 export default function WorkHub({ go }) {
+  const { isAdmin, isCompliance, isStandard, name, oid, roleLabel } = useCurrentUserRole();
+
   const roles = useUnassignedRoles();
   const queue = usePendingQueueItems();
   const lifecycle = useLifecycleDocuments();
-
   const overdueEvidence = useOverdueEvidence();
-  const overdueEvidenceItems = overdueEvidence.data || [];
 
-  const unassignedRoles = roles.data || [];
-  const pendingItems = queue.data || [];
-  const lifecycleDocs = lifecycle.data || [];
+  const overdueEvidenceItems = (overdueEvidence.data || []);
+  // Standard Users only see evidence items they own
+  const myOverdueEvidence = isStandard
+    ? overdueEvidenceItems.filter((e) => e.OwnerEntraId === oid || e.owner_oid === oid)
+    : overdueEvidenceItems;
+
+  const unassignedRoles = isCompliance ? (roles.data || []) : [];
+  const pendingItems    = isCompliance ? (queue.data || []) : [];
+  const lifecycleDocs   = isCompliance ? (lifecycle.data || []) : [];
 
   const stalledDocs = useMemo(
     () => lifecycleDocs.filter((d) => (d.DaysInStage || 0) > 14),
@@ -194,28 +201,35 @@ export default function WorkHub({ go }) {
     [pendingItems],
   );
 
-  const isLoading = roles.isLoading || queue.isLoading || lifecycle.isLoading;
+  const isLoading =
+    (isCompliance ? roles.isLoading || queue.isLoading || lifecycle.isLoading : false) ||
+    overdueEvidence.isLoading;
 
   if (isLoading) return <LoadingState message="Loading work hub..." />;
 
-  const hasUrgencies =
-    unassignedRoles.length > 0 ||
-    stalledDocs.length > 0 ||
-    lowConfidence.length > 0;
+  const hasUrgencies = isStandard
+    ? myOverdueEvidence.length > 0
+    : unassignedRoles.length > 0 || stalledDocs.length > 0 || lowConfidence.length > 0 || myOverdueEvidence.length > 0;
+
+  const firstName = name ? name.split(" ")[0] : "";
 
   return (
     <>
-      {/* Header */}
+      {/* Personalised header */}
       <div style={{ marginBottom: 20 }}>
         <div style={{ fontSize: 17, fontWeight: 600, marginBottom: 3 }}>
-          Work hub
+          {firstName ? `Welcome, ${firstName}` : "Work hub"}
         </div>
         <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>
-          Items requiring your attention across OrgOS.
+          {isStandard
+            ? "Your compliance items requiring attention."
+            : isCompliance && !isAdmin
+            ? "Compliance team overview — items requiring your attention across OrgOS."
+            : "Admin overview — all urgency streams across OrgOS."}
         </div>
       </div>
 
-      {/* Summary stats */}
+      {/* Summary stats — scoped by role */}
       <div
         style={{
           display: "grid",
@@ -224,27 +238,35 @@ export default function WorkHub({ go }) {
           marginBottom: 24,
         }}
       >
+        {isCompliance && (
+          <Stat
+            label="Pending queue items"
+            value={pendingItems.length}
+            color={pendingItems.length > 0 ? "#BA7517" : undefined}
+          />
+        )}
+        {isCompliance && (
+          <Stat
+            label="Unassigned roles"
+            value={unassignedRoles.length}
+            color={unassignedRoles.length > 0 ? "#A32D2D" : undefined}
+          />
+        )}
+        {isCompliance && (
+          <Stat label="Documents in review" value={lifecycleDocs.length} />
+        )}
         <Stat
-          label="Pending queue items"
-          value={pendingItems.length}
-          color={pendingItems.length > 0 ? "#BA7517" : undefined}
+          label={isStandard ? "Your overdue evidence" : "Overdue evidence"}
+          value={myOverdueEvidence.length}
+          color={myOverdueEvidence.length > 0 ? "#A32D2D" : undefined}
         />
-        <Stat
-          label="Unassigned roles"
-          value={unassignedRoles.length}
-          color={unassignedRoles.length > 0 ? "#A32D2D" : undefined}
-        />
-        <Stat label="Documents in review" value={lifecycleDocs.length} />
-        <Stat
-          label="Overdue evidence"
-          value={overdueEvidenceItems.length}
-          color={overdueEvidenceItems.length > 0 ? "#A32D2D" : undefined}
-        />
-        <Stat
-          label="Stalled documents"
-          value={stalledDocs.length}
-          color={stalledDocs.length > 0 ? "#BA7517" : undefined}
-        />
+        {isCompliance && (
+          <Stat
+            label="Stalled documents"
+            value={stalledDocs.length}
+            color={stalledDocs.length > 0 ? "#BA7517" : undefined}
+          />
+        )}
       </div>
 
       {/* Urgency stream */}
@@ -264,14 +286,15 @@ export default function WorkHub({ go }) {
               color: "var(--color-text-tertiary)",
             }}
           >
-            No urgent items. All roles are assigned, no stalled documents, and
-            no low-confidence queue items.
+            {isStandard
+              ? "No overdue evidence items assigned to you. Keep up the good work."
+              : "No urgent items. All roles are assigned, no stalled documents, and no low-confidence queue items."}
           </div>
         )}
 
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-          {/* Unassigned roles — highest priority */}
-          {unassignedRoles.length > 0 && (
+          {/* Unassigned roles — Compliance/Admin only */}
+          {isCompliance && unassignedRoles.length > 0 && (
             <UrgencyCard
               color="#A32D2D"
               bg="#FFF8F8"
@@ -284,37 +307,34 @@ export default function WorkHub({ go }) {
                 `Evidence cannot be assigned. ` +
                 `Roles: ${unassignedRoles.map((r) => r.role_title).join(", ")}.`
               }
-              action="Assign now"
+              action={isAdmin ? "Assign now" : "View roles"}
               onAction={() => go("role")}
             />
           )}
 
-          {overdueEvidenceItems.length > 0 && (
+          {/* Overdue evidence — all roles, scoped to owned items for Standard Users */}
+          {myOverdueEvidence.length > 0 && (
             <UrgencyCard
               color="#A32D2D"
               bg="#FFF8F8"
               bd="#F09595"
               icon="◎"
-              title={`evidence item${overdueEvidenceItems.length > 1 ? "s are" : " is"} overdue`}
-              count={overdueEvidenceItems.length}
+              title={`evidence item${myOverdueEvidence.length > 1 ? "s are" : " is"} overdue`}
+              count={myOverdueEvidence.length}
               message={
-                `Evidence collection is overdue for ${overdueEvidenceItems.length} control${overdueEvidenceItems.length > 1 ? "s" : ""}. ` +
-                `This means those controls have no current proof of operation. ` +
-                `Overdue: ${overdueEvidenceItems
-                  .slice(0, 3)
-                  .map((e) => e.EvidenceDescription?.slice(0, 40) || "Unnamed")
-                  .join(", ")}` +
-                (overdueEvidenceItems.length > 3
-                  ? ` and ${overdueEvidenceItems.length - 3} more.`
-                  : ".")
+                isStandard
+                  ? `You have ${myOverdueEvidence.length} overdue evidence item${myOverdueEvidence.length > 1 ? "s" : ""} assigned to you. Please submit evidence as soon as possible.`
+                  : `Evidence collection is overdue for ${myOverdueEvidence.length} control${myOverdueEvidence.length > 1 ? "s" : ""}. ` +
+                    `Overdue: ${myOverdueEvidence.slice(0, 3).map((e) => e.EvidenceDescription?.slice(0, 40) || "Unnamed").join(", ")}` +
+                    (myOverdueEvidence.length > 3 ? ` and ${myOverdueEvidence.length - 3} more.` : ".")
               }
               action="View evidence"
               onAction={() => go("evidence")}
             />
           )}
 
-          {/* Low confidence queue items */}
-          {lowConfidence.length > 0 && (
+          {/* Low confidence queue items — Compliance/Admin only */}
+          {isCompliance && lowConfidence.length > 0 && (
             <UrgencyCard
               color="#791F1F"
               bg="#FCEBEB"
@@ -328,8 +348,8 @@ export default function WorkHub({ go }) {
             />
           )}
 
-          {/* Stalled lifecycle documents */}
-          {stalledDocs.length > 0 && (
+          {/* Stalled lifecycle documents — Compliance/Admin only */}
+          {isCompliance && stalledDocs.length > 0 && (
             <UrgencyCard
               color="#BA7517"
               bg="#FAEEDA"
@@ -346,8 +366,8 @@ export default function WorkHub({ go }) {
             />
           )}
 
-          {/* Pending queue items — informational */}
-          {pendingItems.length > 0 && unassignedRoles.length === 0 && (
+          {/* Pending queue items — Compliance/Admin only, informational */}
+          {isCompliance && pendingItems.length > 0 && unassignedRoles.length === 0 && (
             <UrgencyCard
               color="#633806"
               bg="#FAEEDA"
@@ -363,8 +383,8 @@ export default function WorkHub({ go }) {
         </div>
       </div>
 
-      {/* Unassigned roles detail table */}
-      {unassignedRoles.length > 0 && (
+      {/* Unassigned roles detail table — Compliance/Admin only */}
+      {isCompliance && unassignedRoles.length > 0 && (
         <div style={{ marginTop: 8 }}>
           <div
             style={{
@@ -464,7 +484,7 @@ export default function WorkHub({ go }) {
               fontWeight: 500,
             }}
           >
-            Go to Role Register to assign →
+            {isAdmin ? "Go to Role Register to assign →" : "Go to Role Register →"}
           </button>
         </div>
       )}

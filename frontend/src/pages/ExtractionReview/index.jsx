@@ -7,7 +7,7 @@
 // =============================================================================
 
 import { useState, useMemo, useEffect } from "react";
-import { useMsal } from "@azure/msal-react";
+import { useCurrentUserRole } from "../../hooks/useCurrentUserRole.js";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import StatusBadge from "../../components/shared/StatusBadge.jsx";
 import { Field } from "../../components/shared/Forms.jsx";
@@ -112,13 +112,6 @@ const zone1Api = {
 //  Hooks
 // =============================================================================
 
-function useUserRoles() {
-  const { accounts } = useMsal();
-  const roles = accounts[0]?.idTokenClaims?.roles || [];
-  return {
-    isCompliance: roles.includes("Compliance.Lead") || roles.includes("OrgOS.Admin"),
-  };
-}
 
 function useZone1Items() {
   return useQuery({
@@ -812,7 +805,7 @@ export default function ExtractionReview() {
   const [actionState, setActionState] = useState({ pending: false, itemId: null });
   const [secondReviewModal, setSecondReviewModal] = useState({ open: false, item: null });
 
-  const { isCompliance } = useUserRoles();
+  const { isCompliance } = useCurrentUserRole();
   const qc = useQueryClient();
   const { data: items = [], isLoading, error, refetch } = useZone1Items();
 

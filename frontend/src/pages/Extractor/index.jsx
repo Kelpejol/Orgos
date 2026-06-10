@@ -11,8 +11,7 @@ import { useState, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import StatusBadge from "../../components/shared/StatusBadge.jsx";
 import { extractorApi, sharePointApi } from "../../api/grcApi.js";
-import { useCurrentUser } from "../../hooks/useCurrentUser.js";
-import { useMsal } from "@azure/msal-react";
+import { useCurrentUserRole } from "../../hooks/useCurrentUserRole.js";
 
 // ── Primitives ────────────────────────────────────────────────────────────────
 
@@ -735,15 +734,6 @@ const SelectedFilePanel = ({
 };
 
 
-function useUserRoles() {
-  const { accounts } = useMsal();
-  const claims = accounts[0]?.idTokenClaims || {};
-  const roles = claims.roles || [];
-  return {
-    isAdmin:      roles.includes("OrgOS.Admin"),
-    isCompliance: roles.includes("Compliance.Lead") || roles.includes("OrgOS.Admin"),
-  };
-}
 
 // ── Extraction result card ─────────────────────────────────────────────────────
 const ExtractionCard = ({
@@ -989,7 +979,7 @@ const SummaryBar = ({ result }) => (
 // ── Main ───────────────────────────────────────────────────────────────────────
 export default function Extractor() {
   const [mode, setMode] = useState("sharepoint");
-  const { isCompliance } = useUserRoles();
+  const { isCompliance } = useCurrentUserRole();
   const [selectedFile, setSelectedFile] = useState(null);
   const [docCode, setDocCode] = useState("");
   const [loading, setLoading] = useState(false);

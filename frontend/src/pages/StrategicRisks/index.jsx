@@ -6,11 +6,12 @@
 // =============================================================================
 
 import { useState, useMemo } from "react";
-import { useMsal } from "@azure/msal-react";
-import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import StatusBadge from "../../components/shared/StatusBadge.jsx";
 import { Field } from "../../components/shared/Forms.jsx";
 import { LoadingState, ErrorState, EmptyState } from "../../components/shared/LoadingState.jsx";
+import { useCurrentUserRole } from "../../hooks/useCurrentUserRole.js";
+import ReadOnlyBanner from "../../components/shared/ReadOnlyBanner.jsx";
 import apiClient from "../../api/grcApi.js";
 
 // =============================================================================
@@ -27,10 +28,29 @@ const riskApi = {
     apiClient.patch(`/api/v1/risks/${id}`, body).then(r => r.data),
 };
 
-function useCurrentUser() {
-  const { accounts } = useMsal();
-  const a = accounts[0];
-  return { oid: a?.idTokenClaims?.oid || a?.localAccountId || "", name: a?.name || "" };
+// =============================================================================
+//  Score helpers — bands: 1-3 Low, 4-6 Medium, 7-9 High, 10-12 Critical
+// =============================================================================
+
+const LIKELIHOOD_VALUES = { Low: 1, Medium: 2, High: 3 };
+const IMPACT_VALUES      = { Low: 1, Medium: 2, High: 3, Critical: 4 };
+
+function calcScore(likelihood, impact) {
+  return (LIKELIHOOD_VALUES[likelihood] || 1) * (IMPACT_VALUES[impact] || 1);
+}
+
+function scoreLabel(score) {
+  if (score <= 3)  return "Low";
+  if (score <= 6)  return "Medium";
+  if (score <= 9)  return "High";
+  return "Critical";
+}
+
+function scoreColor(score) {
+  if (score <= 3)  return "#1D9E75";
+  if (score <= 6)  return "#BA7517";
+  if (score <= 9)  return "#D85A30";
+  return "#A32D2D";
 }
 
 // =============================================================================
@@ -75,16 +95,11 @@ const AddRiskForm = ({ onSuccess, onCancel, prePopulated = {} }) => {
   const [saving, setSaving] = useState(false);
   const [error,  setError]  = useState("");
 
-  const set = k => e => setForm(f => ({
-    ...f, [k]: e.target.value,
-  }));
+  const set = k => e => setForm(f => ({ ...f, [k]: e.target.value }));
 
-  const score = {
-    Low: 1, Medium: 2, High: 3,
-  }[form.likelihood] * { Low: 1, Medium: 2, High: 3, Critical: 4 }[form.impact];
-
-  const scoreColor = score <= 2 ? "#1D9E75" : score <= 4 ? "#BA7517" : score <= 6 ? "#D85A30" : "#A32D2D";
-  const scoreLabel = score <= 2 ? "Low" : score <= 4 ? "Medium" : score <= 6 ? "High" : "Critical";
+  const score = calcScore(form.likelihood, form.impact);
+  const sColor = scoreColor(score);
+  const sLabel = scoreLabel(score);
 
   const handleCreate = async () => {
     if (!form.description.trim()) { setError("Risk description is required."); return; }
@@ -154,7 +169,6 @@ const AddRiskForm = ({ onSuccess, onCancel, prePopulated = {} }) => {
         </div>
       )}
 
-      {/* Source pre-populated if from gap or incident */}
       {prePopulated.source && prePopulated.source !== "ExCo assessment" && (
         <div style={{ padding: "8px 12px", background: "#EEEDFE", borderRadius: 8,
                       fontSize: 11, color: "#3C3489", marginBottom: 14,
@@ -208,7 +222,7 @@ const AddRiskForm = ({ onSuccess, onCancel, prePopulated = {} }) => {
             </select>
           </div>
           <div style={{ textAlign: "center", paddingBottom: 2 }}>
-            <ScoreBadge score={score} label={scoreLabel} color={scoreColor} />
+            <ScoreBadge score={score} label={sLabel} color={sColor} />
           </div>
         </div>
       </div>
@@ -283,13 +297,34 @@ const AddRiskForm = ({ onSuccess, onCancel, prePopulated = {} }) => {
 //  Risk card
 // =============================================================================
 
-const RiskCard = ({ risk, onUpdate }) => {
+const STATUS_TRANSITIONS = {
+  Open:             ["Under treatment", "Accepted", "Transferred", "Avoided"],
+  "Under treatment": ["Accepted", "Transferred", "Avoided", "Closed"],
+  Accepted:         ["Closed"],
+  Transferred:      ["Closed"],
+  Avoided:          ["Closed"],
+  Closed:           [],
+};
+
+const STATUS_BTN_LABELS = {
+  "Under treatment": "Mark under treatment",
+  Accepted:          "Accept risk",
+  Transferred:       "Mark transferred",
+  Avoided:           "Mark avoided",
+  Closed:            "Close — treatment complete",
+};
+
+const STATUS_BTN_STYLES = {
+  "Under treatment": { background: "#1D9E75", color: "#fff", border: "none" },
+  Accepted:          { background: "transparent", color: "var(--color-text-secondary)", border: "1.5px solid #C0C0C0" },
+  Transferred:       { background: "transparent", color: "#0C447C", border: "1.5px solid #85B7EB" },
+  Avoided:           { background: "transparent", color: "#595952", border: "1.5px solid #B4B2A9" },
+  Closed:            { background: "#0C447C", color: "#fff", border: "none" },
+};
+
+const RiskCard = ({ risk, onUpdate, isAdmin }) => {
   const [expanded, setExpanded] = useState(false);
   const [updating, setUpdating] = useState(false);
-
-  const isOverdue = risk.ReviewDate &&
-    new Date(risk.ReviewDate) < new Date() &&
-    risk.Status !== "Closed";
 
   const handleStatusChange = async (newStatus) => {
     setUpdating(true);
@@ -300,15 +335,20 @@ const RiskCard = ({ risk, onUpdate }) => {
     }
   };
 
+  const transitions = STATUS_TRANSITIONS[risk.Status] || [];
+
   return (
     <div style={{
       border: `1px solid ${risk.RiskScoreColor}40`,
       borderLeft: `4px solid ${risk.RiskScoreColor}`,
       borderRadius: 12,
-      background: "var(--color-background-primary)",
+      background: risk.Status === "Closed"
+        ? "var(--color-background-secondary)"
+        : "var(--color-background-primary)",
+      opacity: risk.Status === "Closed" ? 0.75 : 1,
       transition: "box-shadow 0.15s",
     }}
-      onMouseEnter={e => (e.currentTarget.style.boxShadow = "0 4px 16px rgba(0,0,0,0.08)")}
+      onMouseEnter={e => risk.Status !== "Closed" && (e.currentTarget.style.boxShadow = "0 4px 16px rgba(0,0,0,0.08)")}
       onMouseLeave={e => (e.currentTarget.style.boxShadow = "none")}
     >
       {/* Header */}
@@ -333,11 +373,17 @@ const RiskCard = ({ risk, onUpdate }) => {
               {risk.Category}
             </span>
             <StatusBadge label={risk.Status} />
-            {isOverdue && (
+            {risk.ReviewOverdue && (
               <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3,
                              background: "#FCEBEB", color: "#791F1F",
                              border: "0.5px solid #F09595", fontWeight: 700 }}>
                 REVIEW OVERDUE
+              </span>
+            )}
+            {risk.RiskId && (
+              <span style={{ fontSize: 9, fontFamily: "var(--font-mono)",
+                             color: "var(--color-text-tertiary)" }}>
+                {risk.RiskId}
               </span>
             )}
           </div>
@@ -353,7 +399,7 @@ const RiskCard = ({ risk, onUpdate }) => {
         <div style={{ display: "flex", justifyContent: "space-between",
                       fontSize: 11, color: "var(--color-text-secondary)" }}>
           <span>{risk.Treatment} · {risk.OwnerName || "Owner TBC"}</span>
-          <span style={{ color: isOverdue ? "#A32D2D" : "var(--color-text-tertiary)" }}>
+          <span style={{ color: risk.ReviewOverdue ? "#A32D2D" : "var(--color-text-tertiary)" }}>
             Review: {risk.ReviewDate || "Not set"}
           </span>
         </div>
@@ -370,6 +416,9 @@ const RiskCard = ({ risk, onUpdate }) => {
             <Field l="Source"        v={risk.Source} />
             <Field l="Identified"    v={risk.DateIdentified} />
             <Field l="Last reviewed" v={risk.LastReviewed || "Not reviewed"} />
+            {risk.AcceptedBy && (
+              <Field l="Accepted by" v={`${risk.AcceptedBy}${risk.AcceptedDate ? ` on ${risk.AcceptedDate}` : ""}`} />
+            )}
           </div>
 
           {risk.TreatmentActions && (
@@ -387,35 +436,22 @@ const RiskCard = ({ risk, onUpdate }) => {
           )}
           {risk.Notes && <Field l="Notes" v={risk.Notes} />}
 
-          {/* Status actions */}
-          {risk.Status !== "Closed" && (
+          {/* Status transition buttons — Admin only */}
+          {isAdmin && transitions.length > 0 && (
             <div style={{ display: "flex", gap: 6, marginTop: 10, flexWrap: "wrap" }}>
-              {risk.Status === "Open" && (
-                <button onClick={() => handleStatusChange("Under treatment")}
+              {transitions.map(nextStatus => (
+                <button
+                  key={nextStatus}
+                  onClick={() => handleStatusChange(nextStatus)}
                   disabled={updating}
-                  style={{ padding: "6px 12px", fontSize: 11, borderRadius: 7, border: "none",
-                           background: "#1D9E75", color: "#fff", cursor: "pointer", fontWeight: 500 }}>
-                  Mark under treatment
+                  style={{
+                    padding: "6px 12px", fontSize: 11, borderRadius: 7, cursor: "pointer",
+                    fontWeight: 500, opacity: updating ? 0.6 : 1,
+                    ...(STATUS_BTN_STYLES[nextStatus] || {}),
+                  }}>
+                  {STATUS_BTN_LABELS[nextStatus] || nextStatus}
                 </button>
-              )}
-              {risk.Status !== "Accepted" && (
-                <button onClick={() => handleStatusChange("Accepted")}
-                  disabled={updating}
-                  style={{ padding: "6px 12px", fontSize: 11, borderRadius: 7,
-                           border: "1.5px solid #C0C0C0", background: "transparent",
-                           color: "var(--color-text-secondary)", cursor: "pointer" }}>
-                  Accept risk
-                </button>
-              )}
-              {risk.Status === "Under treatment" && (
-                <button onClick={() => handleStatusChange("Closed")}
-                  disabled={updating}
-                  style={{ padding: "6px 12px", fontSize: 11, borderRadius: 7,
-                           border: "none", background: "#0C447C", color: "#fff",
-                           cursor: "pointer", fontWeight: 500 }}>
-                  Close — treatment complete
-                </button>
-              )}
+              ))}
             </div>
           )}
         </div>
@@ -428,11 +464,14 @@ const RiskCard = ({ risk, onUpdate }) => {
 //  Main component
 // =============================================================================
 
-export default function StrategicRisks() {
-  const [showForm, setShowForm]       = useState(false);
-  const [statusFilter, setStatusFilter] = useState("All");
-  const [search, setSearch]           = useState("");
+const STATUS_FILTERS = ["All", "Open", "Under treatment", "Accepted", "Transferred", "Avoided", "Closed"];
 
+export default function StrategicRisks() {
+  const [showForm,      setShowForm]      = useState(false);
+  const [statusFilter,  setStatusFilter]  = useState("All");
+  const [search,        setSearch]        = useState("");
+
+  const { isAdmin } = useCurrentUserRole();
   const qc = useQueryClient();
   const { data: risks = [], isLoading, error, refetch } = useQuery({
     queryKey: ["risks"],
@@ -447,18 +486,18 @@ export default function StrategicRisks() {
       const q = search.toLowerCase();
       list = list.filter(r =>
         (r.Description || "").toLowerCase().includes(q) ||
-        (r.Category    || "").toLowerCase().includes(q)
+        (r.Category    || "").toLowerCase().includes(q) ||
+        (r.RiskId      || "").toLowerCase().includes(q)
       );
     }
     return list;
   }, [risks, statusFilter, search]);
 
+  // Critical = score >= 10 (bands: 1-3 Low, 4-6 Medium, 7-9 High, 10-12 Critical)
   const counts = useMemo(() => ({
-    critical: risks.filter(r => r.RiskScore >= 8).length,
+    critical: risks.filter(r => r.RiskScore >= 10).length,
     open:     risks.filter(r => r.Status === "Open").length,
-    overdue:  risks.filter(r =>
-      r.ReviewDate && new Date(r.ReviewDate) < new Date() && r.Status !== "Closed"
-    ).length,
+    overdue:  risks.filter(r => r.ReviewOverdue).length,
   }), [risks]);
 
   const handleUpdate = async (id, body) => {
@@ -471,6 +510,9 @@ export default function StrategicRisks() {
 
   return (
     <>
+      {!isAdmin && (
+        <ReadOnlyBanner message="Strategic risks are curated by OrgOS Admins (ExCo). You have read-only access to this register." />
+      )}
       {/* Header */}
       <div style={{ marginBottom: 16 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
@@ -481,23 +523,25 @@ export default function StrategicRisks() {
               regulatory shifts. No AI extraction — human judgment only.
             </div>
           </div>
-          <button
-            onClick={() => setShowForm(!showForm)}
-            style={{ padding: "8px 16px", fontSize: 12, borderRadius: 8, border: "none",
-                     background: "#A32D2D", color: "#fff", cursor: "pointer",
-                     fontWeight: 500, flexShrink: 0 }}
-          >
-            + Add risk
-          </button>
+          {isAdmin && (
+            <button
+              onClick={() => setShowForm(!showForm)}
+              style={{ padding: "8px 16px", fontSize: 12, borderRadius: 8, border: "none",
+                       background: "#A32D2D", color: "#fff", cursor: "pointer",
+                       fontWeight: 500, flexShrink: 0 }}
+            >
+              + Add risk
+            </button>
+          )}
         </div>
 
         {/* Summary stats */}
         <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
           {[
-            { l: `${risks.length} total`,          color: "#595952", bg: "#F1EFE8", bd: "#B4B2A9" },
-            { l: `${counts.critical} critical`,    color: "#791F1F", bg: "#FCEBEB", bd: "#F09595" },
-            { l: `${counts.open} open`,             color: "#A32D2D", bg: "#FFF8F8", bd: "#F09595" },
-            { l: `${counts.overdue} review overdue`,color: "#633806", bg: "#FAEEDA", bd: "#FAC775" },
+            { l: `${risks.length} total`,           color: "#595952", bg: "#F1EFE8", bd: "#B4B2A9" },
+            { l: `${counts.critical} critical`,     color: "#791F1F", bg: "#FCEBEB", bd: "#F09595" },
+            { l: `${counts.open} open`,              color: "#A32D2D", bg: "#FFF8F8", bd: "#F09595" },
+            { l: `${counts.overdue} review overdue`, color: "#633806", bg: "#FAEEDA", bd: "#FAC775" },
           ].map(s => (
             <div key={s.l} style={{ padding: "3px 10px", borderRadius: 6, fontSize: 11,
                                     fontWeight: 500, background: s.bg, color: s.color,
@@ -518,7 +562,7 @@ export default function StrategicRisks() {
 
       {/* Filters */}
       <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
-        {["All", "Open", "Under treatment", "Accepted", "Closed"].map(s => (
+        {STATUS_FILTERS.map(s => (
           <button key={s} onClick={() => setStatusFilter(s)}
             style={{ padding: "5px 10px", fontSize: 11, borderRadius: 6, cursor: "pointer",
                      fontWeight: statusFilter === s ? 600 : 400,
@@ -530,7 +574,7 @@ export default function StrategicRisks() {
         ))}
         <input
           type="text" value={search} onChange={e => setSearch(e.target.value)}
-          placeholder="Search risks..."
+          placeholder="Search risks, category, risk ID..."
           style={{ flex: 1, minWidth: 180, fontSize: 12, padding: "6px 12px", borderRadius: 8,
                    border: "1.5px solid #C0C0C0", background: "var(--color-background-primary)",
                    color: "var(--color-text-primary)", outline: "none" }}
@@ -549,7 +593,7 @@ export default function StrategicRisks() {
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {filtered.map(risk => (
-            <RiskCard key={risk.id} risk={risk} onUpdate={handleUpdate} />
+            <RiskCard key={risk.id} risk={risk} onUpdate={handleUpdate} isAdmin={isAdmin} />
           ))}
         </div>
       )}

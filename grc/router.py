@@ -11,7 +11,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from auth.validator import CurrentUser, get_current_user
+from auth.validator import CurrentUser, get_current_user, require_admin
 from graph.exceptions import (
     GraphAPIError,
     GraphNotFoundError,
@@ -27,10 +27,7 @@ router = APIRouter(prefix="/api/v1/grc", tags=["GRC — Tier 1"])
 
 
 def _handle_graph_error(exc: Exception, operation: str) -> None:
-    """
-    Convert Graph API exceptions to appropriate FastAPI HTTP responses.
-    Called in every endpoint's except block.
-    """
+    """Convert Graph API exceptions to appropriate FastAPI HTTP responses."""
     if isinstance(exc, SharePointListNotConfiguredError):
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
@@ -69,12 +66,6 @@ async def list_documents(
     department: Optional[str] = Query(None),
     user: CurrentUser = Depends(get_current_user),
 ) -> list[schemas.DocumentRead]:
-    """
-    Returns all documents from the Document Register.
-    Only approved, controlled documents are in this register.
-    Filter by status (Active / Under Review / Superseded / Withdrawn)
-    or department.
-    """
     try:
         return await service.get_documents(status=status_filter, department=department)
     except Exception as exc:
@@ -88,13 +79,9 @@ async def list_documents(
     summary="Register an approved document",
 )
 async def create_document(
-    doc: schemas.DocumentCreate
+    doc: schemas.DocumentCreate,
+    user: CurrentUser = Depends(get_current_user),
 ) -> schemas.DocumentRead:
-    """
-    Add a new approved document to the Document Register.
-    This endpoint is called by the Document Lifecycle Approval cascade (Tier 2).
-    Documents must not be added here directly unless they have been approved.
-    """
     try:
         return await service.create_document(doc)
     except Exception as exc:
@@ -108,20 +95,22 @@ async def resolve_user_by_email(
 ) -> dict:
     try:
         from graph.client import _request
-        # Try exact UPN first
         try:
             url  = f"{settings.graph_base_url}/users/{email}"
             data = await _request("GET", url, context=f"Resolve user {email}")
         except Exception:
-            # Fall back to $filter search by mail or UPN
             url    = f"{settings.graph_base_url}/users"
-            params = {"$filter": f"mail eq '{email}' or userPrincipalName eq '{email}'",
-                      "$select": "id,displayName,mail,userPrincipalName,jobTitle"}
-            resp   = await _request("GET", url, params=params, context=f"Search user {email}")
+            params = {
+                "$filter": f"mail eq '{email}' or userPrincipalName eq '{email}'",
+                "$select": "id,displayName,mail,userPrincipalName,jobTitle",
+            }
+            resp    = await _request("GET", url, params=params, context=f"Search user {email}")
             results = resp.get("value", [])
             if not results:
-                raise HTTPException(status_code=404,
-                    detail=f"No Microsoft 365 account found for '{email}'.")
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"No Microsoft 365 account found for '{email}'.",
+                )
             data = results[0]
 
         return {
@@ -132,9 +121,12 @@ async def resolve_user_by_email(
         }
     except HTTPException:
         raise
-    except Exception as exc:
-        raise HTTPException(status_code=404,
-            detail=f"No Microsoft 365 account found for '{email}'.")
+    except Exception:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No Microsoft 365 account found for '{email}'.",
+        )
+
 
 @router.get(
     "/documents/{item_id}",
@@ -176,10 +168,6 @@ async def delete_document(
     item_id: str,
     user: CurrentUser = Depends(get_current_user),
 ) -> None:
-    """
-    Soft-delete only — sets Status = 'Withdrawn'.
-    OrgOS never hard-deletes register entries. Audit trail is preserved.
-    """
     try:
         await service.soft_delete_document(item_id)
     except Exception as exc:
@@ -221,27 +209,21 @@ async def create_role(
         _handle_graph_error(exc, "create role")
 
 
-
-
-
 @router.patch(
     "/roles/{item_id}",
     response_model=schemas.RoleRead,
-    summary="Update a role (e.g. reassign current holder)",
+    summary="Update a role",
 )
 async def update_role(
     item_id: str,
     role: schemas.RoleUpdate,
     user: CurrentUser = Depends(get_current_user),
 ) -> schemas.RoleRead:
-    """
-    Key use case: when a person changes role, update current_holder_id here.
-    All ownership across all registers updates automatically via Entra ID resolution.
-    """
     try:
         return await service.update_role(item_id, role)
     except Exception as exc:
         _handle_graph_error(exc, f"update role {item_id}")
+
 
 @router.patch(
     "/roles/{item_id}/assign",
@@ -251,18 +233,8 @@ async def update_role(
 async def assign_role(
     item_id: str,
     assignment: schemas.RoleAssign,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(require_admin),
 ) -> schemas.RoleRead:
-    """
-    The primary action on the Role Register.
-    Assigns a person to a confirmed but unassigned role.
-    Only Compliance Lead or OrgOS Admin can perform this action.
-    """
-    if "Compliance.Lead" not in user.roles and "OrgOS.Admin" not in user.roles:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Compliance Lead or Admin role required to assign roles",
-        )
     try:
         return await service.assign_role_holder(item_id, assignment.current_holder_id)
     except Exception as exc:
@@ -277,12 +249,10 @@ async def assign_role(
 async def list_unassigned_roles(
     user: CurrentUser = Depends(get_current_user),
 ) -> list[schemas.RoleRead]:
-    """Used by the Work Hub to surface unassigned roles as urgent items."""
     try:
         return await service.get_unassigned_roles()
     except Exception as exc:
-        _handle_graph_error(exc, "list unassigned roles")        
-
+        _handle_graph_error(exc, "list unassigned roles")
 
 
 @router.get(
@@ -297,7 +267,7 @@ async def get_role(
     try:
         return await service.get_role(item_id)
     except Exception as exc:
-        _handle_graph_error(exc, f"get role {item_id}")    
+        _handle_graph_error(exc, f"get role {item_id}")
 
 
 # =============================================================================
@@ -311,11 +281,15 @@ async def get_role(
 )
 async def list_obligations(
     obligation_type: Optional[str] = Query(None, alias="type"),
+    authority:       Optional[str] = Query(None),
     user: CurrentUser = Depends(get_current_user),
 ) -> list[schemas.ObligationRead]:
-    """Status (Overdue / Due Soon / Upcoming) is calculated on every read."""
+    """Status (Overdue / Due Soon / Upcoming / Completed) is calculated on every read."""
     try:
-        return await service.get_obligations(obligation_type=obligation_type)
+        return await service.get_obligations(
+            obligation_type=obligation_type,
+            authority=authority,
+        )
     except Exception as exc:
         _handle_graph_error(exc, "list obligations")
 
@@ -395,6 +369,82 @@ async def update_obligation(
         _handle_graph_error(exc, f"update obligation {item_id}")
 
 
+@router.patch(
+    "/compliance/{item_id}/complete",
+    response_model=schemas.ObligationRead,
+    summary="Mark an obligation as completed; rolls recurrence forward",
+)
+async def complete_obligation(
+    item_id: str,
+    body: schemas.CompleteObligation,
+    user: CurrentUser = Depends(get_current_user),
+) -> schemas.ObligationRead:
+    """
+    For Once obligations: stamps CompletedDate — status becomes Completed.
+    For recurring obligations: rolls the DueDate forward one period and
+    records the completion for audit history. The obligation re-enters
+    the active calendar cycle with the new due date.
+    """
+    try:
+        return await service.complete_obligation(
+            item_id,
+            user_oid=user.oid,
+            user_name=user.name,
+            body=body,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _handle_graph_error(exc, f"complete obligation {item_id}")
+
+
+@router.post(
+    "/compliance/{item_id}/escalate",
+    summary="Escalate an overdue obligation to Gap Analysis",
+)
+async def escalate_obligation(
+    item_id: str,
+    body: schemas.EscalateObligation,
+    user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    """
+    Creates a Gap Analysis item (category = Obligation gap) and links the
+    obligation to it. Idempotent — repeated calls return the existing gap ID.
+    Requires Compliance Lead or OrgOS Admin.
+    """
+    if "Compliance.Lead" not in user.roles and "OrgOS.Admin" not in user.roles:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Compliance Lead or Admin role required to escalate obligations",
+        )
+    try:
+        return await service.escalate_obligation(
+            item_id,
+            user_oid=user.oid,
+            user_name=user.name,
+            escalation_notes=body.escalation_notes,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _handle_graph_error(exc, f"escalate obligation {item_id}")
+
+
+@router.delete(
+    "/compliance/{item_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Soft-delete a compliance obligation (sets status to Withdrawn)",
+)
+async def delete_obligation(
+    item_id: str,
+    user: CurrentUser = Depends(get_current_user),
+) -> None:
+    try:
+        await service.soft_delete_obligation(item_id)
+    except Exception as exc:
+        _handle_graph_error(exc, f"soft-delete obligation {item_id}")
+
+
 # =============================================================================
 #  Contract Register
 # =============================================================================
@@ -405,11 +455,15 @@ async def update_obligation(
     summary="List all contracts",
 )
 async def list_contracts(
-    contract_type: Optional[str] = Query(None, alias="type"),
+    contract_type:    Optional[str] = Query(None, alias="type"),
+    lifecycle_status: Optional[str] = Query(None),
     user: CurrentUser = Depends(get_current_user),
 ) -> list[schemas.ContractRead]:
     try:
-        return await service.get_contracts(contract_type=contract_type)
+        return await service.get_contracts(
+            contract_type=contract_type,
+            lifecycle_status=lifecycle_status,
+        )
     except Exception as exc:
         _handle_graph_error(exc, "list contracts")
 
@@ -473,3 +527,67 @@ async def update_contract(
         return await service.update_contract(item_id, contract)
     except Exception as exc:
         _handle_graph_error(exc, f"update contract {item_id}")
+
+
+@router.patch(
+    "/contracts/{item_id}/lifecycle",
+    response_model=schemas.ContractRead,
+    summary="Update contract lifecycle status (Terminate, Under Review, Supersede)",
+)
+async def update_contract_lifecycle(
+    item_id: str,
+    lifecycle_status: schemas.ContractLifecycleStatus,
+    user: CurrentUser = Depends(get_current_user),
+) -> schemas.ContractRead:
+    """
+    Dedicated endpoint for lifecycle transitions. Requires Compliance Lead.
+    lifecycle_status body is passed as a JSON string: "Terminated"
+    """
+    if "Compliance.Lead" not in user.roles and "OrgOS.Admin" not in user.roles:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Compliance Lead or Admin role required to change contract lifecycle status",
+        )
+    try:
+        update = schemas.ContractUpdate(lifecycle_status=lifecycle_status)
+        return await service.update_contract(item_id, update)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _handle_graph_error(exc, f"update lifecycle {item_id}")
+
+
+@router.post(
+    "/contracts/{item_id}/add-obligation",
+    response_model=schemas.ObligationRead,
+    status_code=status.HTTP_201_CREATED,
+    summary="Create a Compliance Calendar obligation from this contract",
+)
+async def add_contract_obligation(
+    item_id: str,
+    body: schemas.ContractAddObligation,
+    user: CurrentUser = Depends(get_current_user),
+) -> schemas.ObligationRead:
+    """
+    Creates a Compliance Calendar entry linked to this contract.
+    The LinkedContractId field on the obligation traces back to this contract.
+    """
+    try:
+        return await service.add_contract_obligation(item_id, body)
+    except Exception as exc:
+        _handle_graph_error(exc, f"add contract obligation {item_id}")
+
+
+@router.delete(
+    "/contracts/{item_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Soft-delete a contract (sets status to Withdrawn)",
+)
+async def delete_contract(
+    item_id: str,
+    user: CurrentUser = Depends(get_current_user),
+) -> None:
+    try:
+        await service.soft_delete_contract(item_id)
+    except Exception as exc:
+        _handle_graph_error(exc, f"soft-delete contract {item_id}")

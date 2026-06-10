@@ -9,7 +9,7 @@
 // =============================================================================
 
 import { useState, useMemo } from "react";
-import { useMsal } from "@azure/msal-react";
+import { useCurrentUserRole } from "../../hooks/useCurrentUserRole.js";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import StatusBadge from "../../components/shared/StatusBadge.jsx";
 import { Field } from "../../components/shared/Forms.jsx";
@@ -55,7 +55,7 @@ const RunClassifierButton = ({ onComplete }) => {
       </button>
       {result && (
         <div style={{ fontSize: 10, color: "#3C3489", textAlign: "right" }}>
-          {result.role_variants_written} role variants · {result.duplicates_written} duplicates written
+          {result.role_variants_written} role variants · {result.duplicates_written} duplicates · {result.conflicts_written || 0} conflicts written
         </div>
       )}
       {error && (
@@ -82,13 +82,6 @@ const zone3Api = {
     }).then(r => r.data),
 };
 
-function useUserRoles() {
-  const { accounts } = useMsal();
-  const roles = accounts[0]?.idTokenClaims?.roles || [];
-  return {
-    isCompliance: roles.includes("Compliance.Lead") || roles.includes("OrgOS.Admin"),
-  };
-}
 
 // =============================================================================
 //  Harmonisation decision panel
@@ -299,7 +292,7 @@ const HarmCard = ({ item, isCompliance, onDecide, isPending }) => {
           {/* Details */}
           {item.CanonicalName && <Field l="Proposed canonical" v={item.CanonicalName} />}
           {item.VariantTerms  && <Field l="Variant terms"     v={variants.join(", ")} />}
-          {item.VariantFrequency && <Field l="Frequency" v={item.VariantFrequency} />}
+          {item.VariantFrequency && <Field l="Classifier / AI guidance" v={item.VariantFrequency} />}
 
           {/* Already decided */}
           {isDecided ? (
@@ -339,7 +332,7 @@ export default function Harmonisation() {
   const [filter, setFilter] = useState("pending");
   const [actionState, setActionState] = useState({ pending: false, itemId: null });
 
-  const { isCompliance } = useUserRoles();
+  const { isCompliance } = useCurrentUserRole();
   const qc = useQueryClient();
   const { data: items = [], isLoading, error, refetch } = useQuery({
     queryKey: ["zone3"],

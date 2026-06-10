@@ -7,7 +7,7 @@
 // =============================================================================
 
 import { useState, useRef } from "react";
-import { useMsal } from "@azure/msal-react";
+import { useCurrentUserRole } from "../../hooks/useCurrentUserRole.js";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import StatusBadge from "../../components/shared/StatusBadge.jsx";
 import { Field } from "../../components/shared/Forms.jsx";
@@ -223,14 +223,6 @@ function useLifecycleDocs() {
   });
 }
 
-function useCurrentUser() {
-  const { accounts } = useMsal();
-  const a = accounts[0];
-  return {
-    oid:  a?.idTokenClaims?.oid || a?.localAccountId || "",
-    name: a?.name || a?.username || "",
-  };
-}
 
 // =============================================================================
 //  Stage config
@@ -401,7 +393,7 @@ const DOC_TYPES = [
 ];
 
 const NewDocForm = ({ onSuccess, onCancel }) => {
-  const { oid, name } = useCurrentUser();
+  const { oid, name } = useCurrentUserRole();
   const qc = useQueryClient();
   const [form, setForm] = useState({
     title:             "",
@@ -2098,7 +2090,7 @@ export default function DocumentLifecycle() {
   const [progressingDoc, setProgressingDoc] = useState(null); // doc whose Progress → was clicked
   const [approvingDoc,  setApprovingDoc]  = useState(null);   // doc being approved
 
-  const { oid: currentUserOid } = useCurrentUser();
+  const { oid: currentUserOid } = useCurrentUserRole();
   const { data: docs = [], isLoading, error, refetch } = useLifecycleDocs();
   const qc = useQueryClient();
 

@@ -9,6 +9,8 @@ import StatusBadge from "../../components/shared/StatusBadge.jsx";
 import { Field, InlineLink } from "../../components/shared/Forms.jsx";
 import { LoadingState, TableSkeleton, ErrorState, EmptyState } from "../../components/shared/LoadingState.jsx";
 import { useDocuments, useSoftDeleteDocument } from "../../hooks/useGrc.js";
+import { useCurrentUserRole } from "../../hooks/useCurrentUserRole.js";
+import ReadOnlyBanner from "../../components/shared/ReadOnlyBanner.jsx";
 import DocumentForm from "./DocumentForm.jsx";
 
 const COLS = [
@@ -40,6 +42,7 @@ export default function DocumentRegister({ go }) {
   const [selected, setSelected] = useState(null);
   const [showForm, setShowForm] = useState(false);
 
+  const { isCompliance } = useCurrentUserRole();
   const { data: documents = [], isLoading, error, refetch } = useDocuments();
   const softDelete = useSoftDeleteDocument();
 
@@ -91,7 +94,7 @@ export default function DocumentRegister({ go }) {
           >
             Back
           </button>
-          {selected.status !== "Withdrawn" && (
+          {isCompliance && selected.status !== "Withdrawn" && (
             <button
               onClick={async () => {
                 if (!window.confirm(`Withdraw "${selected.title}"? This cannot be undone.`)) return;
@@ -122,6 +125,9 @@ export default function DocumentRegister({ go }) {
   // ── List view ────────────────────────────────────────────────────────────
   return (
     <>
+      {!isCompliance && (
+        <ReadOnlyBanner message="You have read-only access to the Document Register. Contact the Compliance team to register or withdraw documents." />
+      )}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
         <div>
           <div style={{ fontSize: 17, fontWeight: 600, marginBottom: 3 }}>Document register</div>
@@ -129,12 +135,14 @@ export default function DocumentRegister({ go }) {
             Approved controlled documents.
           </div>
         </div>
-        <button
-          onClick={() => setShowForm(true)}
-          style={{ padding: "8px 16px", fontSize: 12, borderRadius: 8, border: "none", background: "#378ADD", color: "#fff", cursor: "pointer", fontWeight: 500, flexShrink: 0 }}
-        >
-          + Register document
-        </button>
+        {isCompliance && (
+          <button
+            onClick={() => setShowForm(true)}
+            style={{ padding: "8px 16px", fontSize: 12, borderRadius: 8, border: "none", background: "#378ADD", color: "#fff", cursor: "pointer", fontWeight: 500, flexShrink: 0 }}
+          >
+            + Register document
+          </button>
+        )}
       </div>
 
       <input

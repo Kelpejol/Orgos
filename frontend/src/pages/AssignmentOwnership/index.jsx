@@ -9,7 +9,7 @@
 // =============================================================================
 
 import { useState, useMemo } from "react";
-import { useMsal } from "@azure/msal-react";
+import { useCurrentUserRole } from "../../hooks/useCurrentUserRole.js";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import StatusBadge from "../../components/shared/StatusBadge.jsx";
 import { Field } from "../../components/shared/Forms.jsx";
@@ -25,21 +25,14 @@ const zone2Api = {
     apiClient.get("/api/v1/queue/items", { params: { item_type: "Orphan" } })
       .then(r => r.data),
 
-  decide: (itemId, decision, rationale, linkedDocCode) =>
+  decide: (itemId, decision, rationale, extras = {}) =>
     apiClient.patch(`/api/v1/queue/items/${itemId}/zone2-decide`, {
       decision,
       rationale,
-      ...(linkedDocCode ? { linked_doc_code: linkedDocCode } : {}),
+      ...extras,
     }).then(r => r.data),
 };
 
-function useUserRoles() {
-  const { accounts } = useMsal();
-  const roles = accounts[0]?.idTokenClaims?.roles || [];
-  return {
-    isCompliance: roles.includes("Compliance.Lead") || roles.includes("OrgOS.Admin"),
-  };
-}
 
 // =============================================================================
 //  Decision panels — different per subtype
@@ -70,27 +63,271 @@ const ConflictDecisions = [
   { key: "Mark False Positive",        label: "Mark false positive",       desc: "Not actually a conflict — AI misread the documents" },
 ];
 
+const DOC_CODE_DECISIONS = new Set([
+  "Add to existing policy",
+  "Add to existing JD",
+  "Select governing document",
+  "Merge",
+]);
+
+const ROLE_DECISIONS = new Set([
+  "Reassign control",
+  "Create new role",
+]);
+
+const MODAL_DECISIONS = new Set([
+  ...DOC_CODE_DECISIONS,
+  ...ROLE_DECISIONS,
+  "Request Second Review",
+  "Escalate to ExCo",
+]);
+
+const Zone2ActionModal = ({
+  decision,
+  item,
+  rationale,
+  onClose,
+  onSubmit,
+  isPending,
+}) => {
+  const needsDocCode = DOC_CODE_DECISIONS.has(decision.key);
+  const needsRole = ROLE_DECISIONS.has(decision.key);
+  const needsReviewer = decision.key === "Request Second Review";
+  const [linkedDoc, setLinkedDoc] = useState("");
+  const [targetRole, setTargetRole] = useState(item.ProposedOwnerRole || "");
+  const [reviewerQuery, setReviewerQuery] = useState("");
+  const [reviewer, setReviewer] = useState(null);
+  const [reviewerLoading, setReviewerLoading] = useState(false);
+  const [reviewerError, setReviewerError] = useState("");
+
+  const canSubmit =
+    rationale.trim().length >= 10 &&
+    (!needsDocCode || linkedDoc.trim().length > 0) &&
+    (!needsRole || targetRole.trim().length > 0) &&
+    (!needsReviewer || reviewer) &&
+    !isPending;
+
+  const searchReviewer = async () => {
+    const value = reviewerQuery.trim();
+    if (!value) {
+      setReviewerError("Enter a Microsoft 365 email or UPN.");
+      return;
+    }
+    setReviewerLoading(true);
+    setReviewerError("");
+    setReviewer(null);
+    try {
+      const data = await apiClient.get("/api/v1/grc/users/resolve", { params: { email: value } }).then(r => r.data);
+      setReviewer(data);
+    } catch (err) {
+      setReviewerError(err.message || "No person found.");
+    } finally {
+      setReviewerLoading(false);
+    }
+  };
+
+  const submit = () => {
+    if (!canSubmit) return;
+    const extras = {};
+    if (needsDocCode) extras.linked_doc_code = linkedDoc.trim();
+    if (needsRole) extras.target_role = targetRole.trim();
+    if (needsReviewer && reviewer) {
+      extras.reviewer_oid = reviewer.oid;
+      extras.reviewer_name = reviewer.display_name;
+      extras.reviewer_email = reviewer.email;
+    }
+    onSubmit(decision.key, extras);
+  };
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: "fixed", inset: 0, zIndex: 1000,
+        background: "rgba(0,0,0,0.42)",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        padding: 20,
+      }}
+    >
+      <div
+        onClick={e => e.stopPropagation()}
+        style={{
+          width: 460, maxWidth: "100%",
+          background: "var(--color-background-primary)",
+          borderRadius: 14,
+          boxShadow: "0 24px 60px rgba(0,0,0,0.18)",
+          padding: 18,
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, marginBottom: 14 }}>
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 700 }}>{decision.label}</div>
+            <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 4, lineHeight: 1.4 }}>
+              {decision.desc}
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            style={{ border: "none", background: "transparent", cursor: "pointer", fontSize: 18, lineHeight: 1 }}
+          >
+            ×
+          </button>
+        </div>
+
+        {needsDocCode && (
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ display: "block", fontSize: 10, fontWeight: 600,
+                            color: "var(--color-text-secondary)", marginBottom: 5,
+                            textTransform: "uppercase", letterSpacing: "0.4px" }}>
+              Document code <span style={{ color: "#A32D2D" }}>*</span>
+            </label>
+            <input
+              autoFocus
+              value={linkedDoc}
+              onChange={e => setLinkedDoc(e.target.value)}
+              placeholder="DRG-ISMS-POL-ACP-01-26"
+              style={{
+                width: "100%", fontSize: 13, padding: "9px 11px", borderRadius: 9,
+                border: `1.5px solid ${linkedDoc.trim() ? "#5DCAA5" : "#C0C0C0"}`,
+                background: "var(--color-background-primary)",
+                color: "var(--color-text-primary)", boxSizing: "border-box", outline: "none",
+              }}
+            />
+            <div style={{ fontSize: 10, color: "var(--color-text-tertiary)", marginTop: 5 }}>
+              This code is passed to the backend as <code>linked_doc_code</code> and used for the lifecycle task.
+            </div>
+          </div>
+        )}
+
+        {needsRole && (
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ display: "block", fontSize: 10, fontWeight: 600,
+                            color: "var(--color-text-secondary)", marginBottom: 5,
+                            textTransform: "uppercase", letterSpacing: "0.4px" }}>
+              Target role <span style={{ color: "#A32D2D" }}>*</span>
+            </label>
+            <input
+              autoFocus
+              value={targetRole}
+              onChange={e => setTargetRole(e.target.value)}
+              placeholder="Role Register title"
+              style={{
+                width: "100%", fontSize: 13, padding: "9px 11px", borderRadius: 9,
+                border: `1.5px solid ${targetRole.trim() ? "#5DCAA5" : "#C0C0C0"}`,
+                background: "var(--color-background-primary)",
+                color: "var(--color-text-primary)", boxSizing: "border-box", outline: "none",
+              }}
+            />
+          </div>
+        )}
+
+        {decision.key === "Request Second Review" && (
+          <div style={{ marginBottom: 12 }}>
+            <label style={{ display: "block", fontSize: 10, fontWeight: 600,
+                            color: "var(--color-text-secondary)", marginBottom: 5,
+                            textTransform: "uppercase", letterSpacing: "0.4px" }}>
+              Reviewer dragnet mail <span style={{ color: "#A32D2D" }}>*</span>
+            </label>
+            <div style={{ display: "flex", gap: 8 }}>
+              <input
+                autoFocus
+                value={reviewerQuery}
+                onChange={e => setReviewerQuery(e.target.value)}
+                placeholder="user@dragnet.com"
+                style={{
+                  flex: 1, fontSize: 13, padding: "9px 11px", borderRadius: 9,
+                  border: `1.5px solid ${reviewer ? "#5DCAA5" : "#C0C0C0"}`,
+                  background: "var(--color-background-primary)",
+                  color: "var(--color-text-primary)", boxSizing: "border-box", outline: "none",
+                }}
+              />
+              <button
+                onClick={searchReviewer}
+                disabled={reviewerLoading}
+                style={{ minWidth: 86, padding: "9px 12px", borderRadius: 9,
+                         border: "1px solid #0C447C", background: "#0C447C",
+                         color: "#fff", cursor: "pointer", fontWeight: 600 }}
+              >
+                {reviewerLoading ? "Finding..." : "Find"}
+              </button>
+            </div>
+            {reviewerError && (
+              <div style={{ marginTop: 6, fontSize: 11, color: "#A32D2D" }}>
+                {reviewerError}
+              </div>
+            )}
+            {reviewer && (
+              <div style={{ marginTop: 8, padding: "9px 11px", borderRadius: 9,
+                            border: "1px solid #D0D0D0", background: "var(--color-background-secondary)" }}>
+                <div style={{ fontSize: 12, fontWeight: 600 }}>
+                  {reviewer.display_name || reviewer.email}
+                </div>
+                <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginTop: 2 }}>
+                  {reviewer.email} {reviewer.job_title ? `· ${reviewer.job_title}` : ""}
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        <div style={{ marginBottom: 14, padding: "9px 11px", borderRadius: 9,
+                      background: "var(--color-background-secondary)",
+                      color: "var(--color-text-secondary)", fontSize: 11, lineHeight: 1.5 }}>
+          <strong>Rationale:</strong> {rationale.trim()}
+        </div>
+
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+          <button
+            onClick={onClose}
+            style={{ padding: "9px 13px", fontSize: 12, borderRadius: 9,
+                     border: "1.5px solid #C0C0C0", background: "transparent",
+                     color: "var(--color-text-secondary)", cursor: "pointer" }}
+          >
+            Cancel
+          </button>
+          <button
+            onClick={submit}
+            disabled={!canSubmit}
+            style={{ padding: "9px 13px", fontSize: 12, borderRadius: 9,
+                     border: "none", fontWeight: 600,
+                     background: canSubmit ? "#1D9E75" : "#E8E8E8",
+                     color: canSubmit ? "#fff" : "#999",
+                     cursor: canSubmit ? "pointer" : "not-allowed" }}
+          >
+            {isPending ? "Processing..." : "Confirm decision"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
 const DecisionPanel = ({ item, decisions, onDecide, isPending }) => {
-  const [rationale,    setRationale]    = useState("");
-  const [linkedDoc,    setLinkedDoc]    = useState("");
-  const [active,       setActive]       = useState(null);
-  const [cascadeResult,setCascadeResult]= useState("");
+  const [rationale, setRationale] = useState("");
+  const [active, setActive] = useState(null);
+  const [modalDecision, setModalDecision] = useState(null);
+  const [cascadeResult, setCascadeResult] = useState("");
   const ratOk = rationale.trim().length >= 10;
 
-  const handle = async (key) => {
+  const submitDecision = async (key, extras = {}) => {
     if (!ratOk) return;
     setActive(key);
     try {
-      const result = await onDecide(
-        item.id, key, rationale.trim(),
-        key === "Add to existing policy" ? linkedDoc.trim() || null : null
-      );
-      if (result?.cascade_result) {
-        setCascadeResult(result.cascade_result);
-      }
+      const result = await onDecide(item.id, key, rationale.trim(), extras);
+      if (result?.cascade_result) setCascadeResult(result.cascade_result);
+      setModalDecision(null);
     } finally {
       setActive(null);
     }
+  };
+
+  const clickDecision = (decision) => {
+    if (!ratOk || isPending) return;
+    if (MODAL_DECISIONS.has(decision.key)) {
+      setModalDecision(decision);
+      return;
+    }
+    submitDecision(decision.key);
   };
 
   return (
@@ -112,47 +349,42 @@ const DecisionPanel = ({ item, decisions, onDecide, isPending }) => {
         onBlur={e => (e.target.style.borderColor = ratOk ? "#5DCAA5" : "#C0C0C0")}
       />
 
-      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-        {decisions.map(d => (
-          <div key={d.key}>
-            {d.key === "Add to existing policy" && (
-              <input
-                type="text"
-                value={linkedDoc}
-                onChange={e => setLinkedDoc(e.target.value)}
-                placeholder="Document code to update (e.g. DRG-ISMS-POL-ACP-01-26)"
-                style={{
-                  width: "100%", fontSize: 11, padding: "6px 10px", borderRadius: 6,
-                  border: "1.5px solid #C0C0C0", background: "var(--color-background-primary)",
-                  color: "var(--color-text-primary)", marginBottom: 4,
-                  boxSizing: "border-box", outline: "none",
-                }}
-              />
-            )}
+      {rationale.length > 0 && !ratOk && (
+        <div style={{ fontSize: 10, color: "#A32D2D", marginBottom: 8 }}>
+          Rationale must be at least 10 characters.
+        </div>
+      )}
+
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+        {decisions.map(d => {
+          const disabled = !ratOk || isPending;
+          return (
             <button
-              onClick={() => handle(d.key)}
-              disabled={!ratOk || isPending}
+              key={d.key}
+              onClick={() => clickDecision(d)}
+              disabled={disabled}
               title={d.desc}
               style={{
-                width: "100%", padding: "9px 12px", fontSize: 12, borderRadius: 8,
-                textAlign: "left",
+                minHeight: 40,
+                padding: "9px 10px",
+                fontSize: 12,
+                borderRadius: 8,
+                textAlign: "center",
                 border: d.primary ? "none" : "1.5px solid #C0C0C0",
-                background: !ratOk || isPending ? "#E8E8E8"
+                background: disabled ? "#E8E8E8"
                   : d.primary ? "#791F1F"
                   : "var(--color-background-primary)",
-                color: !ratOk || isPending ? "#999"
+                color: disabled ? "#999"
                   : d.primary ? "#fff"
                   : "var(--color-text-primary)",
-                cursor: !ratOk || isPending ? "not-allowed" : "pointer",
-                fontWeight: d.primary ? 600 : 400,
-                display: "flex", justifyContent: "space-between", alignItems: "center",
+                cursor: disabled ? "not-allowed" : "pointer",
+                fontWeight: d.primary ? 600 : 500,
               }}
             >
-              <span>{active === d.key ? "Processing..." : d.label}</span>
-              <span style={{ fontSize: 10, opacity: 0.6, marginLeft: 8 }}>{d.desc}</span>
+              {active === d.key ? "Processing..." : d.label}
             </button>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       {cascadeResult && (
@@ -161,6 +393,17 @@ const DecisionPanel = ({ item, decisions, onDecide, isPending }) => {
                       border: "0.5px solid #5DCAA5" }}>
           {cascadeResult}
         </div>
+      )}
+
+      {modalDecision && (
+        <Zone2ActionModal
+          decision={modalDecision}
+          item={item}
+          rationale={rationale}
+          onClose={() => setModalDecision(null)}
+          onSubmit={submitDecision}
+          isPending={isPending || active === modalDecision.key}
+        />
       )}
     </div>
   );
@@ -174,12 +417,13 @@ const OrphanCard = ({ item, isCompliance, onDecide, isPending }) => {
   const [expanded, setExpanded] = useState(false);
   const isDecided = item.ReviewStatus && item.ReviewStatus !== "Pending Review";
   const direction = item.OrphanDirection || "JD_to_Doc";
+  const isConflict = direction === "Conflict" || item.OrphanClassification === "CONTROL_CONFLICT";
   const isJDtoDoc = direction === "JD_to_Doc";
 
-  const borderColor = isJDtoDoc ? "#F09595" : "#85B7EB";
-  const accentColor = isJDtoDoc ? "#791F1F" : "#0C447C";
-  const dirLabel    = isJDtoDoc ? "JD → No policy" : "Policy → Not in JD";
-  const decisions   = isJDtoDoc ? JDToDocDecisions : DocToJDDecisions;
+  const borderColor = isConflict ? "#FAC775" : isJDtoDoc ? "#F09595" : "#85B7EB";
+  const accentColor = isConflict ? "#633806" : isJDtoDoc ? "#791F1F" : "#0C447C";
+  const dirLabel    = isConflict ? "Document conflict" : isJDtoDoc ? "JD → No policy" : "Policy → Not in JD";
+  const decisions   = isConflict ? ConflictDecisions : isJDtoDoc ? JDToDocDecisions : DocToJDDecisions;
 
   return (
     <div style={{
@@ -203,7 +447,7 @@ const OrphanCard = ({ item, isCompliance, onDecide, isPending }) => {
                       alignItems: "center", marginBottom: 6, flexWrap: "wrap", gap: 4 }}>
           <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
             <span style={{ fontSize: 10, padding: "1px 7px", borderRadius: 3,
-                           fontWeight: 600, background: isJDtoDoc ? "#FCEBEB" : "#E6F1FB",
+                           fontWeight: 600, background: isConflict ? "#FAEEDA" : isJDtoDoc ? "#FCEBEB" : "#E6F1FB",
                            color: accentColor, border: `0.5px solid ${borderColor}` }}>
               {dirLabel}
             </span>
@@ -239,19 +483,23 @@ const OrphanCard = ({ item, isCompliance, onDecide, isPending }) => {
             <div style={{ fontSize: 11, fontWeight: 600, color: accentColor, marginBottom: 4 }}>
               {isJDtoDoc
                 ? "JD responsibility has no governing policy"
-                : "Control references a role whose JD lacks this responsibility"}
+                : isConflict
+                  ? "Two documents appear to define conflicting requirements"
+                  : "Control references a role whose JD lacks this responsibility"}
             </div>
             <div style={{ fontSize: 11, color: accentColor, opacity: 0.85, lineHeight: 1.5 }}>
               {isJDtoDoc
                 ? "Until resolved: no control governs this activity, no evidence is collected, and this responsibility is untracked in the compliance chain."
-                : "Until resolved: the control exists but the role's JD does not acknowledge this accountability. The person may not know they own this control."}
+                : isConflict
+                  ? "Until resolved: reviewers cannot rely on one clear governing requirement. Select the governing document, merge the requirements, escalate, or mark the conflict false positive."
+                  : "Until resolved: the control exists but the role's JD does not acknowledge this accountability. The person may not know they own this control."}
             </div>
           </div>
 
           {/* Details */}
           <Field l="Direction"      v={direction} />
           <Field l="Classification" v={item.OrphanClassification} />
-          {item.OrphanReason && <Field l="Reason" v={item.OrphanReason} />}
+          {item.OrphanReason && <Field l={isConflict ? "Classifier / AI guidance" : "Reason"} v={item.OrphanReason} />}
 
           {/* Already decided */}
           {isDecided ? (
@@ -296,7 +544,7 @@ export default function AssignmentOwnership() {
   const [filter, setFilter] = useState("pending");
   const [actionState, setActionState] = useState({ pending: false, itemId: null });
 
-  const { isCompliance } = useUserRoles();
+  const { isCompliance } = useCurrentUserRole();
   const qc = useQueryClient();
   const { data: items = [], isLoading, error, refetch } = useQuery({
     queryKey: ["zone2"],
@@ -324,10 +572,10 @@ export default function AssignmentOwnership() {
     return list;
   }, [items, search, filter]);
 
-  const handleDecide = async (itemId, decision, rationale, linkedDocCode) => {
+  const handleDecide = async (itemId, decision, rationale, extras = {}) => {
     setActionState({ pending: true, itemId });
     try {
-      const result = await zone2Api.decide(itemId, decision, rationale, linkedDocCode);
+      const result = await zone2Api.decide(itemId, decision, rationale, extras);
       qc.invalidateQueries({ queryKey: ["zone2"] });
       return result;
     } catch (err) {

@@ -7,7 +7,6 @@
 // =============================================================================
 
 import { useState, useMemo } from "react";
-import { useMsal } from "@azure/msal-react";
 import StatusBadge from "../../components/shared/StatusBadge.jsx";
 import { Field, FormError } from "../../components/shared/Forms.jsx";
 import {
@@ -16,6 +15,8 @@ import {
   EmptyState,
 } from "../../components/shared/LoadingState.jsx";
 import { useRoles, useAssignRole } from "../../hooks/useGrc.js";
+import { useCurrentUserRole } from "../../hooks/useCurrentUserRole.js";
+import ReadOnlyBanner from "../../components/shared/ReadOnlyBanner.jsx";
 import RoleForm from "./RoleForm.jsx";
 
 const COLS = [
@@ -28,18 +29,6 @@ const COLS = [
 ];
 
 const getHolder = (h) => (h ? h.display_name || h.email || "—" : "—");
-
-// Determine if user is CCO/Admin or Compliance Lead from MSAL token
-function useUserRoles() {
-  const { accounts } = useMsal();
-  const claims = accounts[0]?.idTokenClaims || {};
-  const roles = claims.roles || [];
-  return {
-    isAdmin: roles.includes("OrgOS.Admin"),
-    isCompliance:
-      roles.includes("Compliance.Lead") || roles.includes("OrgOS.Admin"),
-  };
-}
 
 // ── Assign person panel ────────────────────────────────────────────────────────
 const AssignPanel = ({ role, onSuccess, onCancel }) => {
@@ -156,7 +145,7 @@ export default function RoleRegister() {
   const [showForm, setShowForm] = useState(false);
   const [showAssign, setShowAssign] = useState(false);
 
-  const { isAdmin, isCompliance } = useUserRoles();
+  const { isAdmin, isCompliance, isStandard } = useCurrentUserRole();
   const { data: roles = [], isLoading, error, refetch } = useRoles();
 
   const unassignedCount = roles.filter(
@@ -231,8 +220,8 @@ export default function RoleRegister() {
           </div>
         )}
 
-        {/* Assign panel — compliance team and admin only */}
-        {isUnassigned && isCompliance && !showAssign && (
+        {/* Assign panel — Admin only (role assignment affects control routing) */}
+        {isUnassigned && isAdmin && !showAssign && (
           <button
             onClick={() => setShowAssign(true)}
             style={{
@@ -251,7 +240,7 @@ export default function RoleRegister() {
           </button>
         )}
 
-        {isUnassigned && isCompliance && showAssign && (
+        {isUnassigned && isAdmin && showAssign && (
           <AssignPanel
             role={selected}
             onSuccess={() => {
@@ -263,8 +252,8 @@ export default function RoleRegister() {
           />
         )}
 
-        {/* Reassign holder — compliance and admin only, already assigned roles */}
-        {!isUnassigned && isCompliance && !showAssign && (
+        {/* Reassign holder — Admin only */}
+        {!isUnassigned && isAdmin && !showAssign && (
           <button
             onClick={() => setShowAssign(true)}
             style={{
@@ -282,7 +271,7 @@ export default function RoleRegister() {
           </button>
         )}
 
-        {!isUnassigned && isCompliance && showAssign && (
+        {!isUnassigned && isAdmin && showAssign && (
           <AssignPanel
             role={selected}
             onSuccess={() => {
@@ -313,6 +302,9 @@ export default function RoleRegister() {
   // ── List view ─────────────────────────────────────────────────────────────────
   return (
     <>
+      {isStandard && (
+        <ReadOnlyBanner message="You have read-only access to the Role Register. Role assignment is restricted to OrgOS Admins." />
+      )}
       <div
         style={{
           display: "flex",

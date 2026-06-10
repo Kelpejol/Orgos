@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, s
 from agents.extractor import schemas
 from agents.extractor import service
 from agents.extractor.ollama_client import check_ollama_connectivity
-from auth.validator import CurrentUser, get_current_user
+from auth.validator import CurrentUser, get_current_user, require_compliance_lead
 
 logger = logging.getLogger(__name__)
 
@@ -32,7 +32,7 @@ MAX_FILE_SIZE_BYTES = 10 * 1024 * 1024
 )
 async def extract_from_text(
     request: schemas.ExtractionRequest,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(require_compliance_lead),
 ) -> schemas.ExtractionResponse:
     """
     Submit raw document text for GRC extraction.
@@ -83,7 +83,7 @@ async def extract_from_file(
         default=False,
         description="Write COMPLETE items to AI Review Queue staging list",
     ),
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(require_compliance_lead),
 ) -> schemas.ExtractionResponse:
     """
     Upload a PDF or DOCX policy document for GRC extraction.

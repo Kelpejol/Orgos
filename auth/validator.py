@@ -195,3 +195,17 @@ def require_compliance_lead(user: CurrentUser = Depends(get_current_user)) -> Cu
             detail="Compliance Lead role required for this action",
         )
     return user
+
+
+def require_admin(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+    """
+    FastAPI dependency — requires the OrgOS.Admin role.
+    Use on high-impact endpoints: role assignment, contract termination,
+    strategic risk creation, manual control creation.
+    """
+    if "OrgOS.Admin" not in user.roles:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="OrgOS Admin role required for this action. Contact your system administrator.",
+        )
+    return user
