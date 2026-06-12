@@ -54,13 +54,25 @@ async def lifespan(app: FastAPI):
         logger.info("JWKS pre-fetched successfully")
     except Exception as e:
         logger.warning(f"JWKS pre-fetch failed — will retry on first request: {e}")
+
+    # Start background scheduler (document review reminders + sensitisation deadlines)
+    try:
+        from jobs.scheduler import start_scheduler
+        start_scheduler()
+    except Exception as e:
+        logger.warning(f"APScheduler failed to start — scheduled jobs inactive: {e}")
+
     logger.info("OrgOS ready")
-    
 
     yield  # Application runs here
 
     # ── Shutdown ─────────────────────────────────────────────────────────
     logger.info("OrgOS shutting down")
+    try:
+        from jobs.scheduler import stop_scheduler
+        stop_scheduler()
+    except Exception as e:
+        logger.warning(f"APScheduler failed to stop cleanly: {e}")
     await graph_client.shutdown()
     logger.info("OrgOS shutdown complete")
 

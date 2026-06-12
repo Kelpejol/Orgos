@@ -7,11 +7,13 @@
 // =============================================================================
 
 import { useState, useRef } from "react";
+import { useNavigate } from "react-router-dom";
 import { useCurrentUserRole } from "../../hooks/useCurrentUserRole.js";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import StatusBadge from "../../components/shared/StatusBadge.jsx";
 import { Field } from "../../components/shared/Forms.jsx";
 import { LoadingState, ErrorState, EmptyState } from "../../components/shared/LoadingState.jsx";
+import UserSearchField from "../../components/shared/UserSearchField.jsx";
 import apiClient from "../../api/grcApi.js";
 
 // =============================================================================
@@ -79,6 +81,9 @@ const lifecycleApi = {
     apiClient.patch(`/api/v1/lifecycle/documents/${id}/feedback`, {
       feedback: feedbackJson,
     }).then(r => r.data),
+
+  claim: (id) =>
+    apiClient.patch(`/api/v1/lifecycle/documents/${id}/claim`).then(r => r.data),
 };
 
 
@@ -142,6 +147,19 @@ function fmtDate(str) {
   }
 }
 
+function dateOnlyDaysUntil(dateStr) {
+  if (!dateStr) return { expired: false, daysLeft: null };
+  const deadline = new Date(dateStr);
+  if (Number.isNaN(deadline.getTime())) return { expired: false, daysLeft: null };
+
+  const today = new Date();
+  const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+  const deadlineStart = new Date(deadline.getFullYear(), deadline.getMonth(), deadline.getDate());
+  const daysLeft = Math.round((deadlineStart - todayStart) / 86400000);
+
+  return { expired: daysLeft < 0, daysLeft: Math.max(0, daysLeft) };
+}
+
 // =============================================================================
 //  Feedback parser — handles both JSON (old OrgOS format) and plain text
 //  [Name — Date, Time] marker format written by stakeholders/external systems.
@@ -178,6 +196,71 @@ function parseFeedback(raw) {
     return [{ author: "", timestamp: "", text: raw.trim() }];
   }
   return entries;
+}
+
+function parseJsonLike(value) {
+  if (typeof value !== "string") return null;
+  const cleaned = value
+    .trim()
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/i, "");
+  const candidates = [cleaned];
+  const arrayMatch = cleaned.match(/\[[\s\S]*\]/);
+  if (arrayMatch) candidates.push(arrayMatch[0]);
+  const objectMatch = cleaned.match(/\{[\s\S]*\}/);
+  if (objectMatch) candidates.push(objectMatch[0]);
+
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(candidate);
+    } catch { /**/ }
+  }
+  return null;
+}
+
+function normalizeCdiSuggestions(value) {
+  let payload = value?.suggestions ?? value;
+
+  if (typeof payload === "string") {
+    payload = parseJsonLike(payload) ?? [{ suggestion: payload }];
+  }
+
+  if (payload && !Array.isArray(payload) && typeof payload === "object") {
+    payload = payload.suggestions || payload.fixes || payload.items || [payload];
+  }
+
+  if (!Array.isArray(payload)) return [];
+
+  return payload.flatMap((item) => {
+    if (typeof item === "string") {
+      const parsed = parseJsonLike(item);
+      return parsed ? normalizeCdiSuggestions(parsed) : [{ check: "General", finding: "See AI suggestion", suggestion: item }];
+    }
+    if (!item || typeof item !== "object") return [];
+
+    const suggestion = item.suggestion ?? item.fix ?? item.proposed_fix ?? item.action ?? "";
+    if (typeof suggestion === "string") {
+      const parsedSuggestion = parseJsonLike(suggestion);
+      if (Array.isArray(parsedSuggestion)) return normalizeCdiSuggestions(parsedSuggestion);
+    }
+
+    return [{
+      check: String(item.check || item.check_id || item.id || "CDI"),
+      finding: String(item.finding || item.detail || item.problem || ""),
+      suggestion: typeof suggestion === "string" ? suggestion : JSON.stringify(suggestion),
+    }];
+  }).filter(s => s.finding || s.suggestion);
+}
+
+function lifecycleSortValue(doc) {
+  const dateValue = Date.parse(doc.modified || doc.created || "");
+  if (!Number.isNaN(dateValue)) return dateValue;
+  const numericId = Number(doc.id);
+  return Number.isNaN(numericId) ? 0 : numericId;
+}
+
+function sortNewestFirst(a, b) {
+  return lifecycleSortValue(b) - lifecycleSortValue(a);
 }
 
 const FEEDBACK_PREVIEW = 160;
@@ -242,6 +325,7 @@ const TRIGGER_LABELS = {
   "CDI Fix":             { color: "#A32D2D", bg: "#FCEBEB", bd: "#F09595" },
   "Scheduled Review":    { color: "#0C447C", bg: "#E6F1FB", bd: "#85B7EB" },
   "Gap Remediation":     { color: "#3C3489", bg: "#EEEDFE", bd: "#AFA9EC" },
+  "Harmonisation Fix":   { color: "#3C3489", bg: "#EEEDFE", bd: "#AFA9EC" },
   "NC Corrective Action":{ color: "#791F1F", bg: "#FCEBEB", bd: "#F09595" },
   "Business":            { color: "#085041", bg: "#E1F5EE", bd: "#5DCAA5" },
 };
@@ -301,7 +385,6 @@ const DetailsModal = ({ doc, onClose }) => {
         <Field l="Trigger"            v={doc.Trigger} />
         <Field l="Days in stage"      v={`${Math.max(0, doc.DaysInStage || 0)}d`} />
         {doc.StandardsMapping && <Field l="Standards"   v={doc.StandardsMapping} />}
-        {doc.LinkedGapId  && <Field l="Linked gap"       v={doc.LinkedGapId} />}
         {doc.LinkedNCId   && <Field l="Linked NC"        v={doc.LinkedNCId} />}
         {doc.ApprovalStatus && <Field l="Approval status" v={doc.ApprovalStatus} />}
         {doc.ApproverName   && <Field l="Approver"       v={doc.ApproverName} />}
@@ -833,7 +916,7 @@ const NewDocForm = ({ onSuccess, onCancel }) => {
 //       setFeedbackText("");
 //       setShowFeedback(false);
 //     } catch (err) {
-//       alert(err.message || "Failed to submit feedback.");
+//       setUploadError(err.message || "Failed to submit feedback.");
 //     } finally {
 //       setSubmittingFeedback(false);
 //     }
@@ -1095,13 +1178,18 @@ const LifecycleCard = ({
   onViewDetails, onProgressClick, onReassign, onApprove,
 }) => {
   const uploadRef  = useRef();
+  const navigate   = useNavigate();
   const [uploading,       setUploading]       = useState(false);
   const [uploadError,     setUploadError]     = useState("");
   const [uploadCdiResult, setUploadCdiResult] = useState(null);
   const [downloading,     setDownloading]     = useState(false);
   const [downloadError,   setDownloadError]   = useState("");
+  const [fixingAi,        setFixingAi]        = useState(false);
+  const [aiFixResult,     setAiFixResult]     = useState(null);
+  const [claiming,        setClaiming]        = useState(false);
+  const [claimError,      setClaimError]      = useState("");
   const qc = useQueryClient();
- 
+
   const isOwner         = doc.OwnerEntraId === currentUserOid;
   const isUnowned       = !doc.OwnerEntraId;
   const daysIn          = Math.max(0, doc.DaysInStage || 0);
@@ -1110,9 +1198,31 @@ const LifecycleCard = ({
   const isSensitisation = doc.Stage === "Sensitisation";
   const isApproval      = doc.Stage === "Approval";
   const isApproved      = doc.ApprovalStatus === "Approved";
-  const needsUpload     = isReview && !doc.Revised;
+  const needsUpload     = isReview && !doc.Revised && !doc.SharePointFileUrl;
+  // CDI gate temporarily disabled: keep CDI results visible, but allow progress
+  // while onboarding legacy documents.
+  // const canProgress  = isOwner && !needsUpload && !isApproval && doc.CDIStatus !== "Failed";
   const canProgress     = isOwner && !needsUpload && !isApproval;
   const triggerStyle    = TRIGGER_LABELS[doc.Trigger] || TRIGGER_LABELS["Manual"];
+
+  // Sensitisation deadline helpers
+  const dlDeadline = doc.SensitisationDeadline;
+  const dlStatus = dateOnlyDaysUntil(dlDeadline);
+  const dlExpired  = dlDeadline && dlStatus.expired;
+  const dlDaysLeft = dlDeadline ? dlStatus.daysLeft : 0;
+
+  const handleGetCdiFix = async () => {
+    setFixingAi(true);
+    setAiFixResult(null);
+    try {
+      const resp = await apiClient.post(`/api/v1/lifecycle/documents/${doc.id}/cdi-fix-suggestions`);
+      setAiFixResult(resp.data);
+    } catch (err) {
+      setAiFixResult({ error: err.response?.data?.detail || "AI fix suggestions unavailable." });
+    } finally {
+      setFixingAi(false);
+    }
+  };
 
   let cdiCount = 0;
   if (doc.CDIFailures) {
@@ -1123,6 +1233,9 @@ const LifecycleCard = ({
   }
 
   const feedbackEntries = parseFeedback(doc.SensitisationFeedback);
+  const aiFixSuggestions = normalizeCdiSuggestions(aiFixResult);
+  const stakeholderCount = (doc.Stakeholders || []).length;
+  const hasStakeholders = stakeholderCount > 0;
  
   // ── Upload — CDI check runs server-side on every upload ────────────────────
   const handleFileSelect = async (e) => {
@@ -1235,6 +1348,19 @@ const LifecycleCard = ({
         {doc.DocumentType && <StatusBadge label={doc.DocumentType} />}
       </div>
  
+      {/* Rejection banner — shown in Review when document was previously rejected */}
+      {isReview && doc.RejectionCount > 0 && doc.RejectionReason && (
+        <div style={{
+          padding: "8px 10px", background: "#FCEBEB", borderRadius: 7,
+          border: "1px solid #F09595", fontSize: 11, color: "#791F1F", marginBottom: 8,
+        }}>
+          <div style={{ fontWeight: 600, marginBottom: 3 }}>
+            Rejected (×{doc.RejectionCount}) — address this before re-progressing
+          </div>
+          <div style={{ lineHeight: 1.5, opacity: 0.9 }}>{doc.RejectionReason}</div>
+        </div>
+      )}
+
       {/* CDI failure notice */}
       {cdiCount > 0 && (
         <div style={{ padding: "6px 10px", background: "#FCEBEB", borderRadius: 6,
@@ -1242,7 +1368,49 @@ const LifecycleCard = ({
           {cdiCount} CDI failure{cdiCount > 1 ? "s" : ""} to fix — click View details
         </div>
       )}
- 
+
+      {/* AI fix suggestions panel */}
+      {aiFixResult && !aiFixResult.error && (
+        <div style={{
+          padding: "10px 12px", background: "#F0F4FF", borderRadius: 8,
+          border: "1px solid #AFA9EC", marginBottom: 8, fontSize: 11,
+        }}>
+          <div style={{ fontWeight: 600, color: "#3C3489", marginBottom: 6 }}>
+            AI fix suggestions
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {aiFixSuggestions.map((s, i) => (
+              <div key={i} style={{
+                padding: "6px 8px", background: "#fff", borderRadius: 6,
+                border: "0.5px solid #CCC",
+              }}>
+                <div style={{ fontWeight: 600, fontSize: 10, color: "#333", marginBottom: 2 }}>
+                  {s.check}
+                </div>
+                {s.finding && <div style={{ color: "#555", marginBottom: 3 }}>{s.finding}</div>}
+                {s.suggestion && <div style={{ color: "#1D9E75", fontStyle: "italic" }}>→ {s.suggestion}</div>}
+              </div>
+            ))}
+            {!aiFixSuggestions.length && (
+              <div style={{ color: "#555" }}>
+                No structured suggestions returned. Try again after re-opening the document.
+              </div>
+            )}
+          </div>
+          <button onClick={() => setAiFixResult(null)}
+            style={{ fontSize: 10, color: "#888", background: "none", border: "none",
+                     cursor: "pointer", padding: "4px 0 0", textDecoration: "underline" }}>
+            Dismiss
+          </button>
+        </div>
+      )}
+      {aiFixResult?.error && (
+        <div style={{ padding: "6px 10px", background: "#FCEBEB", borderRadius: 6,
+                      fontSize: 11, color: "#791F1F", marginBottom: 8 }}>
+          {aiFixResult.error}
+        </div>
+      )}
+
       {/* Gap link */}
       {doc.LinkedGapId && (
         <div style={{ fontSize: 10, color: "#3C3489", marginBottom: 6 }}>
@@ -1289,25 +1457,89 @@ const LifecycleCard = ({
         <div style={{ marginTop: 6 }}>
           <div style={{ padding: "5px 8px", background: "#FFF8E6", borderRadius: 6, marginBottom: 6,
                         border: "0.5px solid #FAC775", fontSize: 10, color: "#7A5000" }}>
-            No owner assigned — claim or reassign this document.
+            No owner — claim to take ownership, or reassign to a colleague.
           </div>
-          <button onClick={() => onReassign(doc)} style={{
-            width: "100%", padding: "7px", fontSize: 11, borderRadius: 7,
-            border: "1.5px solid #FAC775", background: "#FFF8E6",
-            color: "#7A5000", cursor: "pointer", fontWeight: 500,
-          }}>Claim / Reassign</button>
+          {claimError && (
+            <div style={{ padding: "5px 8px", background: "#FCEBEB", borderRadius: 6,
+                          fontSize: 10, color: "#791F1F", marginBottom: 5 }}>
+              {claimError}
+            </div>
+          )}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
+            <button
+              onClick={async () => {
+                setClaiming(true); setClaimError("");
+                try {
+                  await lifecycleApi.claim(doc.id);
+                  qc.invalidateQueries({ queryKey: ["lifecycle"] });
+                } catch (err) {
+                  setClaimError(err.response?.data?.detail || err.message || "Could not claim document.");
+                } finally { setClaiming(false); }
+              }}
+              disabled={claiming}
+              style={{
+                padding: "7px", fontSize: 11, borderRadius: 7,
+                border: "none", background: claiming ? "#E8E8E8" : "#BA7517",
+                color: claiming ? "#999" : "#fff",
+                cursor: claiming ? "not-allowed" : "pointer", fontWeight: 500,
+              }}
+            >
+              {claiming ? "Claiming..." : "Claim"}
+            </button>
+            <button onClick={() => onReassign(doc)} style={{
+              padding: "7px", fontSize: 11, borderRadius: 7,
+              border: "1.5px solid #FAC775", background: "#FFF8E6",
+              color: "#7A5000", cursor: "pointer", fontWeight: 500,
+            }}>Reassign</button>
+          </div>
         </div>
       )}
 
-      {/* ── Sensitisation: stakeholders + feedback (read-only from SharePoint) ── */}
+      {/* ── Sensitisation: stakeholders + deadline + feedback ── */}
       {isSensitisation && (
         <div style={{ marginTop: 8 }}>
+          {/* Deadline badge */}
+          {dlDeadline && (
+            <div style={{
+              display: "flex", justifyContent: "space-between", alignItems: "center",
+              padding: "5px 8px", borderRadius: 6, marginBottom: 8,
+              background: dlExpired ? "#FCEBEB" : dlDaysLeft <= 2 ? "#FAEEDA" : "#E6F1FB",
+              border: `0.5px solid ${dlExpired ? "#F09595" : dlDaysLeft <= 2 ? "#FAC775" : "#85B7EB"}`,
+              fontSize: 11,
+              color: dlExpired ? "#791F1F" : dlDaysLeft <= 2 ? "#633806" : "#0C447C",
+            }}>
+              <span>
+                {dlExpired
+                  ? `Deadline passed — ${fmtDate(dlDeadline)}`
+                  : dlDaysLeft === 0
+                    ? "Feedback closes today"
+                    : `${dlDaysLeft}d left — deadline ${fmtDate(dlDeadline)}`}
+              </span>
+              {isOwner && (
+                <span
+                  role="button" tabIndex={0}
+                  onClick={() => onProgressClick({ ...doc, _extendDeadline: true })}
+                  onKeyDown={e => e.key === "Enter" && onProgressClick({ ...doc, _extendDeadline: true })}
+                  style={{ fontSize: 10, textDecoration: "underline", cursor: "pointer", marginLeft: 8 }}>
+                  Extend
+                </span>
+              )}
+            </div>
+          )}
+
+          {/* Response counter */}
+          {hasStakeholders && (
+            <div style={{ fontSize: 10, color: "#D85A30", marginBottom: 6 }}>
+              {doc.StakeholderResponseCount || 0} of {stakeholderCount} stakeholder{stakeholderCount !== 1 ? "s" : ""} responded
+            </div>
+          )}
+
           {/* Stakeholders */}
-          {(doc.Stakeholders || []).length > 0 && (
+          {hasStakeholders && (
             <div style={{ marginBottom: 10 }}>
               <div style={{ fontSize: 10, fontWeight: 600, color: "#D85A30",
                             textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 5 }}>
-                Stakeholders notified ({doc.Stakeholders.length})
+                Stakeholders notified ({stakeholderCount})
               </div>
               <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
                 {doc.Stakeholders.map((s, i) => (
@@ -1322,23 +1554,20 @@ const LifecycleCard = ({
             </div>
           )}
           {/* Feedback — read-only, written by stakeholders externally */}
-          <div style={{ marginBottom: 6 }}>
-            <div style={{ fontSize: 10, fontWeight: 600, color: "#D85A30",
-                          textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 5 }}>
-              Stakeholder feedback
-              {feedbackEntries.length > 0 && ` (${feedbackEntries.length})`}
+          {(hasStakeholders || feedbackEntries.length > 0) && (
+            <div style={{ marginBottom: 6 }}>
+              <div style={{ fontSize: 10, fontWeight: 600, color: "#D85A30",
+                            textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 5 }}>
+                Stakeholder feedback
+                {feedbackEntries.length > 0 && ` (${feedbackEntries.length})`}
+              </div>
+              {feedbackEntries.length > 0 && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {feedbackEntries.map((f, i) => <FeedbackEntry key={i} entry={f} />)}
+                </div>
+              )}
             </div>
-            {feedbackEntries.length === 0 ? (
-              <div style={{ fontSize: 10, color: "var(--color-text-tertiary)",
-                            padding: "6px 0", fontStyle: "italic" }}>
-                No feedback received yet from stakeholders.
-              </div>
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                {feedbackEntries.map((f, i) => <FeedbackEntry key={i} entry={f} />)}
-              </div>
-            )}
-          </div>
+          )}
         </div>
       )}
 
@@ -1379,7 +1608,7 @@ const LifecycleCard = ({
       {isOwner && (
         <div style={{ marginTop: 8 }}>
 
-          {/* Review + Sensitisation: View / Upload / Reassign / Progress or Approve */}
+          {/* Review + Sensitisation: View / Upload / Reassign / Progress */}
           {(isReview || isSensitisation) && (
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
               {/* View */}
@@ -1418,23 +1647,41 @@ const LifecycleCard = ({
                   — no upload needed
                 </div>
               )}
+              {/* Fix with AI — only in Review when CDI failures exist */}
+              {isReview && cdiCount > 0 && (
+                <button onClick={handleGetCdiFix} disabled={fixingAi} style={{
+                  padding: "7px", fontSize: 11, borderRadius: 7,
+                  border: "1.5px solid #AFA9EC", background: fixingAi ? "#F0F0F0" : "#EEEDFE",
+                  color: fixingAi ? "#999" : "#3C3489",
+                  cursor: fixingAi ? "not-allowed" : "pointer", fontWeight: 500,
+                }}>
+                  {fixingAi ? "Thinking..." : "Fix with AI"}
+                </button>
+              )}
               {/* Reassign */}
               <button onClick={() => onReassign(doc)} style={{
                 padding: "7px", fontSize: 11, borderRadius: 7,
                 border: "1.5px solid #C0C0C0", background: "transparent",
                 color: "var(--color-text-secondary)", cursor: "pointer",
+                gridColumn: isReview && cdiCount > 0 ? "auto" : "auto",
               }}>Reassign</button>
               {/* Progress → opens stage-specific modal */}
               <button
                 onClick={() => canProgress && onProgressClick(doc)}
                 disabled={!canProgress}
-                title={needsUpload ? "Upload a revised version before progressing" : undefined}
+                title={
+                  needsUpload ? "Upload a revised version before progressing"
+                  // CDI gate temporarily disabled.
+                  // : doc.CDIStatus === "Failed" ? "Fix CDI failures before progressing"
+                  : undefined
+                }
                 style={{
                   padding: "7px", fontSize: 11, borderRadius: 7, fontWeight: 500,
                   border: canProgress ? "none" : "1.5px solid #E0E0E0",
                   background: canProgress ? stageConfig.color : "transparent",
                   color: canProgress ? "#fff" : "#B0B0B0",
                   cursor: canProgress ? "pointer" : "not-allowed",
+                  gridColumn: isReview && cdiCount > 0 ? "1 / -1" : "auto",
                 }}
               >
                 {needsUpload ? "Upload first →" : "Progress →"}
@@ -1442,7 +1689,7 @@ const LifecycleCard = ({
             </div>
           )}
 
-          {/* Approval stage: no Progress, Reassign + Approve */}
+          {/* Approval stage: View + Recall + Review & Decide */}
           {isApproval && !isApproved && (
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
               {doc.SharePointFileUrl && (
@@ -1458,11 +1705,17 @@ const LifecycleCard = ({
                 border: "1.5px solid #C0C0C0", background: "transparent",
                 color: "var(--color-text-secondary)", cursor: "pointer",
               }}>Reassign</button>
-              <button onClick={() => onApprove(doc)} style={{
-                padding: "7px", fontSize: 11, borderRadius: 7, fontWeight: 600,
-                border: "none", background: "#993556", color: "#fff", cursor: "pointer",
-                gridColumn: doc.SharePointFileUrl ? "auto" : "1 / -1",
-              }}>Mark as Approved ✓</button>
+              {/* Route to the dedicated approver review page */}
+              <button
+                onClick={() => navigate(`/lifecycle/approve/${doc.id}`)}
+                style={{
+                  padding: "7px", fontSize: 11, borderRadius: 7, fontWeight: 600,
+                  border: "none", background: "#993556", color: "#fff", cursor: "pointer",
+                  gridColumn: "1 / -1",
+                }}
+              >
+                Review &amp; Decide →
+              </button>
             </div>
           )}
         </div>
@@ -1489,34 +1742,12 @@ const LifecycleCard = ({
 // =============================================================================
 
 const ReassignModal = ({ doc, onSave, onClose }) => {
-  const [email,    setEmail]    = useState("");
-  const [resolved, setResolved] = useState(null); // { oid, display_name, job_title, email }
-  const [looking,  setLooking]  = useState(false);
+  const [resolved, setResolved] = useState(null);
   const [saving,   setSaving]   = useState(false);
   const [error,    setError]    = useState("");
 
-  const handleLookup = async () => {
-    if (!email.trim()) return;
-    setLooking(true);
-    setError("");
-    setResolved(null);
-    try {
-      const resp = await apiClient.get("/api/v1/grc/users/resolve", {
-        params: { email: email.trim() },
-      });
-      setResolved(resp.data);
-    } catch (err) {
-      setError(
-        err.response?.data?.detail ||
-        `No Microsoft 365 account found for "${email}". Check the email address.`
-      );
-    } finally {
-      setLooking(false);
-    }
-  };
-
   const handleSave = async () => {
-    if (!resolved) { setError("Look up a person first."); return; }
+    if (!resolved) { setError("Select a person first."); return; }
     setSaving(true);
     try {
       await onSave(doc.id, resolved.oid, resolved.display_name);
@@ -1525,12 +1756,6 @@ const ReassignModal = ({ doc, onSave, onClose }) => {
       setError(err.message || "Reassign failed.");
       setSaving(false);
     }
-  };
-
-  const inp = {
-    width: "100%", fontSize: 13, padding: "9px 11px", borderRadius: 8,
-    border: "1.5px solid #C0C0C0", background: "var(--color-background-primary)",
-    color: "var(--color-text-primary)", outline: "none", boxSizing: "border-box",
   };
 
   return (
@@ -1569,63 +1794,14 @@ const ReassignModal = ({ doc, onSave, onClose }) => {
           </div>
         )}
 
-        {/* Email lookup */}
-        <div style={{ marginBottom: 12 }}>
-          <label style={{ display: "block", fontSize: 11, fontWeight: 600,
-                          color: "var(--color-text-secondary)", marginBottom: 5,
-                          textTransform: "uppercase", letterSpacing: "0.5px" }}>
-            New owner — Microsoft 365 email
-          </label>
-          <div style={{ display: "flex", gap: 8 }}>
-            <input
-              type="email" value={email}
-              onChange={e => { setEmail(e.target.value); setResolved(null); }}
-              onKeyDown={e => e.key === "Enter" && handleLookup()}
-              placeholder="firstname.lastname@dragnet-solutions.com"
-              style={{ ...inp, flex: 1 }}
-              onFocus={e => (e.target.style.borderColor = "#378ADD")}
-              onBlur={e => (e.target.style.borderColor = "#C0C0C0")}
-            />
-            <button
-              onClick={handleLookup}
-              disabled={!email.trim() || looking}
-              style={{ padding: "9px 14px", fontSize: 12, borderRadius: 8,
-                       border: "none", fontWeight: 500, flexShrink: 0,
-                       background: !email.trim() || looking ? "#E8E8E8" : "#378ADD",
-                       color: !email.trim() || looking ? "#999" : "#fff",
-                       cursor: !email.trim() || looking ? "not-allowed" : "pointer" }}
-            >
-              {looking ? "Looking..." : "Look up"}
-            </button>
-          </div>
-          <div style={{ fontSize: 10, color: "var(--color-text-tertiary)", marginTop: 4 }}>
-            Must be a Dragnet Microsoft 365 account. Press Enter or click Look up.
-          </div>
-        </div>
+        <UserSearchField
+          onSelect={(u) => { setResolved(u); if (error) setError(""); }}
+          label="New owner — type name or email"
+          placeholder="Search by name or email..."
+          accentColor="#534AB7"
+        />
 
-        {/* Resolved person card */}
-        {resolved && (
-          <div style={{
-            padding: "12px 14px", background: "#E1F5EE", borderRadius: 10,
-            border: "1px solid #5DCAA5", marginBottom: 16,
-            display: "flex", justifyContent: "space-between", alignItems: "center",
-          }}>
-            <div>
-              <div style={{ fontSize: 13, fontWeight: 600, color: "#085041" }}>
-                {resolved.display_name}
-              </div>
-              <div style={{ fontSize: 11, color: "#085041", opacity: 0.8, marginTop: 2 }}>
-                {resolved.job_title && `${resolved.job_title} · `}{resolved.email}
-              </div>
-            </div>
-            <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 5,
-                           background: "#5DCAA5", color: "#fff", fontWeight: 500 }}>
-              ✓ Found
-            </span>
-          </div>
-        )}
-
-        <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
           <button
             onClick={handleSave}
             disabled={saving || !resolved}
@@ -1635,7 +1811,7 @@ const ReassignModal = ({ doc, onSave, onClose }) => {
                      color: saving || !resolved ? "#999" : "#fff",
                      cursor: saving || !resolved ? "not-allowed" : "pointer" }}
           >
-            {saving ? "Reassigning..." : `Assign to ${resolved?.display_name || "..."}`}
+            {saving ? "Reassigning..." : resolved ? `Assign to ${resolved.display_name}` : "Select a person above"}
           </button>
           <button onClick={onClose}
             style={{ padding: "10px 16px", fontSize: 13, borderRadius: 9,
@@ -1657,32 +1833,27 @@ const ReassignModal = ({ doc, onSave, onClose }) => {
 
 const StakeholdersModal = ({ doc, onClose, onDone }) => {
   const qc = useQueryClient();
-  const [email,        setEmail]        = useState("");
-  const [looking,      setLooking]      = useState(false);
-  const [resolved,     setResolved]     = useState(null);
-  const [lookupError,  setLookupError]  = useState("");
   const [stakeholders, setStakeholders] = useState([]);
+  const [deadline,     setDeadline]     = useState("");   // ISO date "YYYY-MM-DD"
   const [saving,       setSaving]       = useState(false);
   const [error,        setError]        = useState("");
+  const [dupError,     setDupError]     = useState("");
 
-  const handleLookup = async () => {
-    if (!email.trim()) return;
-    setLooking(true); setLookupError(""); setResolved(null);
-    try {
-      const r = await apiClient.get("/api/v1/grc/users/resolve", { params: { email: email.trim() } });
-      setResolved(r.data);
-    } catch {
-      setLookupError(`No M365 account found for "${email.trim()}"`);
-    } finally { setLooking(false); }
-  };
+  // Default deadline: 7 days from today
+  const defaultDeadline = (() => {
+    const d = new Date();
+    d.setDate(d.getDate() + 7);
+    return d.toISOString().slice(0, 10);
+  })();
 
-  const handleAdd = () => {
-    if (!resolved) return;
-    if (stakeholders.some(s => s.oid === resolved.oid)) {
-      setLookupError("This person is already in the list."); return;
+  const handleSelectStakeholder = (u) => {
+    if (!u) return;
+    if (stakeholders.some(s => s.oid === u.oid)) {
+      setDupError(`${u.display_name} is already in the list.`);
+      return;
     }
-    setStakeholders(prev => [...prev, { oid: resolved.oid, name: resolved.display_name, email: resolved.email }]);
-    setEmail(""); setResolved(null); setLookupError("");
+    setDupError("");
+    setStakeholders(prev => [...prev, { oid: u.oid, name: u.display_name, email: u.email }]);
   };
 
   const handleRemove = (oid) => setStakeholders(prev => prev.filter(s => s.oid !== oid));
@@ -1691,7 +1862,10 @@ const StakeholdersModal = ({ doc, onClose, onDone }) => {
     if (stakeholders.length === 0) { setError("Add at least one stakeholder."); return; }
     setSaving(true); setError("");
     try {
-      await lifecycleApi.progress(doc.id, "Review", { stakeholders });
+      await lifecycleApi.progress(doc.id, "Review", {
+        stakeholders,
+        sensitisation_deadline: deadline || defaultDeadline,
+      });
       qc.invalidateQueries({ queryKey: ["lifecycle"] });
       onDone();
     } catch (err) {
@@ -1700,10 +1874,16 @@ const StakeholdersModal = ({ doc, onClose, onDone }) => {
     }
   };
 
-  const inp = {
-    flex: 1, fontSize: 12, padding: "9px 11px", borderRadius: 8,
-    border: "1.5px solid #C0C0C0", background: "var(--color-background-primary)",
-    color: "var(--color-text-primary)", outline: "none",
+  const handleSkip = async () => {
+    setSaving(true); setError("");
+    try {
+      await lifecycleApi.progress(doc.id, "Review", { skip_stakeholders: true });
+      qc.invalidateQueries({ queryKey: ["lifecycle"] });
+      onDone();
+    } catch (err) {
+      setError(err.response?.data?.detail || err.message || "Failed to progress document.");
+      setSaving(false);
+    }
   };
 
   return (
@@ -1740,51 +1920,43 @@ const StakeholdersModal = ({ doc, onClose, onDone }) => {
           </div>
         )}
 
-        {/* Email lookup */}
+        {/* Person search */}
         <div style={{ marginBottom: 12 }}>
+          <UserSearchField
+            onSelect={handleSelectStakeholder}
+            label="Add stakeholder"
+            placeholder="Search by name or email..."
+            accentColor="#D85A30"
+            clearAfterSelect
+          />
+          {dupError && (
+            <div style={{ fontSize: 11, color: "#A32D2D", marginTop: -8, marginBottom: 6 }}>
+              {dupError}
+            </div>
+          )}
+        </div>
+
+        {/* Feedback deadline */}
+        <div style={{ marginBottom: 14 }}>
           <label style={{ display: "block", fontSize: 11, fontWeight: 600,
                           color: "var(--color-text-secondary)", marginBottom: 5,
                           textTransform: "uppercase", letterSpacing: "0.5px" }}>
-            Add stakeholder — Dragnet M365 email
+            Feedback deadline (optional — default 7 days)
           </label>
-          <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>
-            <input
-              type="email" value={email}
-              onChange={e => { setEmail(e.target.value); setResolved(null); setLookupError(""); }}
-              onKeyDown={e => e.key === "Enter" && handleLookup()}
-              placeholder="firstname.lastname@dragnet-solutions.com"
-              style={inp}
-              onFocus={e => (e.target.style.borderColor = "#D85A30")}
-              onBlur={e => (e.target.style.borderColor = "#C0C0C0")}
-            />
-            <button onClick={handleLookup} disabled={!email.trim() || looking} style={{
-              padding: "9px 14px", fontSize: 12, borderRadius: 8, border: "none", fontWeight: 500,
-              background: !email.trim() || looking ? "#E8E8E8" : "#D85A30",
-              color: !email.trim() || looking ? "#999" : "#fff",
-              cursor: !email.trim() || looking ? "not-allowed" : "pointer", flexShrink: 0,
-            }}>{looking ? "Looking..." : "Look up"}</button>
+          <input
+            type="date"
+            value={deadline || defaultDeadline}
+            min={new Date().toISOString().slice(0, 10)}
+            onChange={e => setDeadline(e.target.value)}
+            style={{
+              width: "100%", fontSize: 12, padding: "9px 11px", borderRadius: 8,
+              border: "1.5px solid #C0C0C0", background: "var(--color-background-primary)",
+              color: "var(--color-text-primary)", outline: "none", boxSizing: "border-box",
+            }}
+          />
+          <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginTop: 3 }}>
+            Stakeholders who submit feedback after this date will be blocked. You can extend it later.
           </div>
-          {lookupError && <div style={{ fontSize: 11, color: "#A32D2D" }}>{lookupError}</div>}
-
-          {/* Resolved person + Add */}
-          {resolved && (
-            <div style={{
-              padding: "10px 14px", background: "#FAECE7", borderRadius: 10,
-              border: "1px solid #F0997B", marginTop: 8,
-              display: "flex", justifyContent: "space-between", alignItems: "center",
-            }}>
-              <div>
-                <div style={{ fontSize: 13, fontWeight: 600, color: "#712B13" }}>{resolved.display_name}</div>
-                <div style={{ fontSize: 11, color: "#712B13", opacity: 0.8, marginTop: 1 }}>
-                  {resolved.job_title && `${resolved.job_title} · `}{resolved.email}
-                </div>
-              </div>
-              <button onClick={handleAdd} style={{
-                padding: "6px 12px", fontSize: 11, borderRadius: 7, border: "none",
-                background: "#D85A30", color: "#fff", cursor: "pointer", fontWeight: 500, flexShrink: 0, marginLeft: 10,
-              }}>Add +</button>
-            </div>
-          )}
         </div>
 
         {/* Stakeholders list */}
@@ -1816,7 +1988,7 @@ const StakeholdersModal = ({ doc, onClose, onDone }) => {
         )}
 
         {/* Actions */}
-        <div style={{ display: "flex", gap: 10 }}>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <button
             onClick={handleSubmit}
             disabled={saving || stakeholders.length === 0}
@@ -1825,14 +1997,111 @@ const StakeholdersModal = ({ doc, onClose, onDone }) => {
               background: saving || stakeholders.length === 0 ? "#E8E8E8" : "#D85A30",
               color: saving || stakeholders.length === 0 ? "#999" : "#fff",
               cursor: saving || stakeholders.length === 0 ? "not-allowed" : "pointer",
+              minWidth: 180,
             }}
           >
             {saving ? "Progressing..." : `Proceed to Sensitisation with ${stakeholders.length} stakeholder${stakeholders.length !== 1 ? "s" : ""}`}
           </button>
+          <button
+            onClick={handleSkip}
+            disabled={saving}
+            title="Move to Sensitisation without adding stakeholders"
+            style={{
+              padding: "11px 14px", fontSize: 12, borderRadius: 9, fontWeight: 500,
+              border: "1.5px solid #D0D0D0", background: "transparent",
+              color: saving ? "#999" : "var(--color-text-secondary)",
+              cursor: saving ? "not-allowed" : "pointer",
+            }}
+          >
+            Skip
+          </button>
           <button onClick={onClose} style={{
-            padding: "11px 16px", fontSize: 13, borderRadius: 9,
+            padding: "11px 14px", fontSize: 13, borderRadius: 9,
             border: "1.5px solid #D0D0D0", background: "transparent",
             color: "var(--color-text-secondary)", cursor: "pointer",
+          }}>Cancel</button>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+
+// =============================================================================
+//  ExtendDeadlineModal — extend the sensitisation feedback deadline
+// =============================================================================
+
+const ExtendDeadlineModal = ({ doc, onClose }) => {
+  const qc = useQueryClient();
+  const current   = doc.SensitisationDeadline || "";
+  const minDate   = new Date().toISOString().slice(0, 10);
+  const [newDate, setNewDate] = useState(current ? current.slice(0, 10) : "");
+  const [saving,  setSaving]  = useState(false);
+  const [error,   setError]   = useState("");
+
+  const handleSave = async () => {
+    if (!newDate) { setError("Select a new deadline date."); return; }
+    setSaving(true); setError("");
+    try {
+      await apiClient.patch(`/api/v1/lifecycle/documents/${doc.id}/deadline`, { new_deadline: newDate });
+      qc.invalidateQueries({ queryKey: ["lifecycle"] });
+      onClose();
+    } catch (err) {
+      setError(err.response?.data?.detail || err.message || "Failed to extend deadline.");
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div onClick={onClose} style={{
+      position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000,
+      display: "flex", alignItems: "center", justifyContent: "center", padding: 20,
+    }}>
+      <div onClick={e => e.stopPropagation()} style={{
+        background: "var(--color-background-primary)", borderRadius: 14,
+        padding: "24px 28px", maxWidth: 400, width: "100%",
+        boxShadow: "0 20px 60px rgba(0,0,0,0.25)",
+      }}>
+        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 14 }}>
+          <div style={{ fontSize: 15, fontWeight: 700 }}>Extend feedback deadline</div>
+          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 20, color: "#888" }}>×</button>
+        </div>
+        <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 16, lineHeight: 1.5 }}>
+          Current deadline: <strong>{current ? fmtDate(current) : "none set"}</strong>
+          <br />Choose a new later date to give stakeholders more time to submit feedback.
+        </div>
+        {error && (
+          <div style={{ padding: "8px 12px", background: "#FCEBEB", border: "1px solid #F09595",
+                        borderRadius: 8, fontSize: 12, color: "#791F1F", marginBottom: 12 }}>
+            {error}
+          </div>
+        )}
+        <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: "var(--color-text-secondary)",
+                        marginBottom: 5, textTransform: "uppercase", letterSpacing: "0.5px" }}>
+          New deadline
+        </label>
+        <input
+          type="date"
+          value={newDate}
+          min={minDate}
+          onChange={e => setNewDate(e.target.value)}
+          style={{
+            width: "100%", fontSize: 12, padding: "9px 11px", borderRadius: 8,
+            border: "1.5px solid #C0C0C0", background: "var(--color-background-primary)",
+            color: "var(--color-text-primary)", outline: "none", boxSizing: "border-box",
+            marginBottom: 16,
+          }}
+        />
+        <div style={{ display: "flex", gap: 10 }}>
+          <button onClick={handleSave} disabled={saving || !newDate} style={{
+            flex: 1, padding: "11px", fontSize: 13, borderRadius: 9, border: "none", fontWeight: 600,
+            background: saving || !newDate ? "#E8E8E8" : "#D85A30",
+            color: saving || !newDate ? "#999" : "#fff",
+            cursor: saving || !newDate ? "not-allowed" : "pointer",
+          }}>{saving ? "Saving..." : "Save new deadline"}</button>
+          <button onClick={onClose} style={{
+            padding: "11px 16px", fontSize: 13, borderRadius: 9, border: "1.5px solid #D0D0D0",
+            background: "transparent", color: "var(--color-text-secondary)", cursor: "pointer",
           }}>Cancel</button>
         </div>
       </div>
@@ -1848,31 +2117,18 @@ const StakeholdersModal = ({ doc, onClose, onDone }) => {
 
 const ApproverModal = ({ doc, onClose, onDone }) => {
   const qc = useQueryClient();
-  const [email,       setEmail]       = useState("");
-  const [looking,     setLooking]     = useState(false);
   const [resolved,    setResolved]    = useState(null);
-  const [lookupError, setLookupError] = useState("");
   const [saving,      setSaving]      = useState(false);
   const [error,       setError]       = useState("");
 
-  const handleLookup = async () => {
-    if (!email.trim()) return;
-    setLooking(true); setLookupError(""); setResolved(null);
-    try {
-      const r = await apiClient.get("/api/v1/grc/users/resolve", { params: { email: email.trim() } });
-      setResolved(r.data);
-    } catch {
-      setLookupError(`No M365 account found for "${email.trim()}"`);
-    } finally { setLooking(false); }
-  };
-
   const handleSubmit = async () => {
-    if (!resolved) { setError("Look up an approver first."); return; }
+    if (!resolved) { setError("Select an approver first."); return; }
     setSaving(true); setError("");
     try {
       await lifecycleApi.progress(doc.id, "Sensitisation", {
-        approver_id:   resolved.oid,
-        approver_name: resolved.display_name,
+        approver_id:    resolved.oid,
+        approver_name:  resolved.display_name,
+        approver_email: resolved.email,
       });
       qc.invalidateQueries({ queryKey: ["lifecycle"] });
       onDone();
@@ -1882,10 +2138,16 @@ const ApproverModal = ({ doc, onClose, onDone }) => {
     }
   };
 
-  const inp = {
-    flex: 1, fontSize: 12, padding: "9px 11px", borderRadius: 8,
-    border: "1.5px solid #C0C0C0", background: "var(--color-background-primary)",
-    color: "var(--color-text-primary)", outline: "none",
+  const handleSkip = async () => {
+    setSaving(true); setError("");
+    try {
+      await lifecycleApi.progress(doc.id, "Sensitisation", { skip_approver: true });
+      qc.invalidateQueries({ queryKey: ["lifecycle"] });
+      onDone();
+    } catch (err) {
+      setError(err.response?.data?.detail || err.message || "Failed to progress document.");
+      setSaving(false);
+    }
   };
 
   return (
@@ -1921,52 +2183,18 @@ const ApproverModal = ({ doc, onClose, onDone }) => {
           </div>
         )}
 
-        {/* Email lookup */}
+        {/* Person search */}
         <div style={{ marginBottom: 16 }}>
-          <label style={{ display: "block", fontSize: 11, fontWeight: 600,
-                          color: "var(--color-text-secondary)", marginBottom: 5,
-                          textTransform: "uppercase", letterSpacing: "0.5px" }}>
-            Approver — Dragnet M365 email
-          </label>
-          <div style={{ display: "flex", gap: 8, marginBottom: 6 }}>
-            <input
-              type="email" value={email}
-              onChange={e => { setEmail(e.target.value); setResolved(null); setLookupError(""); }}
-              onKeyDown={e => e.key === "Enter" && handleLookup()}
-              placeholder="firstname.lastname@dragnet-solutions.com"
-              style={inp}
-              onFocus={e => (e.target.style.borderColor = "#993556")}
-              onBlur={e => (e.target.style.borderColor = "#C0C0C0")}
-            />
-            <button onClick={handleLookup} disabled={!email.trim() || looking} style={{
-              padding: "9px 14px", fontSize: 12, borderRadius: 8, border: "none", fontWeight: 500,
-              background: !email.trim() || looking ? "#E8E8E8" : "#993556",
-              color: !email.trim() || looking ? "#999" : "#fff",
-              cursor: !email.trim() || looking ? "not-allowed" : "pointer", flexShrink: 0,
-            }}>{looking ? "Looking..." : "Look up"}</button>
-          </div>
-          {lookupError && <div style={{ fontSize: 11, color: "#A32D2D" }}>{lookupError}</div>}
-
-          {resolved && (
-            <div style={{
-              padding: "12px 14px", background: "#FBEAF0", borderRadius: 10,
-              border: "1px solid #E8A0BD", marginTop: 8,
-              display: "flex", justifyContent: "space-between", alignItems: "center",
-            }}>
-              <div>
-                <div style={{ fontSize: 13, fontWeight: 600, color: "#5A1A36" }}>{resolved.display_name}</div>
-                <div style={{ fontSize: 11, color: "#5A1A36", opacity: 0.8, marginTop: 1 }}>
-                  {resolved.job_title && `${resolved.job_title} · `}{resolved.email}
-                </div>
-              </div>
-              <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 5,
-                             background: "#993556", color: "#fff", fontWeight: 500 }}>✓ Found</span>
-            </div>
-          )}
+          <UserSearchField
+            onSelect={(u) => { setResolved(u); if (error) setError(""); }}
+            label="Approver — type name or email"
+            placeholder="Search by name or email..."
+            accentColor="#993556"
+          />
         </div>
 
         {/* Actions */}
-        <div style={{ display: "flex", gap: 10 }}>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <button
             onClick={handleSubmit}
             disabled={saving || !resolved}
@@ -1975,12 +2203,26 @@ const ApproverModal = ({ doc, onClose, onDone }) => {
               background: saving || !resolved ? "#E8E8E8" : "#993556",
               color: saving || !resolved ? "#999" : "#fff",
               cursor: saving || !resolved ? "not-allowed" : "pointer",
+              minWidth: 160,
             }}
           >
             {saving ? "Submitting..." : `Submit for Approval${resolved ? ` — ${resolved.display_name}` : ""}`}
           </button>
+          <button
+            onClick={handleSkip}
+            disabled={saving}
+            title="Move to Approval stage without assigning an approver"
+            style={{
+              padding: "11px 14px", fontSize: 12, borderRadius: 9, fontWeight: 500,
+              border: "1.5px solid #D0D0D0", background: "transparent",
+              color: saving ? "#999" : "var(--color-text-secondary)",
+              cursor: saving ? "not-allowed" : "pointer",
+            }}
+          >
+            Skip
+          </button>
           <button onClick={onClose} style={{
-            padding: "11px 16px", fontSize: 13, borderRadius: 9,
+            padding: "11px 14px", fontSize: 13, borderRadius: 9,
             border: "1.5px solid #D0D0D0", background: "transparent",
             color: "var(--color-text-secondary)", cursor: "pointer",
           }}>Cancel</button>
@@ -2084,11 +2326,12 @@ const ApproveConfirmModal = ({ doc, onClose, onDone }) => {
 // =============================================================================
 
 export default function DocumentLifecycle() {
-  const [showForm,      setShowForm]      = useState(false);
-  const [detailsDoc,    setDetailsDoc]    = useState(null);
-  const [reassignDoc,   setReassignDoc]   = useState(null);
-  const [progressingDoc, setProgressingDoc] = useState(null); // doc whose Progress → was clicked
-  const [approvingDoc,  setApprovingDoc]  = useState(null);   // doc being approved
+  const [showForm,          setShowForm]          = useState(false);
+  const [detailsDoc,        setDetailsDoc]        = useState(null);
+  const [reassignDoc,       setReassignDoc]       = useState(null);
+  const [progressingDoc,    setProgressingDoc]    = useState(null); // doc whose Progress → was clicked
+  const [approvingDoc,      setApprovingDoc]      = useState(null); // doc being approved
+  const [extendDeadlineDoc, setExtendDeadlineDoc] = useState(null); // doc for deadline extension
 
   const { oid: currentUserOid } = useCurrentUserRole();
   const { data: docs = [], isLoading, error, refetch } = useLifecycleDocs();
@@ -2099,8 +2342,19 @@ export default function DocumentLifecycle() {
     qc.invalidateQueries({ queryKey: ["lifecycle"] });
   };
 
-  const closeProgress = () => setProgressingDoc(null);
-  const closeApprove  = () => setApprovingDoc(null);
+  const handleProgressClick = (doc) => {
+    if (doc._extendDeadline) {
+      // Strip the internal flag and show deadline extension modal
+      const { _extendDeadline, ...cleanDoc } = doc;
+      setExtendDeadlineDoc(cleanDoc);
+    } else {
+      setProgressingDoc(doc);
+    }
+  };
+
+  const closeProgress      = () => setProgressingDoc(null);
+  const closeApprove       = () => setApprovingDoc(null);
+  const closeExtendDeadline = () => setExtendDeadlineDoc(null);
 
   if (isLoading) return <LoadingState message="Loading document lifecycle..." />;
   if (error)     return <ErrorState error={error} onRetry={refetch} />;
@@ -2140,7 +2394,9 @@ export default function DocumentLifecycle() {
       ) : (
         <div style={{ display: "flex", gap: 12 }}>
           {STAGES.map(stage => {
-            const stageDocs = docs.filter(d => d.Stage === stage.key);
+            const stageDocs = docs
+              .filter(d => d.Stage === stage.key)
+              .sort(sortNewestFirst);
             return (
               <div key={stage.key} style={{ flex: 1, minWidth: 0 }}>
                 {/* Column header */}
@@ -2180,7 +2436,7 @@ export default function DocumentLifecycle() {
                         stageConfig={stage}
                         currentUserOid={currentUserOid}
                         onViewDetails={setDetailsDoc}
-                        onProgressClick={setProgressingDoc}
+                        onProgressClick={handleProgressClick}
                         onReassign={setReassignDoc}
                         onApprove={setApprovingDoc}
                       />
@@ -2225,6 +2481,13 @@ export default function DocumentLifecycle() {
           doc={approvingDoc}
           onClose={closeApprove}
           onDone={closeApprove}
+        />
+      )}
+
+      {extendDeadlineDoc && (
+        <ExtendDeadlineModal
+          doc={extendDeadlineDoc}
+          onClose={closeExtendDeadline}
         />
       )}
     </>

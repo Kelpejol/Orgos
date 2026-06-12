@@ -8,6 +8,7 @@ import { useState, useMemo } from "react";
 import StatusBadge from "../../components/shared/StatusBadge.jsx";
 import { ErrorState, EmptyState } from "../../components/shared/LoadingState.jsx";
 import { useCurrentUserRole } from "../../hooks/useCurrentUserRole.js";
+import { useAlert } from "../../components/shared/AlertModal.jsx";
 import ReadOnlyBanner from "../../components/shared/ReadOnlyBanner.jsx";
 import {
   useContracts,
@@ -17,6 +18,7 @@ import {
 } from "../../hooks/useGrc.js";
 import apiClient from "../../api/grcApi.js";
 import ContractForm from "./ContractForm.jsx";
+import OwnerField from "../../components/shared/OwnerField.jsx";
 
 // =============================================================================
 //  Helpers
@@ -31,6 +33,7 @@ const STATUS_BORDER = {
   "Under Review":  "#2980B9",
   Terminated:      "#7F8C8D",
   Superseded:      "#8E44AD",
+  Withdrawn:       "#7F8C8D",
 };
 
 const STATUS_BG = {
@@ -40,6 +43,7 @@ const STATUS_BG = {
   "Under Review":  "rgba(41,128,185,0.06)",
   Terminated:      "rgba(127,140,141,0.07)",
   Superseded:      "rgba(142,68,173,0.06)",
+  Withdrawn:       "rgba(127,140,141,0.07)",
 };
 
 const TYPE_ICONS = {
@@ -58,6 +62,7 @@ const LIFECYCLE_TRANSITIONS = {
   Expired:         ["Terminated", "Superseded"],
   Terminated:      [],
   Superseded:      [],
+  Withdrawn:       [],
 };
 
 // =============================================================================
@@ -97,27 +102,8 @@ function AddObligationModal({ contractId, contractTitle, onSuccess, onCancel }) 
     owner_id:        "",
     notes:           "",
   });
-  const [ownerEmail, setOwnerEmail] = useState("");
-  const [resolving,  setResolving]  = useState(false);
-  const [resolveErr, setResolveErr] = useState("");
 
   const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
-
-  const resolveOwner = async () => {
-    if (!ownerEmail.trim()) return;
-    setResolving(true);
-    setResolveErr("");
-    try {
-      const data = await apiClient
-        .get(`/api/v1/grc/users/resolve?email=${encodeURIComponent(ownerEmail)}`)
-        .then((r) => r.data);
-      setForm((f) => ({ ...f, owner_id: data.oid }));
-    } catch {
-      setResolveErr("User not found");
-    } finally {
-      setResolving(false);
-    }
-  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -170,23 +156,9 @@ function AddObligationModal({ contractId, contractTitle, onSuccess, onCancel }) 
             {["Monthly","Quarterly","Annual","Once"].map(r => <option key={r}>{r}</option>)}
           </select>
 
-          <div style={{ marginBottom: 12 }}>
-            <div style={{ fontSize: 12, fontWeight: 500, color: "var(--color-text-secondary)", marginBottom: 4 }}>Owner (email)</div>
-            <div style={{ display: "flex", gap: 8 }}>
-              <input
-                style={{ ...inp, flex: 1, marginBottom: 0 }}
-                placeholder="owner@dragnet.com"
-                value={ownerEmail}
-                onChange={(e) => setOwnerEmail(e.target.value)}
-              />
-              <button type="button" onClick={resolveOwner} disabled={resolving}
-                style={{ padding: "9px 14px", fontSize: 12, borderRadius: 8, border: "1px solid #C0C0C0", background: "none", cursor: "pointer", whiteSpace: "nowrap" }}>
-                {resolving ? "…" : "Resolve"}
-              </button>
-            </div>
-            {resolveErr && <div style={{ fontSize: 11, color: "#C0392B", marginTop: 4 }}>{resolveErr}</div>}
-            {form.owner_id && <div style={{ fontSize: 11, color: "#27AE60", marginTop: 4 }}>✓ Owner resolved</div>}
-          </div>
+          <OwnerField
+            onResolve={(oid) => setForm((f) => ({ ...f, owner_id: oid }))}
+          />
 
           <textarea style={{ ...inp, resize: "vertical" }} placeholder="Notes (optional)" rows={2} value={form.notes} onChange={set("notes")} />
 
@@ -279,7 +251,7 @@ function ContractDetail({ contract, onBack, onEdit, onAddObligation, onLifecycle
     </div>
   );
 
-  const isFinalised = contract.status === "Terminated" || contract.status === "Superseded";
+  const isFinalised = contract.status === "Terminated" || contract.status === "Superseded" || contract.status === "Withdrawn";
 
   return (
     <div style={{ maxWidth: 600 }}>
@@ -377,7 +349,7 @@ function ContractDetail({ contract, onBack, onEdit, onAddObligation, onLifecycle
         </div>
       )}
 
-      {isAdmin && (
+      {isCompliance && contract.status !== "Withdrawn" && (
         <button onClick={() => onDelete(contract.id)}
           style={{ padding: "9px 18px", fontSize: 13, borderRadius: 8, border: "1px solid #E74C3C", background: "none", color: "#E74C3C", cursor: "pointer" }}>
           Withdraw
@@ -467,7 +439,7 @@ function ContractCard({ contract, onClick }) {
 //  Main page
 // =============================================================================
 
-const TABS = ["All", "Active", "Expiring Soon", "Expired", "Under Review", "Terminated", "Superseded"];
+const TABS = ["All", "Active", "Expiring Soon", "Expired", "Under Review", "Terminated", "Superseded", "Withdrawn"];
 
 export default function ContractRegister() {
   const [activeTab,      setActiveTab]      = useState("All");
@@ -481,6 +453,7 @@ export default function ContractRegister() {
   const [actionMsg,      setActionMsg]      = useState("");
 
   const { isCompliance, isAdmin } = useCurrentUserRole();
+  const { confirm: showConfirm } = useAlert();
   const { data: contracts = [], isLoading, error, refetch } = useContracts();
   const lifecycleM = useUpdateContractLifecycle();
   const deleteM    = useSoftDeleteContract();
@@ -535,8 +508,14 @@ export default function ContractRegister() {
     );
   };
 
-  const handleDelete = (id) => {
-    if (!window.confirm("Withdraw this contract? It will be marked as Withdrawn.")) return;
+  const handleDelete = async (id) => {
+    const ok = await showConfirm({
+      title: "Withdraw contract?",
+      message: "Withdraw this contract? It will be marked as Withdrawn and kept in the register for audit history.",
+      confirmLabel: "Withdraw",
+      cancelLabel: "Keep contract",
+    });
+    if (!ok) return;
     deleteM.mutate(id, {
       onSuccess: () => { setSelected(null); refetch(); flash("Contract withdrawn"); },
       onError:   (err) => flash(err.message || "Delete failed", false),

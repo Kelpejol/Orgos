@@ -340,6 +340,62 @@ export const extractorApi = {
 };
 
 // =============================================================================
+//  Document Lifecycle
+// =============================================================================
+
+export const lifecycleApi = {
+  list: (params) =>
+    apiClient.get("/api/v1/lifecycle/documents", { params }),
+  get: (id) =>
+    apiClient.get(`/api/v1/lifecycle/documents/${id}`),
+  create: (body) =>
+    apiClient.post("/api/v1/lifecycle/documents", body),
+  progress: (id, stage, body = {}) =>
+    apiClient.patch(`/api/v1/lifecycle/documents/${id}/progress`, { current_stage: stage, ...body }),
+  approve: (id, body) =>
+    apiClient.post(`/api/v1/lifecycle/documents/${id}/approve`, body),
+  reject: (id, body) =>
+    apiClient.post(`/api/v1/lifecycle/documents/${id}/reject`, body),
+  recall: (id) =>
+    apiClient.post(`/api/v1/lifecycle/documents/${id}/recall`),
+  reassign: (id, body) =>
+    apiClient.patch(`/api/v1/lifecycle/documents/${id}/reassign`, body),
+  extendDeadline: (id, newDeadline) =>
+    apiClient.patch(`/api/v1/lifecycle/documents/${id}/deadline`, { new_deadline: newDeadline }),
+  updateFeedback: (id, feedback) =>
+    apiClient.patch(`/api/v1/lifecycle/documents/${id}/feedback`, { feedback }),
+  submitFeedback: (id, body) =>
+    apiClient.post(`/api/v1/lifecycle/documents/${id}/feedback/submit`, body),
+  cdiFix: (id) =>
+    apiClient.post(`/api/v1/lifecycle/documents/${id}/cdi-fix-suggestions`),
+  feedbackAiSuggestions: (id) =>
+    apiClient.post(`/api/v1/lifecycle/documents/${id}/feedback/ai-suggestions`),
+  aiAssessment: (id) =>
+    apiClient.post(`/api/v1/lifecycle/documents/${id}/ai-assessment`),
+  upload: async (id, file) => {
+    const tokenResponse = await msalInstance.acquireTokenSilent({
+      ...apiTokenRequest,
+      account: msalInstance.getAllAccounts()[0],
+    });
+    const formData = new FormData();
+    formData.append("file", file);
+    const BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+    const response = await fetch(`${BASE}/api/v1/lifecycle/documents/${id}/upload`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${tokenResponse.accessToken}` },
+      body: formData,
+    });
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.detail || `Upload failed: ${response.status}`);
+    }
+    return response.json();
+  },
+  downloadUrl: (id) =>
+    `${BASE_URL}/api/v1/lifecycle/documents/${id}/download`,
+};
+
+// =============================================================================
 //  SharePoint File Browser
 // =============================================================================
 

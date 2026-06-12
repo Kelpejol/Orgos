@@ -199,7 +199,10 @@ export default function RoleRegister() {
         <Field l="Current holder" v={getHolder(selected.current_holder)} />
         <Field l="Source system" v={selected.source_system} />
         {selected.variant_terms && (
-          <Field l="Variant terms" v={selected.variant_terms} />
+          <Field
+            l="Variant terms"
+            v={<span style={{ whiteSpace: "pre-line" }}>{selected.variant_terms}</span>}
+          />
         )}
 
         {/* Unassigned warning */}

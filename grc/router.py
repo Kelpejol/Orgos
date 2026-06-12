@@ -128,6 +128,41 @@ async def resolve_user_by_email(
         )
 
 
+@router.get("/users/search")
+async def search_users_endpoint(
+    q: str = Query(..., min_length=2),
+    user: CurrentUser = Depends(get_current_user),
+) -> list[dict]:
+    """Prefix search across displayName and mail. Returns up to 8 matches."""
+    safe_q = q.replace("'", "").strip()
+    if not safe_q:
+        return []
+    try:
+        from graph.client import _request
+        params = {
+            "$filter": f"startswith(displayName,'{safe_q}') or startswith(mail,'{safe_q}')",
+            "$select": "id,displayName,mail,userPrincipalName,jobTitle",
+            "$top": "8",
+        }
+        resp = await _request(
+            "GET",
+            f"{settings.graph_base_url}/users",
+            params=params,
+            context="search users",
+        )
+        return [
+            {
+                "oid":          r.get("id", ""),
+                "display_name": r.get("displayName", ""),
+                "email":        r.get("mail") or r.get("userPrincipalName", ""),
+                "job_title":    r.get("jobTitle", ""),
+            }
+            for r in resp.get("value", [])
+        ]
+    except Exception:
+        return []
+
+
 @router.get(
     "/documents/{item_id}",
     response_model=schemas.DocumentRead,

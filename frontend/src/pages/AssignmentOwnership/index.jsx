@@ -14,6 +14,8 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import StatusBadge from "../../components/shared/StatusBadge.jsx";
 import { Field } from "../../components/shared/Forms.jsx";
 import { LoadingState, ErrorState, EmptyState } from "../../components/shared/LoadingState.jsx";
+import UserSearchField from "../../components/shared/UserSearchField.jsx";
+import { useAlert } from "../../components/shared/AlertModal.jsx";
 import apiClient from "../../api/grcApi.js";
 
 // =============================================================================
@@ -95,10 +97,7 @@ const Zone2ActionModal = ({
   const needsReviewer = decision.key === "Request Second Review";
   const [linkedDoc, setLinkedDoc] = useState("");
   const [targetRole, setTargetRole] = useState(item.ProposedOwnerRole || "");
-  const [reviewerQuery, setReviewerQuery] = useState("");
   const [reviewer, setReviewer] = useState(null);
-  const [reviewerLoading, setReviewerLoading] = useState(false);
-  const [reviewerError, setReviewerError] = useState("");
 
   const canSubmit =
     rationale.trim().length >= 10 &&
@@ -106,25 +105,6 @@ const Zone2ActionModal = ({
     (!needsRole || targetRole.trim().length > 0) &&
     (!needsReviewer || reviewer) &&
     !isPending;
-
-  const searchReviewer = async () => {
-    const value = reviewerQuery.trim();
-    if (!value) {
-      setReviewerError("Enter a Microsoft 365 email or UPN.");
-      return;
-    }
-    setReviewerLoading(true);
-    setReviewerError("");
-    setReviewer(null);
-    try {
-      const data = await apiClient.get("/api/v1/grc/users/resolve", { params: { email: value } }).then(r => r.data);
-      setReviewer(data);
-    } catch (err) {
-      setReviewerError(err.message || "No person found.");
-    } finally {
-      setReviewerLoading(false);
-    }
-  };
 
   const submit = () => {
     if (!canSubmit) return;
@@ -193,9 +173,7 @@ const Zone2ActionModal = ({
                 color: "var(--color-text-primary)", boxSizing: "border-box", outline: "none",
               }}
             />
-            <div style={{ fontSize: 10, color: "var(--color-text-tertiary)", marginTop: 5 }}>
-              This code is passed to the backend as <code>linked_doc_code</code> and used for the lifecycle task.
-            </div>
+            
           </div>
         )}
 
@@ -223,50 +201,12 @@ const Zone2ActionModal = ({
 
         {decision.key === "Request Second Review" && (
           <div style={{ marginBottom: 12 }}>
-            <label style={{ display: "block", fontSize: 10, fontWeight: 600,
-                            color: "var(--color-text-secondary)", marginBottom: 5,
-                            textTransform: "uppercase", letterSpacing: "0.4px" }}>
-              Reviewer dragnet mail <span style={{ color: "#A32D2D" }}>*</span>
-            </label>
-            <div style={{ display: "flex", gap: 8 }}>
-              <input
-                autoFocus
-                value={reviewerQuery}
-                onChange={e => setReviewerQuery(e.target.value)}
-                placeholder="user@dragnet.com"
-                style={{
-                  flex: 1, fontSize: 13, padding: "9px 11px", borderRadius: 9,
-                  border: `1.5px solid ${reviewer ? "#5DCAA5" : "#C0C0C0"}`,
-                  background: "var(--color-background-primary)",
-                  color: "var(--color-text-primary)", boxSizing: "border-box", outline: "none",
-                }}
-              />
-              <button
-                onClick={searchReviewer}
-                disabled={reviewerLoading}
-                style={{ minWidth: 86, padding: "9px 12px", borderRadius: 9,
-                         border: "1px solid #0C447C", background: "#0C447C",
-                         color: "#fff", cursor: "pointer", fontWeight: 600 }}
-              >
-                {reviewerLoading ? "Finding..." : "Find"}
-              </button>
-            </div>
-            {reviewerError && (
-              <div style={{ marginTop: 6, fontSize: 11, color: "#A32D2D" }}>
-                {reviewerError}
-              </div>
-            )}
-            {reviewer && (
-              <div style={{ marginTop: 8, padding: "9px 11px", borderRadius: 9,
-                            border: "1px solid #D0D0D0", background: "var(--color-background-secondary)" }}>
-                <div style={{ fontSize: 12, fontWeight: 600 }}>
-                  {reviewer.display_name || reviewer.email}
-                </div>
-                <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginTop: 2 }}>
-                  {reviewer.email} {reviewer.job_title ? `· ${reviewer.job_title}` : ""}
-                </div>
-              </div>
-            )}
+            <UserSearchField
+              onSelect={setReviewer}
+              label="Reviewer dragnet person"
+              placeholder="Search by name or email..."
+              accentColor="#0C447C"
+            />
           </div>
         )}
 
@@ -545,6 +485,7 @@ export default function AssignmentOwnership() {
   const [actionState, setActionState] = useState({ pending: false, itemId: null });
 
   const { isCompliance } = useCurrentUserRole();
+  const { notify } = useAlert();
   const qc = useQueryClient();
   const { data: items = [], isLoading, error, refetch } = useQuery({
     queryKey: ["zone2"],
@@ -579,7 +520,11 @@ export default function AssignmentOwnership() {
       qc.invalidateQueries({ queryKey: ["zone2"] });
       return result;
     } catch (err) {
-      alert(err.response?.data?.detail || err.message || "Decision failed.");
+      notify({
+        tone: "danger",
+        title: "Decision failed",
+        message: err.response?.data?.detail || err.message || "Decision failed.",
+      });
     } finally {
       setActionState({ pending: false, itemId: null });
     }

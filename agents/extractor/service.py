@@ -478,6 +478,12 @@ async def run_extraction_from_text(
     written = 0
     if write_to_sharepoint and items:
         written = await _write_to_queue(items, doc_code, doc_type, web_url=web_url)
+        if written:
+            try:
+                from agents.classifier.service import run_classifier
+                await run_classifier(triggered_by=f"system: extraction {doc_code}")
+            except Exception as exc:
+                logger.warning(f"Automatic classifier run after extraction failed for {doc_code}: {exc}")
 
     return ExtractionResponse(
         source_document_code=doc_code,
@@ -497,6 +503,7 @@ async def run_extraction_from_file(
     write_to_sharepoint: bool = False,
     folder_path: Optional[str] = None,
     web_url: str = "",
+    document_type_override: Optional[str] = None,
 ) -> ExtractionResponse:
     fname = filename.lower()
     if fname.endswith(".pdf"):
@@ -509,5 +516,10 @@ async def run_extraction_from_file(
         raise ValueError(f"Unsupported file type: {filename}")
 
     return await run_extraction_from_text(
-        text, doc_code, write_to_sharepoint, folder_path, web_url=web_url
+        text,
+        doc_code,
+        write_to_sharepoint,
+        folder_path,
+        document_type_override=document_type_override,
+        web_url=web_url,
     )

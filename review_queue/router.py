@@ -283,6 +283,19 @@ def _split_terms(value: str) -> list[str]:
     return terms
 
 
+def _join_variant_terms(terms: list[str]) -> str:
+    """Store Role Register VariantTerms as one term per line."""
+    cleaned: list[str] = []
+    seen: set[str] = set()
+    for term in terms:
+        value = str(term or "").strip()
+        key = value.lower()
+        if value and key not in seen:
+            cleaned.append(value)
+            seen.add(key)
+    return "\n".join(cleaned)
+
+
 def _normalise(value: str) -> str:
     return " ".join((value or "").strip().lower().split())
 
@@ -406,7 +419,7 @@ async def _append_role_variants(canonical_name: str, variant_terms: list[str]) -
             "JDReference":      "",
             "SourceSystem":     "Manual",
             "AssignmentStatus": "Unassigned",
-            "VariantTerms":     ", ".join(variant_terms),
+            "VariantTerms":     _join_variant_terms(variant_terms),
         }
         created = await create_list_item(_rr_id(), _RR_LIST, fields)
         return f"Role Register: created canonical role '{canonical_name}' ({created['id']})"
@@ -423,7 +436,7 @@ async def _append_role_variants(canonical_name: str, variant_terms: list[str]) -
         _rr_id(),
         _RR_LIST,
         str(role["id"]),
-        {"VariantTerms": ", ".join(merged_terms)},
+        {"VariantTerms": _join_variant_terms(merged_terms)},
     )
     return f"Role Register: updated variants for '{canonical_name}'"
 
@@ -635,6 +648,11 @@ async def zone1_decide(
                 "evidence_validation_criteria": body.evidence_validation_criteria,
             }
             cascade_result = await _zone1_accept_cascade(item, user, overrides)
+            try:
+                from agents.classifier.service import run_classifier
+                await run_classifier(triggered_by=f"system: zone1 {body.decision} by {user.name or user.oid}")
+            except Exception as exc:
+                logger.warning(f"Automatic classifier run after Zone 1 decision failed: {exc}")
             updates["CascadeResult"] = cascade_result
 
         await update_list_item(_q_id(), _Q_LIST, item_id, updates)
@@ -957,6 +975,8 @@ async def _zone3_cascade(
     is_role_harmonisation = not item.get("ControlStatement")
     source_doc = item.get("SourceDocumentCode", "")
 
+    source_doc2 = item.get("SourceDocumentCode2", "")
+
     if decision in ("Merge", "Rename and standardise") and canonical_name:
         created.append(f"Canonical name confirmed: '{canonical_name}'")
         if is_role_harmonisation:
@@ -967,25 +987,26 @@ async def _zone3_cascade(
             except Exception as exc:
                 logger.error(f"Zone 3 role harmonisation cascade failed: {exc}")
         else:
-            try:
-                lifecycle_id = await _create_lifecycle_task(
-                    title=f"Standardise duplicate control: {item.get('Title', '')[:180]}",
-                    trigger="Gap Remediation",
-                    document_code=source_doc,
-                    document_type="Policy",
-                    notes=(
-                        f"Created from Zone 3 Harmonisation decision.\n"
-                        f"Decision: {decision}\n"
-                        f"Canonical control/name: {canonical_name}\n"
-                        f"Source: {source_doc}\n"
-                        f"Variant/control terms:\n{item.get('VariantTerms', '')[:1500]}\n"
-                        f"Rationale: {rationale}"
-                    ),
-                    user=user,
-                )
-                created.append(f"Document Lifecycle: {lifecycle_id}")
-            except Exception as exc:
-                logger.error(f"Zone 3 duplicate control lifecycle cascade failed: {exc}")
+            shared_notes = (
+                f"Created from Zone 3 Harmonisation decision.\n"
+                f"Decision: {decision}\n"
+                f"Canonical control/name: {canonical_name}\n"
+                f"Variant/control terms:\n{item.get('VariantTerms', '')[:1500]}\n"
+                f"Rationale: {rationale}"
+            )
+            for doc_code in filter(None, [source_doc, source_doc2]):
+                try:
+                    lifecycle_id = await _create_lifecycle_task(
+                        title=f"Harmonisation fix — standardise control in {doc_code}: {item.get('Title', '')[:140]}",
+                        trigger="Harmonisation Fix",
+                        document_code=doc_code,
+                        document_type="Policy",
+                        notes=shared_notes,
+                        user=user,
+                    )
+                    created.append(f"Document Lifecycle ({doc_code}): {lifecycle_id}")
+                except Exception as exc:
+                    logger.error(f"Zone 3 Harmonisation Fix lifecycle cascade failed for {doc_code}: {exc}")
 
     elif decision == "Partial merge" and canonical_name:
         created.append(f"Partial merge — canonical name '{canonical_name}' confirmed for overlapping variants.")
@@ -998,23 +1019,25 @@ async def _zone3_cascade(
             except Exception as exc:
                 logger.error(f"Zone 3 partial role harmonisation failed: {exc}")
         else:
-            try:
-                lifecycle_id = await _create_lifecycle_task(
-                    title=f"Partially merge duplicate controls: {item.get('Title', '')[:170]}",
-                    trigger="Gap Remediation",
-                    document_code=source_doc,
-                    document_type="Policy",
-                    notes=(
-                        f"Created from Zone 3 partial merge decision.\n"
-                        f"Canonical control/name: {canonical_name}\n"
-                        f"Variant/control terms:\n{item.get('VariantTerms', '')[:1500]}\n"
-                        f"Rationale: {rationale}"
-                    ),
-                    user=user,
-                )
-                created.append(f"Document Lifecycle: {lifecycle_id}")
-            except Exception as exc:
-                logger.error(f"Zone 3 partial duplicate lifecycle cascade failed: {exc}")
+            shared_notes = (
+                f"Created from Zone 3 partial merge decision.\n"
+                f"Canonical control/name: {canonical_name}\n"
+                f"Variant/control terms:\n{item.get('VariantTerms', '')[:1500]}\n"
+                f"Rationale: {rationale}"
+            )
+            for doc_code in filter(None, [source_doc, source_doc2]):
+                try:
+                    lifecycle_id = await _create_lifecycle_task(
+                        title=f"Harmonisation fix — partial merge in {doc_code}: {item.get('Title', '')[:140]}",
+                        trigger="Harmonisation Fix",
+                        document_code=doc_code,
+                        document_type="Policy",
+                        notes=shared_notes,
+                        user=user,
+                    )
+                    created.append(f"Document Lifecycle ({doc_code}): {lifecycle_id}")
+                except Exception as exc:
+                    logger.error(f"Zone 3 partial merge lifecycle cascade failed for {doc_code}: {exc}")
 
     elif decision == "Keep separate":
         created.append("Confirmed as separate items — future classifier runs should suppress this exact pair.")

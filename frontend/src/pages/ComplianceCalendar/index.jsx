@@ -14,6 +14,7 @@ import {
   useSoftDeleteObligation,
 } from "../../hooks/useGrc.js";
 import { useCurrentUserRole } from "../../hooks/useCurrentUserRole.js";
+import { useAlert } from "../../components/shared/AlertModal.jsx";
 import ReadOnlyBanner from "../../components/shared/ReadOnlyBanner.jsx";
 import CalendarForm from "./CalendarForm.jsx";
 
@@ -203,7 +204,7 @@ function EscalateModal({ obligation, onConfirm, onCancel, isPending }) {
 //  Detail panel
 // =============================================================================
 
-function ObligationDetail({ obligation, onBack, onComplete, onEscalate, onDelete, isCompliance }) {
+function ObligationDetail({ obligation, onBack, onEdit, onComplete, onEscalate, onDelete, isCompliance }) {
   const borderColor = STATUS_BORDER[obligation.status] || "#C0C0C0";
   const isOverdue   = obligation.status === "Overdue";
   const isCompleted = obligation.status === "Completed";
@@ -291,6 +292,15 @@ function ObligationDetail({ obligation, onBack, onComplete, onEscalate, onDelete
       </div>
 
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+        {isCompliance && (
+          <button onClick={() => onEdit(obligation)}
+            style={{
+              padding: "9px 18px", fontSize: 13, borderRadius: 8, border: "1px solid #378ADD",
+              background: "none", color: "#378ADD", cursor: "pointer", fontWeight: 600,
+            }}>
+            Edit
+          </button>
+        )}
         {isCompliance && !isCompleted && (
           <button onClick={() => onComplete(obligation)}
             style={{
@@ -445,6 +455,7 @@ export default function ComplianceCalendar() {
   const [actionError,     setActionError]     = useState("");
 
   const { isCompliance } = useCurrentUserRole();
+  const { confirm: showConfirm } = useAlert();
   const { data: obligations = [], isLoading, error, refetch } = useObligations();
   const completeM  = useCompleteObligation();
   const escalateM  = useEscalateObligation();
@@ -512,8 +523,14 @@ export default function ComplianceCalendar() {
     );
   };
 
-  const handleDelete = (id) => {
-    if (!window.confirm("Withdraw this obligation? It will be marked as Withdrawn.")) return;
+  const handleDelete = async (id) => {
+    const ok = await showConfirm({
+      title: "Withdraw obligation?",
+      message: "Withdraw this obligation? It will be marked as Withdrawn and retained in SharePoint.",
+      confirmLabel: "Withdraw",
+      cancelLabel: "Keep obligation",
+    });
+    if (!ok) return;
     deleteM.mutate(id, {
       onSuccess: () => { setSelected(null); refetch(); },
       onError:   (err) => setActionError(err.message || "Delete failed"),
@@ -536,6 +553,7 @@ export default function ComplianceCalendar() {
         <ObligationDetail
           obligation={selected}
           onBack={() => setSelected(null)}
+          onEdit={(ob) => { setEditTarget(ob); setSelected(null); }}
           onComplete={(ob) => setCompleteTarget(ob)}
           onEscalate={(ob) => setEscalateTarget(ob)}
           onDelete={handleDelete}

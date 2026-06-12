@@ -687,6 +687,58 @@ async def resolve_user(entra_oid: str) -> dict:
         return {"display_name": "", "email": ""}
 
 
+# Simple in-memory cache for SP user lookup IDs (email → int)
+_sp_user_id_cache: dict = {}
+
+
+async def resolve_sp_user_lookup_id(email: str) -> Optional[int]:
+    """
+    Resolve a user's email address to their SharePoint site user lookup ID.
+
+    SharePoint Person/Group columns (written via Graph API) require the
+    internal SP site user ID (an integer, not the Entra OID).  This ID is
+    retrieved from the hidden "User Information List" that every SharePoint
+    site maintains.
+
+    The result is cached in memory for the lifetime of the process.
+
+    Args:
+        email: The user's email / UPN (e.g. "daniel@dragnetsolutions.com").
+
+    Returns:
+        Integer SP user lookup ID if found, None otherwise.
+        None means the Person/Group field write will be skipped gracefully —
+        the text column (EntraId) is still written and application logic is
+        unaffected.
+    """
+    if not email:
+        return None
+
+    if email in _sp_user_id_cache:
+        return _sp_user_id_cache[email]
+
+    try:
+        # The User Information List is a hidden SP list present on every site.
+        # Filter by the EMail field to find this user's record; the list item
+        # id is the SP user lookup ID used for Person/Group column writes.
+        url = (
+            f"{settings.graph_base_url}/sites/{settings.sharepoint_site_id}"
+            f"/lists/User%20Information%20List/items"
+            f"?$filter=fields/EMail eq '{email}'&$select=id&$top=1"
+            f"&$expand=fields($select=EMail)"
+        )
+        data = await _request("GET", url, context=f"Resolve SP user lookup ID for {email}")
+        items = data.get("value", [])
+        if items:
+            lookup_id = int(items[0]["id"])
+            _sp_user_id_cache[email] = lookup_id
+            return lookup_id
+    except Exception as exc:
+        logger.warning(f"Could not resolve SP user lookup ID for '{email}': {exc}")
+
+    return None
+
+
 # =============================================================================
 #  SharePoint Document Library — file upload / download
 # =============================================================================

@@ -13,6 +13,15 @@ import { Field } from "../../components/shared/Forms.jsx";
 import { LoadingState, ErrorState } from "../../components/shared/LoadingState.jsx";
 import apiClient from "../../api/grcApi.js";
 
+function fmtDate(str) {
+  if (!str) return "—";
+  try {
+    const d = new Date(str);
+    if (isNaN(d.getTime())) return str;
+    return d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+  } catch { return str; }
+}
+
 // =============================================================================
 //  API
 // =============================================================================
@@ -139,6 +148,7 @@ const ClauseDetail = ({ clauseCode, onBack }) => {
       )}
 
       {/* Controls with linked evidence */}
+      <div style={{ maxHeight: 520, overflowY: "auto" }}>
       {controls.map((control, ci) => {
         const linkedEvidence = evidence.filter(e => e.LinkedControlId === control.id);
         const isBlocked = control.Status === "Blocked";
@@ -159,7 +169,7 @@ const ClauseDetail = ({ clauseCode, onBack }) => {
               <div style={{ fontSize: 13, fontWeight: 600, lineHeight: 1.4, marginBottom: 6 }}>
                 {control.ControlStatement}
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 0 }}>
+              <div>
                 <Field l="Owner role"       v={control.OwnerRole || "—"} />
                 <Field l="Source document"  v={control.SourceDocument || "—"} />
                 {control.RiskImplication && (
@@ -229,7 +239,7 @@ const ClauseDetail = ({ clauseCode, onBack }) => {
                     </div>
                     <div style={{ fontSize: 10, color: ec.color, opacity: 0.8 }}>
                       {evd.OwnerRole} · {evd.Frequency}
-                      {evd.LastCollected ? ` · Last: ${evd.LastCollected}` : ""}
+                      {evd.LastCollected ? ` · Last: ${fmtDate(evd.LastCollected)}` : ""}
                       {evd.ValidationCriteria
                         ? ` · Accept if: ${evd.ValidationCriteria.slice(0, 60)}${evd.ValidationCriteria.length > 60 ? "..." : ""}`
                         : ""}
@@ -241,6 +251,7 @@ const ClauseDetail = ({ clauseCode, onBack }) => {
           </div>
         );
       })}
+      </div>
     </div>
   );
 };

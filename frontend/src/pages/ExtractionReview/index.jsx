@@ -12,6 +12,8 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import StatusBadge from "../../components/shared/StatusBadge.jsx";
 import { Field } from "../../components/shared/Forms.jsx";
 import { LoadingState, ErrorState, EmptyState } from "../../components/shared/LoadingState.jsx";
+import UserSearchField from "../../components/shared/UserSearchField.jsx";
+import { useAlert } from "../../components/shared/AlertModal.jsx";
 import apiClient from "../../api/grcApi.js";
 
 const EVIDENCE_TYPES = [
@@ -463,38 +465,14 @@ const DecisionPanel = ({ item, onDecide, onRequestSecondReview, isPending }) => 
 };
 
 const SecondReviewModal = ({ open, item, onClose, onSubmit, isPending }) => {
-  const [query, setQuery] = useState("");
-  const [reviewer, setReviewer] = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
+  const [reviewer,  setReviewer]  = useState(null);
   const [rationale, setRationale] = useState("");
 
   useEffect(() => {
     if (!open) return;
-    setQuery("");
     setReviewer(null);
-    setError("");
     setRationale("");
   }, [open, item]);
-
-  const searchReviewer = async () => {
-    const value = query.trim();
-    if (!value) {
-      setError("Enter a Microsoft 365 email or UPN.");
-      return;
-    }
-    setLoading(true);
-    setError("");
-    setReviewer(null);
-    try {
-      const data = await apiClient.get("/api/v1/grc/users/resolve", { params: { email: value } }).then(r => r.data);
-      setReviewer(data);
-    } catch (err) {
-      setError(err.message || "No person found.");
-    } finally {
-      setLoading(false);
-    }
-  };
 
   const canSubmit = reviewer && rationale.trim().length >= 10;
 
@@ -523,52 +501,28 @@ const SecondReviewModal = ({ open, item, onClose, onSubmit, isPending }) => {
           </button>
         </div>
 
-        <div style={{ marginBottom: 14 }}>
-          <label style={{ display: "block", marginBottom: 6, fontSize: 11, fontWeight: 600, color: "var(--color-text-secondary)", textTransform: "uppercase", letterSpacing: "0.4px" }}>
-            Reviewer dragnet mail
-          </label>
-          <div style={{ display: "flex", gap: 8 }}>
-            <input
-              value={query}
-              onChange={(e) => setQuery(e.target.value)}
-              placeholder="user@dragnet.com"
-              style={{ flex: 1, fontSize: 13, padding: "10px 12px", borderRadius: 10, border: "1.5px solid #C0C0C0", background: "var(--color-background-primary)", color: "var(--color-text-primary)" }}
-            />
-            <button
-              onClick={searchReviewer}
-              disabled={loading}
-              style={{ minWidth: 112, padding: "10px 14px", borderRadius: 10, border: "1px solid #0C447C", background: "#0C447C", color: "#fff", cursor: "pointer", fontWeight: 600 }}
-            >
-              {loading ? "Searching…" : "Find"}
-            </button>
-          </div>
-          {error && <div style={{ marginTop: 8, fontSize: 11, color: "#A32D2D" }}>{error}</div>}
-        </div>
-
-        {reviewer && (
-          <div style={{ padding: 12, borderRadius: 12, border: "1px solid #D0D0D0", background: "var(--color-background-secondary)", marginBottom: 14 }}>
-            <div style={{ fontSize: 13, fontWeight: 600, color: "var(--color-text-primary)", marginBottom: 4 }}>
-              {reviewer.display_name || reviewer.email}
-            </div>
-            <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 6 }}>
-              {reviewer.email} {reviewer.job_title ? `· ${reviewer.job_title}` : ""}
-            </div>
-            <div style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>
-              Selected reviewer for second review.
-            </div>
-          </div>
-        )}
+        <UserSearchField
+          onSelect={setReviewer}
+          label="Reviewer — type name or email"
+          placeholder="Search by name or email..."
+          accentColor="#0C447C"
+        />
 
         <div style={{ marginBottom: 14 }}>
           <label style={{ display: "block", marginBottom: 6, fontSize: 10, fontWeight: 600, color: "var(--color-text-secondary)", textTransform: "uppercase", letterSpacing: "0.4px" }}>
-            second review request
+            Second review request
           </label>
           <textarea
             value={rationale}
             onChange={(e) => setRationale(e.target.value)}
             rows={4}
-            placeholder="Explain to your reviewer why you are requesting a second review. This helps them understand what to focus on and provides context. Minimum 10 characters."
-            style={{ width: "100%", fontSize: 13, padding: "10px 12px", borderRadius: 10, border: "1.5px solid #C0C0C0", background: "var(--color-background-primary)", color: "var(--color-text-primary)", resize: "vertical" }}
+            placeholder="Explain to your reviewer why you are requesting a second review. Minimum 10 characters."
+            style={{ width: "100%", fontSize: 13, padding: "10px 12px", borderRadius: 10,
+                     border: `1.5px solid ${rationale.trim().length >= 10 ? "#5DCAA5" : "#C0C0C0"}`,
+                     background: "var(--color-background-primary)", color: "var(--color-text-primary)",
+                     resize: "vertical", outline: "none", boxSizing: "border-box" }}
+            onFocus={e => (e.target.style.borderColor = "#0C447C")}
+            onBlur={e => (e.target.style.borderColor = rationale.trim().length >= 10 ? "#5DCAA5" : "#C0C0C0")}
           />
           {rationale.trim().length > 0 && rationale.trim().length < 10 && (
             <div style={{ marginTop: 6, fontSize: 11, color: "#A32D2D" }}>
@@ -584,9 +538,12 @@ const SecondReviewModal = ({ open, item, onClose, onSubmit, isPending }) => {
           <button
             onClick={() => onSubmit({ rationale: rationale.trim(), reviewer })}
             disabled={!canSubmit || isPending}
-            style={{ padding: "10px 14px", borderRadius: 10, border: "none", background: canSubmit && !isPending ? "#1D9E75" : "#E8E8E8", color: canSubmit && !isPending ? "#fff" : "#999", cursor: canSubmit && !isPending ? "pointer" : "not-allowed", fontWeight: 600 }}
+            style={{ padding: "10px 14px", borderRadius: 10, border: "none",
+                     background: canSubmit && !isPending ? "#1D9E75" : "#E8E8E8",
+                     color: canSubmit && !isPending ? "#fff" : "#999",
+                     cursor: canSubmit && !isPending ? "pointer" : "not-allowed", fontWeight: 600 }}
           >
-            {isPending ? "Requesting…" : "Send request"}
+            {isPending ? "Requesting…" : reviewer ? `Send to ${reviewer.display_name}` : "Select a reviewer above"}
           </button>
         </div>
       </div>
@@ -806,6 +763,7 @@ export default function ExtractionReview() {
   const [secondReviewModal, setSecondReviewModal] = useState({ open: false, item: null });
 
   const { isCompliance } = useCurrentUserRole();
+  const { notify } = useAlert();
   const qc = useQueryClient();
   const { data: items = [], isLoading, error, refetch } = useZone1Items();
 
@@ -864,7 +822,11 @@ export default function ExtractionReview() {
       qc.invalidateQueries({ queryKey: ["zone1"] });
       closeSecondReviewModal();
     } catch (err) {
-      alert(err.response?.data?.detail || err.message || "Request failed.");
+      notify({
+        tone: "danger",
+        title: "Request failed",
+        message: err.response?.data?.detail || err.message || "Request failed.",
+      });
     } finally {
       setActionState({ pending: false, itemId: null });
     }
@@ -885,7 +847,11 @@ export default function ExtractionReview() {
       }
       qc.invalidateQueries({ queryKey: ["zone1"] });
     } catch (err) {
-      alert(err.response?.data?.detail || err.message || "Decision failed.");
+      notify({
+        tone: "danger",
+        title: "Decision failed",
+        message: err.response?.data?.detail || err.message || "Decision failed.",
+      });
     } finally {
       setActionState({ pending: false, itemId: null });
     }

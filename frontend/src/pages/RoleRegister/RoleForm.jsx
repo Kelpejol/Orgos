@@ -51,8 +51,43 @@ export default function RoleForm({ onSuccess, onCancel }) {
         <OwnerField onResolve={(oid) => setForm(f => ({ ...f, current_holder_id: oid }))} />
         <FormSelect label="Source system" id="source" value={form.source_system}
           onChange={set("source_system")} options={SOURCES} />
-        <FormInput label="Variant terms (optional)" id="variants" value={form.variant_terms}
-          onChange={set("variant_terms")} placeholder="Line Manager, Department Head, ..." />
+        <div style={{ marginBottom: 12 }}>
+          <label
+            htmlFor="variants"
+            style={{
+              display: "block",
+              fontSize: 11,
+              fontWeight: 500,
+              color: "var(--color-text-secondary)",
+              marginBottom: 4,
+              textTransform: "uppercase",
+              letterSpacing: "0.4px",
+            }}
+          >
+            Variant terms (optional)
+          </label>
+          <textarea
+            id="variants"
+            value={form.variant_terms}
+            onChange={set("variant_terms")}
+            rows={4}
+            placeholder={"Line Manager\nDepartment Head\nTeam Lead"}
+            style={{
+              width: "100%",
+              fontSize: 13,
+              padding: "8px 10px",
+              borderRadius: 8,
+              border: "1.5px solid #C0C0C0",
+              background: "var(--color-background-primary)",
+              color: "var(--color-text-primary)",
+              outline: "none",
+              boxSizing: "border-box",
+              resize: "vertical",
+            }}
+            onFocus={(e) => (e.target.style.borderColor = "#378ADD")}
+            onBlur={(e) => (e.target.style.borderColor = "#C0C0C0")}
+          />
+        </div>
 
         <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
           <Btn label={createRole.isPending ? "Saving..." : "Save role"} primary type="submit"

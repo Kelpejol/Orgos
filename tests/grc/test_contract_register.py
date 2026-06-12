@@ -49,6 +49,9 @@ class TestContractStatusCalculation:
         far = date.today() + timedelta(days=500)
         assert _calculate_contract_status(far) == ContractStatus.ACTIVE
 
+    def test_withdrawn_is_valid_contract_status(self):
+        assert ContractStatus.WITHDRAWN.value == "Withdrawn"
+
 
 class TestContractRegisterEndpoints:
 

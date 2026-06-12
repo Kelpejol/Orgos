@@ -240,7 +240,7 @@ async def _upload_evidence_to_sharepoint(
         "Authorization": f"Bearer {token}",
         "Content-Type": "application/octet-stream",
     }
-    upload_path = f"EVID-{item_id}-{_safe_filename(filename)}"
+    upload_path = f"Evidence/EVID-{item_id}-{_safe_filename(filename)}"
     upload_url = (
         f"{settings.graph_base_url}/sites/{settings.sharepoint_site_id}"
         f"/drive/root:/{upload_path}:/content"

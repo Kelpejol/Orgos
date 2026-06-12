@@ -247,37 +247,57 @@ def _find_gaps(
 
 
 # =============================================================================
-#  Part 2 — Remediation proposal (uses Ollama — Bobby's amendment)
+#  Part 2 — AI analysis + remediation proposal (uses Ollama — Bobby's amendment)
+#
+#  Single Ollama call per gap produces:
+#    • finding_narrative  — contextual description specific to Dragnet
+#    • audit_risk         — what an external auditor would write
+#    • remediation package (document, controls, evidence, roles, target_date, verification)
 # =============================================================================
 
-async def _propose_remediation(gap: dict, role_titles: list[str]) -> str:
+async def _ai_analyse_and_remediate(gap: dict, role_titles: list[str]) -> dict:
     """
-    Generate a complete remediation package for a gap.
-    Returns JSON string of the package.
+    One Ollama call per gap: generates an AI-written finding description,
+    audit risk statement, and full remediation package together.
+
+    Returns a dict with keys:
+        finding_narrative, audit_risk, remediation_json (str)
+    Falls back to template values if Ollama is unavailable.
     """
-    roles_sample = ", ".join(role_titles[:6]) if role_titles else "ISMS Lead, Department Head"
+    roles_sample = ", ".join(role_titles[:8]) if role_titles else "ISMS Lead, Department Head"
     days   = SEVERITY_DAYS.get(gap["severity"], 90)
     target = (date.today() + timedelta(days=days)).isoformat()
 
-    prompt = f"""You are a compliance expert for Dragnet Solutions Limited, a Nigerian technology services company.
-A compliance gap has been identified:
+    prompt = f"""You are a senior compliance consultant for Dragnet Solutions Limited, a Nigerian technology and digital services company operating under ISO 27001, ISO 9001, and the Nigeria Data Protection Act (NDPA).
+
+A compliance gap has been identified in our registers:
 
 Standard: {gap['standard']} {gap['clause']} — {gap['clause_title']}
 Gap type: {gap['gap_category']}
-Finding: {gap['finding']}
-Impact: {gap['impact']}
-Available roles: {roles_sample}
+Initial finding: {gap['finding']}
+Current impact: {gap['impact']}
+Available roles at Dragnet: {roles_sample}
 
-Propose a complete remediation package. Respond with ONLY valid JSON in this exact format:
+Your task has two parts:
+
+PART 1 — Describe the gap precisely in Dragnet's context:
+- Write a specific finding narrative (2-3 sentences) that an internal auditor would record
+- Write the audit risk statement (1 sentence) an external ISO auditor would use in their report
+
+PART 2 — Propose a complete remediation package.
+
+Respond with ONLY valid JSON in this exact structure (no extra text before or after):
 {{
-  "document": "Description of what document action is needed (new document title or specific revision)",
-  "controls": ["Control statement 1 using shall/must", "Control statement 2"],
-  "evidence": ["Evidence type code — description. Source: system. Frequency: period"],
-  "roles": ["Role title from available roles list"],
-  "risk": "What happens if this gap stays open (one sentence)",
+  "finding_narrative": "2-3 sentence specific description of this gap in Dragnet's context",
+  "audit_risk": "Single sentence an external auditor would write as a nonconformity or observation",
+  "document": "Specific document action required — include a suggested document title",
+  "controls": ["Shall-statement control 1 specific to this clause", "Shall-statement control 2"],
+  "evidence": ["EVT_CODE — evidence description. Source: system name. Frequency: period"],
+  "roles": ["Specific role title from the available roles list"],
+  "risk": "Business consequence if this gap remains open beyond the target date (one sentence)",
   "standards_mapping": "{gap['standard']} {gap['clause']}",
   "target_date": "{target}",
-  "verification": "How closure will be confirmed (one sentence)"
+  "verification": "Specific, measurable way to confirm this gap is closed (one sentence)"
 }}"""
 
     try:
@@ -288,7 +308,7 @@ Propose a complete remediation package. Respond with ONLY valid JSON in this exa
                     "model":  settings.ollama_model,
                     "prompt": prompt,
                     "stream": False,
-                    "options": {"num_predict": 600, "temperature": 0.2},
+                    "options": {"num_predict": 800, "temperature": 0.2},
                 },
             )
             resp.raise_for_status()
@@ -297,30 +317,57 @@ Propose a complete remediation package. Respond with ONLY valid JSON in this exa
         start = raw.find("{")
         end   = raw.rfind("}") + 1
         if start >= 0 and end > start:
-            json_str = raw[start:end]
-            json.loads(json_str)   # validate before returning
-            return json_str
+            parsed = json.loads(raw[start:end])
+            finding_narrative = parsed.pop("finding_narrative", "").strip()
+            audit_risk        = parsed.pop("audit_risk", "").strip()
+            if finding_narrative:
+                return {
+                    "finding_narrative": finding_narrative,
+                    "audit_risk":        audit_risk or gap["impact"],
+                    "remediation_json":  json.dumps(parsed),
+                }
     except Exception as exc:
-        logger.warning(f"Remediation proposal failed for {gap['clause']}: {exc}")
+        logger.warning(f"AI gap analysis failed for {gap['clause']}: {exc}")
 
-    # Fallback minimal package
-    return json.dumps({
-        "document":          f"Create or revise document covering {gap['clause_title']}",
-        "controls":          [f"[Role] shall implement controls for {gap['clause_title']}"],
-        "evidence":          ["REV — Review record. Source: SharePoint. Frequency: quarterly"],
-        "roles":             [role_titles[0]] if role_titles else ["ISMS Lead"],
-        "risk":              gap["impact"],
-        "standards_mapping": f"{gap['standard']} {gap['clause']}",
-        "target_date":       target,
-        "verification":      "Gap closed when controls confirmed and first evidence accepted.",
-    })
+    # Fallback — template values so the gap is still written even if Ollama is down
+    return {
+        "finding_narrative": gap["finding"],
+        "audit_risk":        gap["impact"],
+        "remediation_json":  json.dumps({
+            "document":          f"Create or revise document covering {gap['clause_title']}",
+            "controls":          [f"[Role] shall implement controls for {gap['clause_title']}"],
+            "evidence":          ["REV — Review record. Source: SharePoint. Frequency: quarterly"],
+            "roles":             [role_titles[0]] if role_titles else ["ISMS Lead"],
+            "risk":              gap["impact"],
+            "standards_mapping": f"{gap['standard']} {gap['clause']}",
+            "target_date":       (date.today() + timedelta(days=days)).isoformat(),
+            "verification":      "Gap closed when controls confirmed and first evidence accepted.",
+        }),
+    }
 
 
 # =============================================================================
 #  Main entry point
 # =============================================================================
 
-async def run_gap_analysis() -> dict:
+async def _log_gap_analysis_run(summary: dict, triggered_by: str = "system") -> None:
+    """Persist Gap Analyzer run summary to Audit Log when configured."""
+    if not settings.is_list_configured(settings.audit_log_list_id):
+        return
+    try:
+        from graph.client import create_list_item
+        await create_list_item(settings.audit_log_list_id, "Audit Log", {
+            "Title": "Gap Analyzer run",
+            "Action": "Gap Analyzer run",
+            "ReviewerName": triggered_by,
+            "Decision": summary.get("status", ""),
+            "Rationale": json.dumps(summary, ensure_ascii=False)[:4000],
+        })
+    except Exception as exc:
+        logger.warning(f"Could not write Gap Analyzer run to Audit Log: {exc}")
+
+
+async def run_gap_analysis(triggered_by: str = "system") -> dict:
     """
     Run the full Gap Analyzer pipeline.
     Part 1: find gaps from register data (fast, no model).
@@ -351,13 +398,15 @@ async def run_gap_analysis() -> dict:
     logger.info(f"Gap finding complete: {len(gaps)} gaps found before deduplication")
 
     if not gaps:
-        return {
+        summary = {
             "status":       "complete",
             "gaps_found":   0,
             "gaps_written": 0,
             "gaps_skipped": 0,
             "message":      "No gaps found. Register data covers all required clauses.",
         }
+        await _log_gap_analysis_run(summary, triggered_by=triggered_by)
+        return summary
 
     # Deduplicate — skip any gap whose key already exists as an open gap
     new_gaps = [g for g in gaps if g["gap_key"] not in existing_keys]
@@ -366,7 +415,7 @@ async def run_gap_analysis() -> dict:
         logger.info(f"Deduplication: skipping {skipped} gaps already tracked as open")
 
     if not new_gaps:
-        return {
+        summary = {
             "status":       "complete",
             "gaps_found":   len(gaps),
             "gaps_written": 0,
@@ -376,28 +425,33 @@ async def run_gap_analysis() -> dict:
                 f"all already tracked as open. No new gaps written."
             ),
         }
+        await _log_gap_analysis_run(summary, triggered_by=triggered_by)
+        return summary
 
-    # Part 2 — propose remediation for each new gap and write to SharePoint
+    # Part 2 — AI analysis + remediation for each new gap, then write to SharePoint
     written = 0
     for gap in new_gaps:
         try:
-            logger.info(f"Proposing remediation for {gap['standard']} {gap['clause']}...")
-            remediation_json = await _propose_remediation(gap, role_titles)
+            logger.info(
+                f"AI analysing gap: {gap['standard']} {gap['clause']} "
+                f"({gap['gap_category']})..."
+            )
+            ai = await _ai_analyse_and_remediate(gap, role_titles)
 
             days   = SEVERITY_DAYS.get(gap["severity"], 90)
             target = (date.today() + timedelta(days=days)).isoformat()
 
             fields = {
-                "Title":               gap["finding"][:255],
+                "Title":               ai["finding_narrative"][:255],
                 "Standard":            gap["standard"],
                 "Clause":              gap["clause"],
                 "ClauseTitle":         gap["clause_title"],
                 "GapCategory":         gap["gap_category"],
                 "GapKey":              gap["gap_key"],
                 "Severity":            gap["severity"],
-                "Finding":             gap["finding"],
-                "Impact":              gap["impact"],
-                "ProposedRemediation": remediation_json,
+                "Finding":             ai["finding_narrative"],
+                "Impact":              ai["audit_risk"],
+                "ProposedRemediation": ai["remediation_json"],
                 "Status":              "Open",
                 "TargetDate":          target,
             }
@@ -418,7 +472,7 @@ async def run_gap_analysis() -> dict:
         "Minor":    sum(1 for g in new_gaps if g["severity"] == "Minor"),
     }
 
-    return {
+    summary = {
         "status":       "complete",
         "gaps_found":   len(gaps),
         "gaps_written": written,
@@ -432,3 +486,5 @@ async def run_gap_analysis() -> dict:
             f"Minor: {severity_counts['Minor']}."
         ),
     }
+    await _log_gap_analysis_run(summary, triggered_by=triggered_by)
+    return summary

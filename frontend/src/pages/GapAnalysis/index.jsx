@@ -12,6 +12,7 @@ import StatusBadge from "../../components/shared/StatusBadge.jsx";
 import { Field } from "../../components/shared/Forms.jsx";
 import { LoadingState, ErrorState, EmptyState } from "../../components/shared/LoadingState.jsx";
 import { useCurrentUserRole } from "../../hooks/useCurrentUserRole.js";
+import { useAlert } from "../../components/shared/AlertModal.jsx";
 import apiClient from "../../api/grcApi.js";
 
 // =============================================================================
@@ -21,6 +22,8 @@ import apiClient from "../../api/grcApi.js";
 const gapApi = {
   list: (params = {}) =>
     apiClient.get("/api/v1/gap-analysis", { params }).then(r => r.data),
+  status: () =>
+    apiClient.get("/api/v1/agents/gap-analysis/status").then(r => r.data),
 
   updateStatus: (id, body) =>
     apiClient.patch(`/api/v1/gap-analysis/${id}/status`, body).then(r => r.data),
@@ -503,7 +506,7 @@ const RunGapAnalyzerButton = ({ onComplete }) => {
                  color: running ? "#999" : "#fff",
                  cursor: running ? "not-allowed" : "pointer" }}
       >
-        {running ? "Running analysis..." : "Run gap analysis"}
+        {running ? "Running analysis..." : "Run gap analysis now"}
       </button>
       {result && (
         <div style={{ fontSize: 10, color: "#A32D2D", textAlign: "right" }}>
@@ -526,11 +529,18 @@ export default function GapAnalysis() {
   const [actionId,       setActionId]       = useState(null);
 
   const { isCompliance } = useCurrentUserRole();
+  const { notify } = useAlert();
   const qc = useQueryClient();
 
   const { data: gaps = [], isLoading, error, refetch } = useQuery({
     queryKey: ["gaps"],
     queryFn:  () => gapApi.list(),
+    staleTime: 60_000,
+  });
+  const { data: gapStatus } = useQuery({
+    queryKey: ["gap-analysis-status"],
+    queryFn: gapApi.status,
+    enabled: isCompliance,
     staleTime: 60_000,
   });
 
@@ -568,7 +578,11 @@ export default function GapAnalysis() {
       });
       qc.invalidateQueries({ queryKey: ["gaps"] });
     } catch (err) {
-      alert(err.response?.data?.detail || err.message || "Update failed.");
+      notify({
+        tone: "danger",
+        title: "Update failed",
+        message: err.response?.data?.detail || err.message || "Update failed.",
+      });
     } finally {
       setActionId(null);
     }
@@ -581,7 +595,11 @@ export default function GapAnalysis() {
       qc.invalidateQueries({ queryKey: ["gaps"] });
       return result;
     } catch (err) {
-      alert(err.response?.data?.detail || err.message || "Approve failed.");
+      notify({
+        tone: "danger",
+        title: "Approve failed",
+        message: err.response?.data?.detail || err.message || "Approve failed.",
+      });
       return null;
     } finally {
       setActionId(null);
@@ -595,7 +613,11 @@ export default function GapAnalysis() {
       qc.invalidateQueries({ queryKey: ["gaps"] });
       qc.invalidateQueries({ queryKey: ["risks"] });
     } catch (err) {
-      alert(err.response?.data?.detail || err.message || "Accept risk failed.");
+      notify({
+        tone: "danger",
+        title: "Accept risk failed",
+        message: err.response?.data?.detail || err.message || "Accept risk failed.",
+      });
     } finally {
       setActionId(null);
     }
@@ -613,13 +635,23 @@ export default function GapAnalysis() {
             <div style={{ fontSize: 17, fontWeight: 600, marginBottom: 3 }}>Gap analysis</div>
             <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>
               Compliance gaps identified from confirmed register data.
-              Each gap has a severity, a finding, and a proposed remediation package.
+              The scheduled analyzer runs every 3 days; manual run is a fallback.
             </div>
+            {isCompliance && gapStatus && (
+              <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginTop: 4 }}>
+                Last gap analysis: {gapStatus.triggered_at ? new Date(gapStatus.triggered_at).toLocaleString() : gapStatus.status || "never run"}
+                {gapStatus.gaps_written != null ? ` · ${gapStatus.gaps_written} written` : ""}
+                {gapStatus.gaps_skipped != null ? ` · ${gapStatus.gaps_skipped} skipped` : ""}
+              </div>
+            )}
           </div>
           <div style={{ display: "flex", gap: 6 }}>
             {isCompliance && (
               <RunGapAnalyzerButton
-                onComplete={() => qc.invalidateQueries({ queryKey: ["gaps"] })}
+                onComplete={() => {
+                  qc.invalidateQueries({ queryKey: ["gaps"] });
+                  qc.invalidateQueries({ queryKey: ["gap-analysis-status"] });
+                }}
               />
             )}
             {counts.critical > 0 && (

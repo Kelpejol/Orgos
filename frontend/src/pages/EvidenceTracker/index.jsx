@@ -12,6 +12,7 @@ import StatusBadge from "../../components/shared/StatusBadge.jsx";
 import { Field } from "../../components/shared/Forms.jsx";
 import { LoadingState, ErrorState, EmptyState } from "../../components/shared/LoadingState.jsx";
 import { useCurrentUserRole } from "../../hooks/useCurrentUserRole.js";
+import { useAlert } from "../../components/shared/AlertModal.jsx";
 import apiClient from "../../api/grcApi.js";
 
 // =============================================================================
@@ -448,6 +449,7 @@ export default function EvidenceTracker() {
   const [actionItemId, setActionItemId] = useState(null);
 
   const { oid, isCompliance } = useCurrentUserRole();
+  const { notify } = useAlert();
   const qc = useQueryClient();
   const { data: all = [], isLoading, error, refetch } = useEvidence();
 
@@ -482,7 +484,11 @@ export default function EvidenceTracker() {
       await evidenceApi.submit(id, file, notes);
       qc.invalidateQueries({ queryKey: ["evidence"] });
     } catch (err) {
-      alert(err.response?.data?.detail || err.message || "Submit failed.");
+      notify({
+        tone: "danger",
+        title: "Submit failed",
+        message: err.response?.data?.detail || err.message || "Submit failed.",
+      });
     } finally {
       setActionItemId(null);
     }
@@ -494,7 +500,11 @@ export default function EvidenceTracker() {
       await evidenceApi.verify(id, accepted, rejectionNote);
       qc.invalidateQueries({ queryKey: ["evidence"] });
     } catch (err) {
-      alert(err.response?.data?.detail || err.message || "Verify failed.");
+      notify({
+        tone: "danger",
+        title: "Verify failed",
+        message: err.response?.data?.detail || err.message || "Verify failed.",
+      });
     } finally {
       setActionItemId(null);
     }

@@ -10,6 +10,7 @@ import { Field, InlineLink } from "../../components/shared/Forms.jsx";
 import { LoadingState, TableSkeleton, ErrorState, EmptyState } from "../../components/shared/LoadingState.jsx";
 import { useDocuments, useSoftDeleteDocument } from "../../hooks/useGrc.js";
 import { useCurrentUserRole } from "../../hooks/useCurrentUserRole.js";
+import { useAlert } from "../../components/shared/AlertModal.jsx";
 import ReadOnlyBanner from "../../components/shared/ReadOnlyBanner.jsx";
 import DocumentForm from "./DocumentForm.jsx";
 
@@ -21,7 +22,11 @@ const COLS = [
   { key: "owner",         label: "Owner" },
   { key: "current_version", label: "Rev", mono: true },
   { key: "next_review_date", label: "Next review" },
-  { key: "linked_controls_count", label: "Ctls" },
+  {
+    key: "linked_controls_count",
+    label: "Extracted",
+    title: "Number of AI-extracted candidate items sent to Extraction Review. This is not the final accepted control count.",
+  },
   { key: "status",        label: "Status" },
 ];
 
@@ -41,8 +46,10 @@ export default function DocumentRegister({ go }) {
   const [search, setSearch] = useState("");
   const [selected, setSelected] = useState(null);
   const [showForm, setShowForm] = useState(false);
+  const [editing, setEditing] = useState(null);
 
   const { isCompliance } = useCurrentUserRole();
+  const { confirm: showConfirm } = useAlert();
   const { data: documents = [], isLoading, error, refetch } = useDocuments();
   const softDelete = useSoftDeleteDocument();
 
@@ -85,7 +92,26 @@ export default function DocumentRegister({ go }) {
         <Field l="Standards"     v={(selected.applicable_standards || []).join(", ") || "—"} />
         <Field l="Status"        v={<StatusBadge label={selected.status} />} />
         <div style={{ marginTop: 12, display: "flex", gap: 6, flexWrap: "wrap" }}>
-          <InlineLink label={`${selected.linked_controls_count || 0} controls`} onClick={() => go("control")} />
+          <span
+            title="AI-extracted candidate items sent to Extraction Review. Final accepted controls are managed after review decisions."
+          >
+            <InlineLink label={`${selected.linked_controls_count || 0} extracted candidates`} onClick={() => go("control")} />
+          </span>
+          {selected.sharepoint_url && (
+            <a
+              href={selected.sharepoint_url}
+              target="_blank"
+              rel="noreferrer"
+              style={{
+                fontSize: 12,
+                color: "var(--color-text-info)",
+                textDecoration: "underline",
+                cursor: "pointer",
+              }}
+            >
+              Open document in SharePoint ↗
+            </a>
+          )}
         </div>
         <div style={{ marginTop: 16, display: "flex", gap: 8 }}>
           <button
@@ -94,10 +120,27 @@ export default function DocumentRegister({ go }) {
           >
             Back
           </button>
+          {isCompliance && (
+            <button
+              onClick={() => {
+                setEditing(selected);
+                setSelected(null);
+              }}
+              style={{ padding: "7px 14px", fontSize: 12, borderRadius: 8, border: "none", background: "#378ADD", color: "#fff", cursor: "pointer" }}
+            >
+              Edit
+            </button>
+          )}
           {isCompliance && selected.status !== "Withdrawn" && (
             <button
               onClick={async () => {
-                if (!window.confirm(`Withdraw "${selected.title}"? This cannot be undone.`)) return;
+                const ok = await showConfirm({
+                  title: "Withdraw document?",
+                  message: `Withdraw "${selected.title}"? It will be marked as Withdrawn and kept for audit history.`,
+                  confirmLabel: "Withdraw",
+                  cancelLabel: "Keep document",
+                });
+                if (!ok) return;
                 await softDelete.mutateAsync(selected.id);
                 setSelected(null);
               }}
@@ -113,11 +156,20 @@ export default function DocumentRegister({ go }) {
   }
 
   // ── Form view ────────────────────────────────────────────────────────────
-  if (showForm) {
+  if (showForm || editing) {
     return (
       <DocumentForm
-        onSuccess={() => { setShowForm(false); refetch(); }}
-        onCancel={() => setShowForm(false)}
+        document={editing}
+        onSuccess={() => {
+          setShowForm(false);
+          setEditing(null);
+          setSelected(null);
+          refetch();
+        }}
+        onCancel={() => {
+          setShowForm(false);
+          setEditing(null);
+        }}
       />
     );
   }
@@ -137,7 +189,10 @@ export default function DocumentRegister({ go }) {
         </div>
         {isCompliance && (
           <button
-            onClick={() => setShowForm(true)}
+            onClick={() => {
+              setEditing(null);
+              setShowForm(true);
+            }}
             style={{ padding: "8px 16px", fontSize: 12, borderRadius: 8, border: "none", background: "#378ADD", color: "#fff", cursor: "pointer", fontWeight: 500, flexShrink: 0 }}
           >
             + Register document
@@ -166,7 +221,7 @@ export default function DocumentRegister({ go }) {
               <thead>
                 <tr style={{ background: "var(--color-background-secondary)" }}>
                   {COLS.map((c) => (
-                    <th key={c.key} style={{ padding: "7px 8px", textAlign: "left", fontWeight: 500, fontSize: 11, color: "var(--color-text-secondary)", whiteSpace: "nowrap" }}>
+                    <th key={c.key} title={c.title} style={{ padding: "7px 8px", textAlign: "left", fontWeight: 500, fontSize: 11, color: "var(--color-text-secondary)", whiteSpace: "nowrap" }}>
                       {c.label}
                     </th>
                   ))}
@@ -191,6 +246,7 @@ export default function DocumentRegister({ go }) {
                       return (
                         <td
                           key={col.key}
+                          title={col.title}
                           style={{
                             padding: "6px 8px",
                             color: od ? "#A32D2D" : "var(--color-text-primary)",

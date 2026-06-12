@@ -500,6 +500,19 @@ async def bulk_extract(
                 print(f"  Run again to process remaining documents.")
         else:
             print(f"\n  All documents in this folder have been processed.")
+        if batch_written > 0:
+            try:
+                from agents.classifier.service import run_classifier
+                print("\n  Running classifier for newly extracted queue items...")
+                summary = await run_classifier(triggered_by="system: bulk_extract")
+                print(
+                    "  Classifier complete: "
+                    f"{summary.get('total_written', 0)} written, "
+                    f"{summary.get('role_variants_suppressed', 0) + summary.get('duplicates_suppressed', 0) + summary.get('conflicts_suppressed', 0)} suppressed"
+                )
+            except Exception as exc:
+                logger.exception("Automatic classifier run after bulk extract failed")
+                print(f"  Classifier failed: {str(exc)[:120]}")
         print("="*60 + "\n")
 
     finally:

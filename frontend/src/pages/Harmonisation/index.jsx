@@ -14,6 +14,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import StatusBadge from "../../components/shared/StatusBadge.jsx";
 import { Field } from "../../components/shared/Forms.jsx";
 import { LoadingState, ErrorState, EmptyState } from "../../components/shared/LoadingState.jsx";
+import { useAlert } from "../../components/shared/AlertModal.jsx";
 import apiClient from "../../api/grcApi.js";
 
 // =============================================================================
@@ -51,7 +52,7 @@ const RunClassifierButton = ({ onComplete }) => {
                  color: running ? "#999" : "#fff",
                  cursor: running ? "not-allowed" : "pointer" }}
       >
-        {running ? "Running classifier..." : "Run classifier"}
+        {running ? "Running classifier..." : "Run classifier now"}
       </button>
       {result && (
         <div style={{ fontSize: 10, color: "#3C3489", textAlign: "right" }}>
@@ -73,6 +74,8 @@ const zone3Api = {
   list: () =>
     apiClient.get("/api/v1/queue/items", { params: { item_type: "Harmonisation" } })
       .then(r => r.data),
+  status: () =>
+    apiClient.get("/api/v1/agents/classify/status").then(r => r.data),
 
   decide: (itemId, decision, rationale, canonicalName) =>
     apiClient.patch(`/api/v1/queue/items/${itemId}/zone3-decide`, {
@@ -201,7 +204,10 @@ const HarmCard = ({ item, isCompliance, onDecide, isPending }) => {
     try {
       variants = JSON.parse(item.VariantTerms);
     } catch {
-      variants = item.VariantTerms.split(",").map(v => v.trim()).filter(Boolean);
+      variants = item.VariantTerms
+        .split(/[\n,]+/)
+        .map(v => v.trim())
+        .filter(Boolean);
     }
   }
 
@@ -333,11 +339,18 @@ export default function Harmonisation() {
   const [actionState, setActionState] = useState({ pending: false, itemId: null });
 
   const { isCompliance } = useCurrentUserRole();
+  const { notify } = useAlert();
   const qc = useQueryClient();
   const { data: items = [], isLoading, error, refetch } = useQuery({
     queryKey: ["zone3"],
     queryFn:  zone3Api.list,
     staleTime: 30_000,
+  });
+  const { data: classifierStatus } = useQuery({
+    queryKey: ["classifier-status"],
+    queryFn: zone3Api.status,
+    enabled: isCompliance,
+    staleTime: 60_000,
   });
 
   const pendingCount = items.filter(
@@ -366,7 +379,11 @@ export default function Harmonisation() {
       qc.invalidateQueries({ queryKey: ["zone3"] });
       return result;
     } catch (err) {
-      alert(err.response?.data?.detail || err.message || "Decision failed.");
+      notify({
+        tone: "danger",
+        title: "Decision failed",
+        message: err.response?.data?.detail || err.message || "Decision failed.",
+      });
     } finally {
       setActionState({ pending: false, itemId: null });
     }
@@ -385,8 +402,21 @@ export default function Harmonisation() {
             </div>
             <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>
               Zone 3 — Variant role terms and near-duplicate controls across documents.
-              Confirm the canonical name. All variants map to it going forward.
+              Automatic classifier runs after extraction/review updates; manual run is a fallback.
             </div>
+            {isCompliance && classifierStatus && (
+              <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginTop: 4 }}>
+                Last classifier run: {classifierStatus.triggered_at ? new Date(classifierStatus.triggered_at).toLocaleString() : classifierStatus.status || "never run"}
+                {classifierStatus.total_written != null ? ` · ${classifierStatus.total_written} written` : ""}
+                {classifierStatus.role_variants_suppressed || classifierStatus.duplicates_suppressed || classifierStatus.conflicts_suppressed
+                  ? ` · ${(
+                      (classifierStatus.role_variants_suppressed || 0) +
+                      (classifierStatus.duplicates_suppressed || 0) +
+                      (classifierStatus.conflicts_suppressed || 0)
+                    )} suppressed`
+                  : ""}
+              </div>
+            )}
           </div>
           <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
             <div style={{ padding: "3px 10px", background: "#EEEDFE", borderRadius: 6,
@@ -395,7 +425,10 @@ export default function Harmonisation() {
               {pendingCount} pending
             </div>
             {isCompliance && (
-              <RunClassifierButton onComplete={() => qc.invalidateQueries({ queryKey: ["zone3"] })} />
+              <RunClassifierButton onComplete={() => {
+                qc.invalidateQueries({ queryKey: ["zone3"] });
+                qc.invalidateQueries({ queryKey: ["classifier-status"] });
+              }} />
             )}
           </div>
         </div>

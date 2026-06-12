@@ -42,6 +42,7 @@ DOC_FIELDS = {
     "applicable_standards":"ApplicableStandards",
     "linked_controls_count":"LinkedControlsCount",
     "status":              "Status",
+    "sharepoint_url":      "SharePointUrl",
 }
 
 DOC_TYPE_CHOICES    = ["Policy", "Procedure", "SOP", "Form", "Guidelines"]
@@ -131,7 +132,7 @@ CONTRACT_FIELDS = {
 }
 
 CONTRACT_TYPE_CHOICES   = ["Client", "Vendor", "Partner", "Employment", "NDA", "Other"]
-CONTRACT_STATUS_CHOICES = ["Active", "Expired", "Under Review", "Terminated", "Expiring Soon", "Superseded"]
+CONTRACT_STATUS_CHOICES = ["Active", "Expired", "Under Review", "Terminated", "Expiring Soon", "Superseded", "Withdrawn"]
 CONTRACT_LIFECYCLE_CHOICES = ["Active", "Under Review", "Terminated", "Superseded"]
 
 # Status calculation threshold (days before expiry = "Expiring Soon")

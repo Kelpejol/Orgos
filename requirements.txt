@@ -87,6 +87,14 @@ respx>=0.20.0
 # HTTP mocking library used by pytest-httpx and directly in tests.
 
 # -----------------------------------------------------------------------------
+# Scheduled jobs — APScheduler for document review reminders and lifecycle jobs
+# -----------------------------------------------------------------------------
+apscheduler>=3.10.0
+# AsyncScheduler (asyncio-compatible) for cron-style background jobs.
+# Used for: scheduled document review trigger (daily), sensitisation deadline alerts.
+# Pattern: scheduler.add_schedule(fn, CronTrigger(hour=8), id="review-check")
+
+# -----------------------------------------------------------------------------
 # Development utilities (not required in production)
 # -----------------------------------------------------------------------------
 httpx[cli]>=0.27.0

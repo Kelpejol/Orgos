@@ -29,6 +29,21 @@ const riskApi = {
 };
 
 // =============================================================================
+//  Date helper — strips time component from ISO strings
+// =============================================================================
+
+function fmtDate(str) {
+  if (!str) return "—";
+  try {
+    const d = new Date(str);
+    if (isNaN(d.getTime())) return str;
+    return d.toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" });
+  } catch {
+    return str;
+  }
+}
+
+// =============================================================================
 //  Score helpers — bands: 1-3 Low, 4-6 Medium, 7-9 High, 10-12 Critical
 // =============================================================================
 
@@ -90,7 +105,6 @@ const AddRiskForm = ({ onSuccess, onCancel, prePopulated = {} }) => {
     treatment_actions: "",
     escalation_note:   "",
     notes:             prePopulated.notes       || "",
-    related_gap_id:    prePopulated.related_gap_id || "",
   });
   const [saving, setSaving] = useState(false);
   const [error,  setError]  = useState("");
@@ -400,24 +414,28 @@ const RiskCard = ({ risk, onUpdate, isAdmin }) => {
                       fontSize: 11, color: "var(--color-text-secondary)" }}>
           <span>{risk.Treatment} · {risk.OwnerName || "Owner TBC"}</span>
           <span style={{ color: risk.ReviewOverdue ? "#A32D2D" : "var(--color-text-tertiary)" }}>
-            Review: {risk.ReviewDate || "Not set"}
+            Review: {risk.ReviewDate ? fmtDate(risk.ReviewDate) : "Not set"}
           </span>
         </div>
       </div>
 
       {/* Expanded */}
       {expanded && (
-        <div style={{ borderTop: `1px solid ${risk.RiskScoreColor}30`,
-                      padding: "12px 14px" }}>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 0, marginBottom: 10 }}>
+        <div style={{
+          borderTop: `1px solid ${risk.RiskScoreColor}30`,
+          padding: "12px 14px",
+          maxHeight: 340,
+          overflowY: "auto",
+        }}>
+          <div style={{ marginBottom: 10 }}>
             <Field l="Likelihood"    v={risk.Likelihood} />
             <Field l="Impact"        v={risk.Impact} />
             <Field l="Treatment"     v={risk.Treatment} />
             <Field l="Source"        v={risk.Source} />
-            <Field l="Identified"    v={risk.DateIdentified} />
-            <Field l="Last reviewed" v={risk.LastReviewed || "Not reviewed"} />
+            <Field l="Identified"    v={fmtDate(risk.DateIdentified)} />
+            <Field l="Last reviewed" v={risk.LastReviewed ? fmtDate(risk.LastReviewed) : "Not reviewed"} />
             {risk.AcceptedBy && (
-              <Field l="Accepted by" v={`${risk.AcceptedBy}${risk.AcceptedDate ? ` on ${risk.AcceptedDate}` : ""}`} />
+              <Field l="Accepted by" v={`${risk.AcceptedBy}${risk.AcceptedDate ? ` on ${fmtDate(risk.AcceptedDate)}` : ""}`} />
             )}
           </div>
 

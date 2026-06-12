@@ -114,6 +114,7 @@ class DocumentRead(DocumentBase):
     id: str = Field(description="SharePoint item ID")
     owner: Optional[PersonRef] = None
     linked_controls_count: int = Field(default=0)
+    sharepoint_url: Optional[str] = None
     created: Optional[datetime] = None
     modified: Optional[datetime] = None
 
@@ -146,7 +147,7 @@ class RoleBase(BaseModel):
     source_system: RoleSourceSystem = Field(default=RoleSourceSystem.ENTRA_ID)
     variant_terms: Optional[str] = Field(
         default=None,
-        description="Original terms before harmonisation (comma-separated)",
+        description="Original terms before harmonisation; store one term per line",
     )
 
 
@@ -299,6 +300,7 @@ class ContractStatus(str, Enum):
     TERMINATED    = "Terminated"
     EXPIRING_SOON = "Expiring Soon"
     SUPERSEDED    = "Superseded"
+    WITHDRAWN     = "Withdrawn"
 
 
 class ContractLifecycleStatus(str, Enum):

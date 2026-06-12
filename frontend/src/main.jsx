@@ -11,15 +11,13 @@ import ReactDOM from "react-dom/client";
 import { PublicClientApplication } from "@azure/msal-browser";
 import { MsalProvider } from "@azure/msal-react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { BrowserRouter } from "react-router-dom";
 import { msalConfig } from "./authConfig.js";
 import App from "./App.jsx";
 import "./index.css";
 
 // Singleton MSAL instance — exported so grcApi.js can acquire tokens
 export const msalInstance = new PublicClientApplication(msalConfig);
-
-// Initialise MSAL before rendering (handles redirect callbacks)
-await msalInstance.initialize();
 
 // React Query client — global configuration
 const queryClient = new QueryClient({
@@ -39,12 +37,21 @@ const queryClient = new QueryClient({
   },
 });
 
-ReactDOM.createRoot(document.getElementById("root")).render(
-  <React.StrictMode>
-    <MsalProvider instance={msalInstance}>
-      <QueryClientProvider client={queryClient}>
-        <App />
-      </QueryClientProvider>
-    </MsalProvider>
-  </React.StrictMode>
-);
+async function bootstrap() {
+  // Initialise MSAL before rendering (handles redirect callbacks)
+  await msalInstance.initialize();
+
+  ReactDOM.createRoot(document.getElementById("root")).render(
+    <React.StrictMode>
+      <BrowserRouter>
+        <MsalProvider instance={msalInstance}>
+          <QueryClientProvider client={queryClient}>
+            <App />
+          </QueryClientProvider>
+        </MsalProvider>
+      </BrowserRouter>
+    </React.StrictMode>
+  );
+}
+
+bootstrap();

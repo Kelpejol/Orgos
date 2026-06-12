@@ -5,12 +5,15 @@
 # =============================================================================
 
 import logging
+import json
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 
 from auth.validator import CurrentUser, require_compliance_lead
 from agents.classifier.service import run_classifier
+from config import settings
+from graph.client import get_list_items
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +43,7 @@ async def trigger_classifier(
 
     try:
         logger.info(f"Classifier triggered by {user.name} ({user.oid})")
-        summary = await run_classifier()
+        summary = await run_classifier(triggered_by=user.name)
         _last_run = {
             **summary,
             "triggered_by": user.name,
@@ -58,5 +61,26 @@ async def classifier_status(
 ) -> dict:
     """Returns the result of the last Classifier run."""
     if not _last_run:
+        if settings.is_list_configured(settings.audit_log_list_id):
+            try:
+                items = await get_list_items(settings.audit_log_list_id, "Audit Log")
+                runs = [
+                    i for i in items
+                    if i.get("fields", {}).get("Action") == "Classifier run"
+                ]
+                runs.sort(key=lambda i: i.get("createdDateTime", ""), reverse=True)
+                if runs:
+                    fields = runs[0].get("fields", {})
+                    try:
+                        summary = json.loads(fields.get("Rationale", "{}"))
+                    except Exception:
+                        summary = {}
+                    return {
+                        **summary,
+                        "triggered_by": fields.get("ReviewerName", ""),
+                        "triggered_at": runs[0].get("createdDateTime", ""),
+                    }
+            except Exception as exc:
+                logger.warning(f"Could not read classifier status from Audit Log: {exc}")
         return {"status": "never_run", "message": "Classifier has not been run yet."}
     return _last_run

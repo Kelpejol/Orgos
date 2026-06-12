@@ -37,11 +37,23 @@ logger = logging.getLogger(__name__)
 _Q_LIST_NAME  = "AI Review Queue"
 _CR_LIST_NAME = "Control Register"
 _RR_LIST_NAME = "Role Register"
+_AL_LIST_NAME = "Audit Log"
 
 
 def _q_list_id()  -> str: return settings.ai_review_queue_list_id
 def _cr_list_id() -> str: return settings.control_register_list_id
 def _rr_list_id() -> str: return settings.role_register_list_id
+def _al_list_id() -> str: return settings.audit_log_list_id
+
+
+def _split_terms(value: str) -> list[str]:
+    """VariantTerms is multiline text; accept old comma-separated values too."""
+    terms: list[str] = []
+    for raw in (value or "").replace("\n", ",").split(","):
+        term = raw.strip()
+        if term and term.lower() not in {t.lower() for t in terms}:
+            terms.append(term)
+    return terms
 
 
 # =============================================================================
@@ -233,6 +245,22 @@ async def _fetch_control_register() -> list[dict]:
     ]
 
 
+async def _log_classifier_run(summary: dict, triggered_by: str = "system") -> None:
+    """Persist classifier run summary to Audit Log when configured."""
+    if not settings.is_list_configured(_al_list_id()):
+        return
+    try:
+        await create_list_item(_al_list_id(), _AL_LIST_NAME, {
+            "Title": "Classifier agent run",
+            "Action": "Classifier run",
+            "ReviewerName": triggered_by,
+            "Decision": summary.get("status", ""),
+            "Rationale": json.dumps(summary, ensure_ascii=False)[:4000],
+        })
+    except Exception as exc:
+        logger.warning(f"Could not write classifier run to Audit Log: {exc}")
+
+
 # =============================================================================
 #  Job 1 — Role variant detection
 # =============================================================================
@@ -253,9 +281,8 @@ async def detect_role_variants(
     known_terms: set[str] = set()
     for role in role_register:
         known_terms.add(_normalise_role(role["role_title"]))
-        for term in (role.get("variant_terms") or "").replace("\n", ",").split(","):
-            if term.strip():
-                known_terms.add(_normalise_role(term))
+        for term in _split_terms(role.get("variant_terms") or ""):
+            known_terms.add(_normalise_role(term))
 
     # Group queue items by their extracted owner role
     role_groups: dict[str, list[dict]] = {}
@@ -463,6 +490,8 @@ async def write_harmonisation_items(
     """
     written_variants    = 0
     written_duplicates  = 0
+    suppressed_variants = 0
+    suppressed_duplicates = 0
     existing_items = await _fetch_all_queue_items()
 
     def already_harmonised(*needles: str) -> bool:
@@ -482,8 +511,38 @@ async def write_harmonisation_items(
                 return True
         return False
 
+    def suppressed_by_decision(*needles: str) -> bool:
+        clean_needles = [_normalise_role(n) for n in needles if n]
+        if not clean_needles:
+            return False
+        suppressing_decisions = {"Keep separate", "Mark False Positive"}
+        for existing in existing_items:
+            if existing.get("ItemType") != "Harmonisation":
+                continue
+            if existing.get("ReviewStatus") in ("", "Pending Review", "Pending Second Review"):
+                continue
+            if existing.get("Decision") not in suppressing_decisions:
+                continue
+            haystack = _normalise_role(
+                " ".join([
+                    existing.get("Title", ""),
+                    existing.get("CanonicalName", ""),
+                    existing.get("VariantTerms", ""),
+                    existing.get("SourceDocumentCode", ""),
+                    existing.get("SourceDocumentCode2", ""),
+                    existing.get("ControlStatement", ""),
+                    existing.get("CascadeResult", ""),
+                ])
+            )
+            if all(n in haystack for n in clean_needles):
+                return True
+        return False
+
     # Role variant items
     for v in role_variants:
+        if suppressed_by_decision(v["role_term"], v.get("best_match") or ""):
+            suppressed_variants += 1
+            continue
         if already_harmonised(v["role_term"], v.get("best_match") or ""):
             continue
         guidance = await _semantic_assist("role_variant", v)
@@ -520,6 +579,9 @@ async def write_harmonisation_items(
 
     # Near-duplicate control items
     for dup in near_duplicates:
+        if suppressed_by_decision(dup["source_a"], dup["source_b"], dup["control_a"][:40]):
+            suppressed_duplicates += 1
+            continue
         if already_harmonised(dup["source_a"], dup["source_b"], dup["control_a"][:40]):
             continue
         guidance = await _semantic_assist("duplicate_control", dup)
@@ -546,12 +608,15 @@ async def write_harmonisation_items(
     return {
         "role_variants_written":   written_variants,
         "duplicates_written":      written_duplicates,
+        "role_variants_suppressed": suppressed_variants,
+        "duplicates_suppressed":   suppressed_duplicates,
         "total":                   written_variants + written_duplicates,
     }
 
 
 async def write_conflict_items(conflicts: list[dict]) -> dict:
     written = 0
+    suppressed = 0
     existing_items = await _fetch_all_queue_items()
 
     def already_flagged(conflict: dict) -> bool:
@@ -575,6 +640,7 @@ async def write_conflict_items(conflicts: list[dict]) -> dict:
 
     for conflict in conflicts:
         if already_flagged(conflict):
+            suppressed += 1
             continue
         guidance = await _semantic_assist("conflict", conflict)
         title = f"Conflict: {conflict['control_a'][:90]}"
@@ -604,14 +670,14 @@ async def write_conflict_items(conflicts: list[dict]) -> dict:
         except Exception as exc:
             logger.error(f"Failed to write conflict item: {exc}")
 
-    return {"conflicts_written": written}
+    return {"conflicts_written": written, "conflicts_suppressed": suppressed}
 
 
 # =============================================================================
 #  Main entry point
 # =============================================================================
 
-async def run_classifier() -> dict:
+async def run_classifier(triggered_by: str = "system") -> dict:
     """
     Run the full Classifier pipeline.
     Fetches queue items, role register, and confirmed controls.
@@ -660,5 +726,6 @@ async def run_classifier() -> dict:
         "total_written":       written.get("total", 0) + conflict_written.get("conflicts_written", 0),
     }
 
+    await _log_classifier_run(summary, triggered_by=triggered_by)
     logger.info(f"Classifier complete: {summary}")
     return summary

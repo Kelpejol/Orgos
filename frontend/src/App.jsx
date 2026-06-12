@@ -6,19 +6,22 @@
 // =============================================================================
 
 import { useState } from "react";
+import { Routes, Route } from "react-router-dom";
 import { useIsAuthenticated, useMsal } from "@azure/msal-react";
 import { loginRequest } from "./authConfig.js";
 import Sidebar from "./components/layout/Sidebar.jsx";
 import TopBar from "./components/layout/TopBar.jsx";
 import { useCurrentUserRole } from "./hooks/useCurrentUserRole.js";
+import { AlertProvider } from "./components/shared/AlertModal.jsx";
 import AccessDenied from "./pages/shared/AccessDenied.jsx";
+import LifecycleFeedback from "./pages/LifecycleFeedback/index.jsx";
+import LifecycleApprove from "./pages/LifecycleApprove/index.jsx";
 
 // Tier 1 — wired pages
 import DocumentRegister from "./pages/DocumentRegister/index.jsx";
 import RoleRegister from "./pages/RoleRegister/index.jsx";
 import ComplianceCalendar from "./pages/ComplianceCalendar/index.jsx";
 import ContractRegister from "./pages/ContractRegister/index.jsx";
-import AIReviewQueue from "./pages/AIReviewQueue/index.jsx";
 import DocumentLifecycle from "./pages/DocumentLifecycle/index.jsx";
 import WorkHub from "./pages/WorkHub/index.jsx";
 import ExtractionReview from "./pages/ExtractionReview/index.jsx";
@@ -389,8 +392,8 @@ const ROUTE_NAMES = {
   harmonisation: "Harmonisation",
 };
 
-// ── Main app ─────────────────────────────────────────────────────────────────
-export default function OrgOS() {
+// ── Main app shell (all state-nav screens) ───────────────────────────────────
+function OrgOSShell() {
   const isAuthenticated = useIsAuthenticated();
   const [nav, setNav] = useState("workhub");
   const [collapsed, setCollapsed] = useState(
@@ -430,7 +433,7 @@ export default function OrgOS() {
       case "lifecycle":
         return <DocumentLifecycle />;
       case "extraction":
-        return <AIReviewQueue />;
+        return <ExtractionReview />;
       case "assignment":
         return <AssignmentOwnership />;
       case "harmonisation":
@@ -481,5 +484,20 @@ export default function OrgOS() {
         </div>
       </div>
     </div>
+  );
+}
+
+// ── Root — wires URL routes then falls back to the shell ─────────────────────
+export default function OrgOS() {
+  return (
+    <AlertProvider>
+      <Routes>
+        {/* Standalone pages — no sidebar, accessible via direct URL from Teams cards */}
+        <Route path="/lifecycle/feedback/:id" element={<LifecycleFeedback />} />
+        <Route path="/lifecycle/approve/:id"  element={<LifecycleApprove />} />
+        {/* All other paths → full app shell with sidebar */}
+        <Route path="*" element={<OrgOSShell />} />
+      </Routes>
+    </AlertProvider>
   );
 }

@@ -7,9 +7,13 @@
 
 import calendar
 import logging
+import re
 from datetime import date, datetime, timezone
 from typing import Optional
 
+from pydantic import ValidationError
+
+from agents.cdi_checker.service import DOC_CODE_PATTERN
 from graph.client import (
     create_list_item,
     get_list_item,
@@ -51,6 +55,23 @@ from grc.schemas import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# =============================================================================
+#  Text helpers
+# =============================================================================
+
+def _normalise_variant_terms(value: Optional[str]) -> str:
+    """Store Role Register variant terms as one term per line."""
+    terms: list[str] = []
+    seen: set[str] = set()
+    for raw in re.split(r"[\n,]+", value or ""):
+        term = raw.strip()
+        key = term.lower()
+        if term and key not in seen:
+            terms.append(term)
+            seen.add(key)
+    return "\n".join(terms)
 
 
 # =============================================================================
@@ -199,7 +220,10 @@ async def _build_person_ref(
     Build a PersonRef from SharePoint item fields.
     Resolves the Entra ID OID to display name and email via Graph API.
     """
-    oid = fields.get(f"{owner_field}EntraId", "")
+    oid = (
+        fields.get(f"{owner_field}EntraId", "")
+        or fields.get(f"{owner_field}Id", "")
+    )
     if not oid:
         return None
 
@@ -221,6 +245,13 @@ def _person_write_field(owner_field: str, entra_oid: str) -> dict:
     }
 
 
+def _document_owner_write_field(entra_oid: str) -> dict:
+    """Document Register stores owner OID in OwnerId."""
+    return {
+        DOC_FIELDS["owner_id"]: entra_oid,
+    }
+
+
 # =============================================================================
 #  SharePoint item → schema converters
 # =============================================================================
@@ -228,23 +259,27 @@ def _person_write_field(owner_field: str, entra_oid: str) -> dict:
 async def _sp_item_to_doc(item: dict) -> DocumentRead:
     """Convert a SharePoint List item dict to a DocumentRead schema."""
     fields = item.get("fields", {})
+    document_code = fields.get(DOC_FIELDS["document_code"]) or "DRG-MISSING-DOC-00"
+    if not DOC_CODE_PATTERN.match(str(document_code).strip().upper()):
+        raise ValueError(f"Invalid Document Register code '{document_code}' on item {item.get('id')}")
+    title = fields.get(DOC_FIELDS["title"]) or document_code
+    effective_date = _parse_date(fields.get(DOC_FIELDS["effective_date"])) or _today()
     return DocumentRead(
         id=str(item["id"]),
-        document_code=fields.get(DOC_FIELDS["document_code"], ""),
-        title=fields.get(DOC_FIELDS["title"], ""),
-        type=fields.get(DOC_FIELDS["type"], "Policy"),
-        department=fields.get(DOC_FIELDS["department"], ""),
+        document_code=document_code,
+        title=title,
+        type=fields.get(DOC_FIELDS["type"]) or "Policy",
+        department=fields.get(DOC_FIELDS["department"]) or "",
         owner=await _build_person_ref(fields, "Owner"),
-        current_version=fields.get(DOC_FIELDS["current_version"], "R01"),
-        effective_date=_parse_date(fields.get(DOC_FIELDS["effective_date"])),
+        current_version=fields.get(DOC_FIELDS["current_version"]) or "R01",
+        effective_date=effective_date,
         next_review_date=_parse_date(fields.get(DOC_FIELDS["next_review_date"])),
         applicable_standards=_parse_multi_choice(
             fields.get(DOC_FIELDS["applicable_standards"])
         ),
-        linked_controls_count=int(
-            fields.get(DOC_FIELDS["linked_controls_count"], 0) or 0
-        ),
-        status=fields.get(DOC_FIELDS["status"], "Active"),
+        linked_controls_count=_parse_int(fields.get(DOC_FIELDS["linked_controls_count"])) or 0,
+        sharepoint_url=fields.get(DOC_FIELDS["sharepoint_url"]) or None,
+        status=fields.get(DOC_FIELDS["status"]) or "Active",
         created=_parse_datetime(item.get("createdDateTime")),
         modified=_parse_datetime(item.get("lastModifiedDateTime")),
     )
@@ -308,8 +343,13 @@ async def _sp_item_to_contract(item: dict) -> ContractRead:
     end_date         = _parse_date(fields.get(CONTRACT_FIELDS["end_date"]))
     lifecycle_status = fields.get(CONTRACT_FIELDS["lifecycle_status"], "Active") or "Active"
     renewal_notice   = _parse_date(fields.get(CONTRACT_FIELDS["renewal_notice_date"]))
+    stored_status    = str(fields.get(CONTRACT_FIELDS["status"], "") or "").strip()
 
-    calculated_status = _calculate_contract_status(end_date, lifecycle_status)
+    calculated_status = (
+        ContractStatus.WITHDRAWN
+        if stored_status == ContractStatus.WITHDRAWN.value
+        else _calculate_contract_status(end_date, lifecycle_status)
+    )
 
     return ContractRead(
         id=str(item["id"]),
@@ -369,8 +409,18 @@ def _parse_multi_choice(value: Optional[str]) -> list[str]:
     if not value:
         return []
     if isinstance(value, list):
-        return value
-    return [v.strip() for v in value.replace(";#", ";").split(";") if v.strip()]
+        parts = value
+    else:
+        parts = re.split(r";#|[;,]", str(value))
+
+    result: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        item = str(part).strip()
+        if item and item not in seen:
+            result.append(item)
+            seen.add(item)
+    return result
 
 
 def _parse_int(value) -> Optional[int]:
@@ -402,7 +452,17 @@ async def get_documents(
         LIST_NAMES["document_register"],
         odata_filter=odata_filter,
     )
-    return [await _sp_item_to_doc(item) for item in items]
+    docs: list[DocumentRead] = []
+    for item in items:
+        try:
+            docs.append(await _sp_item_to_doc(item))
+        except (ValueError, ValidationError) as exc:
+            logger.error(
+                "Skipping invalid Document Register item %s: %s",
+                item.get("id", "?"),
+                exc,
+            )
+    return docs
 
 
 async def get_document(item_id: str) -> DocumentRead:
@@ -427,7 +487,7 @@ async def create_document(doc: DocumentCreate) -> DocumentRead:
     }
     if doc.next_review_date:
         fields[DOC_FIELDS["next_review_date"]] = doc.next_review_date.isoformat()
-    fields.update(_person_write_field("Owner", doc.owner_id))
+    fields.update(_document_owner_write_field(doc.owner_id))
 
     item = await create_list_item(
         LIST_IDS["document_register"],
@@ -456,7 +516,7 @@ async def update_document(item_id: str, doc: DocumentUpdate) -> DocumentRead:
     if doc.status is not None:
         fields[DOC_FIELDS["status"]] = doc.status.value
     if doc.owner_id is not None:
-        fields.update(_person_write_field("Owner", doc.owner_id))
+        fields.update(_document_owner_write_field(doc.owner_id))
 
     await update_list_item(
         LIST_IDS["document_register"],
@@ -506,7 +566,7 @@ async def create_role(role: RoleCreate) -> RoleRead:
         ROLE_FIELDS["assignment_status"]: assignment_status,
     }
     if role.variant_terms:
-        fields[ROLE_FIELDS["variant_terms"]] = role.variant_terms
+        fields[ROLE_FIELDS["variant_terms"]] = _normalise_variant_terms(role.variant_terms)
     if role.current_holder_id:
         fields.update(_person_write_field("CurrentHolder", role.current_holder_id))
 
@@ -527,7 +587,7 @@ async def update_role(item_id: str, role: RoleUpdate) -> RoleRead:
     if role.source_system is not None:
         fields[ROLE_FIELDS["source_system"]] = role.source_system.value
     if role.variant_terms is not None:
-        fields[ROLE_FIELDS["variant_terms"]] = role.variant_terms
+        fields[ROLE_FIELDS["variant_terms"]] = _normalise_variant_terms(role.variant_terms)
     if role.current_holder_id is not None:
         fields.update(_person_write_field("CurrentHolder", role.current_holder_id))
 
