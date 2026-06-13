@@ -75,7 +75,7 @@ async def extract_from_text(
     summary="Extract controls from an uploaded PDF or DOCX file",
 )
 async def extract_from_file(
-    file: UploadFile = File(..., description="PDF or DOCX policy document"),
+    file: UploadFile = File(..., description="PDF, DOCX, DOC, or TXT policy document"),
     source_document_code: str = Form(
         ..., description="Document Register code e.g. DRG-ISMS-POL-ACP-01-25"
     ),
@@ -88,12 +88,16 @@ async def extract_from_file(
     """
     Upload a PDF or DOCX policy document for GRC extraction.
 
-    Supported file types: .pdf, .docx, .txt
+    Supported file types: .pdf, .docx, .doc, .txt
     Maximum file size: 10MB
 
     The pipeline:
     1. Read file bytes
-    2. Extract text (PDF via pypdf, DOCX via python-docx)
+    2. Extract text:
+       - PDF: pypdf → Azure OCR fallback if < 100 chars
+       - DOCX: mammoth → Azure OCR fallback if < 100 chars
+       - DOC: RTF detection → striprtf; or OLE2 via olefile (no Azure fallback)
+       - TXT: UTF-8 decode
     3. Send text to local Ollama LLM
     4. Return structured extraction results
     """

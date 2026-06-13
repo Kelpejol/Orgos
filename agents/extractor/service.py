@@ -12,7 +12,9 @@
 
 import io
 import logging
+import os
 import re
+import tempfile
 from typing import Optional
 
 from agents.extractor.ollama_client import (
@@ -37,7 +39,60 @@ _QUEUE_LIST_NAME = "AI Review Queue"
 #  Text extraction from files
 # =============================================================================
 
-def extract_text_from_pdf(file_bytes: bytes) -> str:
+# Minimum character count from native extraction before trying Azure OCR
+_OCR_THRESHOLD = 100
+
+# Helper to collapse excessive whitespace after any extraction method
+_clean_text = lambda t: re.sub(r' {4,}', '  ', re.sub(r'[\r\n]{3,}', '\n\n', t.strip()))
+
+
+async def _azure_ocr_fallback(file_bytes: bytes, content_type: str) -> str:
+    """
+    Azure Document Intelligence prebuilt-read model OCR fallback.
+    Used when native extraction yields fewer than _OCR_THRESHOLD characters
+    (scanned PDFs, image-only DOCXs). Not called for legacy .doc — Azure
+    Document Intelligence does not support the .doc binary format.
+    """
+    try:
+        from azure.ai.formrecognizer.aio import DocumentAnalysisClient
+        from azure.core.credentials import AzureKeyCredential
+    except ImportError as exc:
+        raise RuntimeError(
+            "azure-ai-formrecognizer not installed. Run: pip install azure-ai-formrecognizer"
+        ) from exc
+
+    endpoint = settings.azure_document_intelligence_endpoint
+    key = settings.azure_document_intelligence_key
+    if not endpoint or not key:
+        raise RuntimeError(
+            "Azure Document Intelligence not configured — "
+            "set AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT and AZURE_DOCUMENT_INTELLIGENCE_KEY"
+        )
+
+    async with DocumentAnalysisClient(endpoint, AzureKeyCredential(key)) as client:
+        poller = await client.begin_analyze_document(
+            "prebuilt-read",
+            file_bytes,
+            content_type=content_type,
+        )
+        result = await poller.result()
+
+    pages = []
+    for page in result.pages:
+        if page.lines:
+            page_text = " ".join(line.content for line in page.lines)
+            pages.append(f"[Page {page.page_number}]\n{page_text}")
+    return "\n\n".join(pages)
+
+
+async def extract_text_from_pdf(file_bytes: bytes) -> str:
+    """
+    Extract text from a PDF.
+    1. Try native pypdf extraction.
+    2. If result is below _OCR_THRESHOLD chars, call Azure Document Intelligence.
+    3. Return whichever result is longer. Log but do not raise on empty result.
+    """
+    native_text = ""
     try:
         from pypdf import PdfReader
         reader = PdfReader(io.BytesIO(file_bytes))
@@ -46,24 +101,146 @@ def extract_text_from_pdf(file_bytes: bytes) -> str:
             text = page.extract_text()
             if text:
                 pages.append(f"[Page {i+1}]\n{text}")
-        if not pages:
-            raise ValueError("PDF contains no extractable text.")
-        full = "\n\n".join(pages)
-        logger.info(f"PDF: {len(full)} chars from {len(reader.pages)} pages")
-        return full
+        native_text = _clean_text("\n\n".join(pages))
+        logger.info(f"PDF: native extraction yielded {len(native_text)} chars")
     except ImportError as exc:
         raise RuntimeError("pypdf not installed. Run: pip install pypdf") from exc
+    except Exception as exc:
+        logger.warning(f"PDF: native extraction failed: {exc}")
+
+    if len(native_text) < _OCR_THRESHOLD:
+        logger.info(
+            f"PDF: {len(native_text)} chars below threshold ({_OCR_THRESHOLD}) — trying Azure OCR"
+        )
+        try:
+            ocr_text = await _azure_ocr_fallback(file_bytes, "application/pdf")
+            logger.info(f"PDF: Azure OCR yielded {len(ocr_text)} chars")
+            if len(ocr_text) > len(native_text):
+                return ocr_text
+        except Exception as exc:
+            logger.warning(f"PDF: Azure OCR failed: {exc}")
+
+    if not native_text:
+        logger.error("PDF: all extraction methods yielded empty text")
+    return native_text
 
 
-def extract_text_from_docx(file_bytes: bytes) -> str:
+async def extract_text_from_docx(file_bytes: bytes) -> str:
+    """
+    Extract text from a .docx file.
+    1. Try native mammoth extraction.
+    2. If result is below _OCR_THRESHOLD chars, call Azure Document Intelligence.
+    3. Return whichever result is longer. Log but do not raise on empty result.
+    """
+    native_text = ""
     try:
         import mammoth
         result = mammoth.extract_raw_text(io.BytesIO(file_bytes))
-        full = result.value or ""
-        logger.info(f"DOCX: {len(full)} chars")
-        return full
+        native_text = _clean_text(result.value or "")
+        logger.info(f"DOCX: native extraction yielded {len(native_text)} chars")
     except ImportError as exc:
         raise RuntimeError("mammoth not installed. Run: pip install mammoth") from exc
+    except Exception as exc:
+        logger.warning(f"DOCX: native extraction failed: {exc}")
+
+    if len(native_text) < _OCR_THRESHOLD:
+        logger.info(
+            f"DOCX: {len(native_text)} chars below threshold ({_OCR_THRESHOLD}) — trying Azure OCR"
+        )
+        _DOCX_CONTENT_TYPE = (
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
+        try:
+            ocr_text = await _azure_ocr_fallback(file_bytes, _DOCX_CONTENT_TYPE)
+            logger.info(f"DOCX: Azure OCR yielded {len(ocr_text)} chars")
+            if len(ocr_text) > len(native_text):
+                return ocr_text
+        except Exception as exc:
+            logger.warning(f"DOCX: Azure OCR failed: {exc}")
+
+    if not native_text:
+        logger.error("DOCX: all extraction methods yielded empty text")
+    return native_text
+
+
+def extract_text_from_doc(file_bytes: bytes) -> str:
+    """
+    Extract text from a legacy .doc file (Word 97-2003 binary format).
+    Two paths — no Azure OCR fallback (Azure DI does not support .doc):
+      - RTF path: file starts with {\\rtf → use striprtf
+      - OLE2 path: parse WordDocument stream via olefile
+    Log but do not raise on empty result.
+    """
+    # RTF path — some .doc files are stored as RTF
+    if file_bytes[:5] == b'{\\rtf':
+        try:
+            from striprtf.striprtf import rtf_to_text
+        except ImportError as exc:
+            raise RuntimeError(
+                "striprtf not installed. Run: pip install striprtf"
+            ) from exc
+        try:
+            rtf_str = file_bytes.decode('latin-1', errors='ignore')
+            text = _clean_text(rtf_to_text(rtf_str))
+            logger.info(f"DOC (RTF): {len(text)} chars extracted")
+            if not text:
+                logger.error("DOC (RTF): extraction yielded empty text")
+            return text
+        except Exception as exc:
+            logger.warning(f"DOC (RTF): striprtf failed: {exc} — falling through to OLE2")
+
+    # OLE2 binary path
+    try:
+        import olefile
+    except ImportError as exc:
+        raise RuntimeError(
+            "olefile not installed. Run: pip install olefile"
+        ) from exc
+
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix='.doc', delete=False) as tmp:
+            tmp.write(file_bytes)
+            tmp_path = tmp.name
+
+        ole = olefile.OleFileIO(tmp_path)
+
+        if not ole.exists('WordDocument'):
+            logger.error("DOC: OLE2 file has no WordDocument stream")
+            ole.close()
+            return ""
+
+        raw = ole.openstream('WordDocument').read()
+        ole.close()
+
+        # Word binary stores Unicode text as UTF-16-LE; decode and strip control bytes
+        decoded = raw.decode('utf-16-le', errors='ignore')
+        text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', ' ', decoded)
+        text = _clean_text(text)
+
+        # Sanity: if under 40% printable chars the UTF-16 decode gave mostly garbage;
+        # fall back to pulling ASCII strings (the "strings" tool approach)
+        printable = sum(1 for c in text if c.isprintable() or c in '\n\r\t')
+        if not text or printable / max(len(text), 1) < 0.4:
+            ascii_parts = re.findall(rb'[\x20-\x7e]{4,}', raw)
+            text = _clean_text(
+                ' '.join(p.decode('ascii', errors='ignore') for p in ascii_parts)
+            )
+
+        logger.info(f"DOC (OLE2): {len(text)} chars extracted")
+        if not text:
+            logger.error("DOC: OLE2 extraction yielded empty text")
+        return text
+
+    except Exception as exc:
+        logger.error(f"DOC: extraction failed: {exc}")
+        return ""
+    finally:
+        if tmp_path:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
 
 
 # =============================================================================
@@ -507,9 +684,11 @@ async def run_extraction_from_file(
 ) -> ExtractionResponse:
     fname = filename.lower()
     if fname.endswith(".pdf"):
-        text = extract_text_from_pdf(file_bytes)
+        text = await extract_text_from_pdf(file_bytes)
     elif fname.endswith(".docx"):
-        text = extract_text_from_docx(file_bytes)
+        text = await extract_text_from_docx(file_bytes)
+    elif fname.endswith(".doc"):
+        text = extract_text_from_doc(file_bytes)
     elif fname.endswith(".txt"):
         text = file_bytes.decode("utf-8", errors="replace")
     else:

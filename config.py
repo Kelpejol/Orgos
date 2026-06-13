@@ -68,6 +68,10 @@ class Settings(BaseSettings):
     ollama_model: str = Field(default="llama3")
     ollama_timeout: int = Field(default=120)
 
+    # ── Azure Document Intelligence — OCR fallback for scanned documents ──
+    azure_document_intelligence_endpoint: str = Field(default="")
+    azure_document_intelligence_key: str = Field(default="")
+
     # ── Computed properties ────────────────────────────────────────────────
 
     @property
