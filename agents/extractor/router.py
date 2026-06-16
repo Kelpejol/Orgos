@@ -137,13 +137,13 @@ async def extract_from_file(
 
 @router.get(
     "/health/ollama",
-    summary="Check Ollama connectivity and model availability",
+    summary="Check LLM provider connectivity (Ollama or RunPod)",
 )
 async def ollama_health(
     user: CurrentUser = Depends(get_current_user),
 ) -> dict:
     """
-    Verify that Ollama is running and the configured model is available.
-    Returns model list and availability status.
+    Verify the active LLM provider is reachable.
+    Returns provider name, status, and model/endpoint details.
     """
     return await check_ollama_connectivity()

@@ -26,8 +26,7 @@ import logging
 import re
 from typing import Optional
 
-import httpx
-
+from agents.llm_client import llm_generate
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -551,37 +550,26 @@ async def _call_ollama_language_checks(
     """
     prompt = _build_ai_prompt(text, role_register_titles)
     try:
-        async with httpx.AsyncClient(timeout=settings.ollama_timeout) as client:
-            resp = await client.post(
-                f"{settings.ollama_base_url}/api/generate",
-                json={
-                    "model":  settings.ollama_model,
-                    "prompt": prompt,
-                    "stream": False,
-                    "format": "json",
-                    "options": {
-                        "temperature": 0,
-                        "num_predict": 2048,
-                        "num_ctx":     32768,
-                    },
-                },
-            )
-            resp.raise_for_status()
-            raw = resp.json().get("response", "").strip()
-            if not raw:
-                logger.warning("CDI AI check: empty response from Ollama")
-                return None
-            result = json.loads(raw)
-            # Validate expected top-level keys are present
-            if not all(k in result for k in ("cdi_06", "cdi_07", "cdi_08", "cdi_16")):
-                logger.warning("CDI AI check: response missing expected keys")
-                return None
-            return result
+        raw = await llm_generate(
+            prompt,
+            tier="light",
+            max_tokens=2048,
+            temperature=0,
+            json_mode=True,
+        )
+        if not raw:
+            logger.warning("CDI AI check: empty response from LLM")
+            return None
+        result = json.loads(raw)
+        if not all(k in result for k in ("cdi_06", "cdi_07", "cdi_08", "cdi_16")):
+            logger.warning("CDI AI check: response missing expected keys")
+            return None
+        return result
     except json.JSONDecodeError as exc:
-        logger.warning(f"CDI AI check: invalid JSON from Ollama — {exc}")
+        logger.warning(f"CDI AI check: invalid JSON from LLM — {exc}")
         return None
     except Exception as exc:
-        logger.warning(f"CDI AI check: Ollama call failed — {exc}")
+        logger.warning(f"CDI AI check: LLM call failed — {exc}")
         return None
 
 

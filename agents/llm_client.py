@@ -1,0 +1,267 @@
+# =============================================================================
+# agents/llm_client.py — Central LLM routing layer
+#
+# Provider is selected via LLM_PROVIDER env var:
+#   "ollama"  → local Ollama at settings.ollama_base_url  (default)
+#   "runpod"  → RunPod serverless via settings.runpod_*
+#
+# Model tiers (RunPod only — Ollama always uses settings.ollama_model):
+#   "light"   → 7B  endpoint  — classification, CDI checks, harmonisation,
+#                                 lifecycle suggestions
+#   "heavy"   → 14B endpoint  — extraction, gap analysis, policy drafting,
+#                                 approval assessment
+#
+# Usage:
+#   from agents.llm_client import llm_generate, check_llm_connectivity
+#   text = await llm_generate(prompt, tier="heavy", max_tokens=2000)
+# =============================================================================
+
+import logging
+from typing import Optional
+
+import httpx
+
+from config import settings
+
+logger = logging.getLogger(__name__)
+
+_RUNPOD_BASE = "https://api.runpod.ai/v2"
+
+
+# =============================================================================
+#  Public interface
+# =============================================================================
+
+async def llm_generate(
+    prompt: str,
+    tier: str = "light",
+    *,
+    max_tokens: int = 2000,
+    temperature: float = 0.1,
+    top_p: float = 0.9,
+    repeat_penalty: float = 1.2,
+    json_mode: bool = False,
+) -> str:
+    """
+    Generate text from the configured LLM provider.
+
+    Args:
+        prompt:         Full prompt string.
+        tier:           "light" (7B) or "heavy" (14B). Ignored when provider=ollama.
+        max_tokens:     Maximum tokens to generate.
+        temperature:    Sampling temperature.
+        top_p:          Nucleus sampling p.
+        repeat_penalty: Repetition penalty (Ollama only).
+        json_mode:      Hint model to return JSON (adds format=json on Ollama;
+                        has no effect on RunPod — prompts must request JSON themselves).
+
+    Returns:
+        Generated text, or "" on failure.
+    """
+    if settings.llm_provider == "runpod":
+        return await _runpod_generate(
+            prompt, tier,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+        )
+    return await _ollama_generate(
+        prompt,
+        max_tokens=max_tokens,
+        temperature=temperature,
+        top_p=top_p,
+        repeat_penalty=repeat_penalty,
+        json_mode=json_mode,
+    )
+
+
+async def check_llm_connectivity() -> dict:
+    """Health check — delegates to the active provider."""
+    if settings.llm_provider == "runpod":
+        return await _check_runpod()
+    return await _check_ollama()
+
+
+# =============================================================================
+#  Ollama backend
+# =============================================================================
+
+async def _ollama_generate(
+    prompt: str,
+    *,
+    max_tokens: int,
+    temperature: float,
+    top_p: float,
+    repeat_penalty: float,
+    json_mode: bool,
+) -> str:
+    payload: dict = {
+        "model":  settings.ollama_model,
+        "prompt": prompt,
+        "stream": False,
+        "options": {
+            "temperature":    temperature,
+            "top_p":          top_p,
+            "repeat_penalty": repeat_penalty,
+            "num_predict":    max_tokens,
+        },
+    }
+    if json_mode:
+        payload["format"] = "json"
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(settings.ollama_timeout, connect=10.0)
+        ) as client:
+            resp = await client.post(
+                f"{settings.ollama_base_url}/api/generate",
+                json=payload,
+            )
+            resp.raise_for_status()
+            return resp.json().get("response", "").strip()
+    except Exception as exc:
+        logger.warning(f"Ollama generate failed: {exc}")
+        return ""
+
+
+async def _check_ollama() -> dict:
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            resp = await client.get(f"{settings.ollama_base_url}/api/tags")
+            resp.raise_for_status()
+            models = [m["name"] for m in resp.json().get("models", [])]
+            return {
+                "status":           "ok",
+                "provider":         "ollama",
+                "model":            settings.ollama_model,
+                "model_available":  any(settings.ollama_model in m for m in models),
+                "available_models": models,
+            }
+    except httpx.ConnectError:
+        return {
+            "status":   "error",
+            "provider": "ollama",
+            "detail":   (
+                f"Cannot connect to Ollama at {settings.ollama_base_url}. "
+                "Run: ollama serve"
+            ),
+        }
+    except Exception as exc:
+        return {"status": "error", "provider": "ollama", "detail": str(exc)}
+
+
+# =============================================================================
+#  RunPod backend
+# =============================================================================
+
+async def _runpod_generate(
+    prompt: str,
+    tier: str,
+    *,
+    max_tokens: int,
+    temperature: float,
+    top_p: float,
+) -> str:
+    endpoint_id = (
+        settings.runpod_light_endpoint_id
+        if tier == "light"
+        else settings.runpod_heavy_endpoint_id
+    )
+    url = f"{_RUNPOD_BASE}/{endpoint_id}/runsync"
+    headers = {
+        "Authorization": f"Bearer {settings.runpod_api_key}",
+        "Content-Type":  "application/json",
+    }
+    payload = {
+        "input": {
+            "prompt": prompt,
+            "sampling_params": {
+                "max_tokens":  max_tokens,
+                "temperature": temperature,
+                "top_p":       top_p,
+            },
+        }
+    }
+
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(settings.runpod_timeout, connect=10.0)
+        ) as client:
+            resp = await client.post(url, headers=headers, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+
+        status = data.get("status")
+        if status and status != "COMPLETED":
+            logger.warning(
+                f"RunPod {tier} ({endpoint_id}) status={status}: "
+                f"{data.get('error', '')}"
+            )
+            return ""
+
+        return _extract_runpod_text(data)
+
+    except Exception as exc:
+        logger.warning(f"RunPod {tier} ({endpoint_id}) generate failed: {exc}")
+        return ""
+
+
+def _extract_runpod_text(data: dict) -> str:
+    """
+    Parse RunPod runsync response — handles all common vLLM worker output shapes:
+      Shape 1: output = [{"text": "..."}]                  (vLLM completion)
+      Shape 2: output = {"choices": [{"text": "..."}]}     (OpenAI completion)
+      Shape 3: output = {"choices": [{"message": ...}]}    (OpenAI chat)
+      Shape 4: output = "plain string"                     (simple workers)
+    """
+    output = data.get("output")
+    if output is None:
+        return ""
+
+    if isinstance(output, list) and output:
+        first = output[0]
+        if isinstance(first, dict):
+            return str(first.get("text") or first.get("content") or "").strip()
+        return str(first).strip()
+
+    if isinstance(output, dict):
+        choices = output.get("choices") or []
+        if choices:
+            c = choices[0]
+            if isinstance(c, dict):
+                if "message" in c:
+                    return str(c["message"].get("content", "")).strip()
+                return str(c.get("text") or c.get("content", "")).strip()
+        if "text" in output:
+            return str(output["text"]).strip()
+
+    if isinstance(output, str):
+        return output.strip()
+
+    return ""
+
+
+async def _check_runpod() -> dict:
+    """Ping the light endpoint health route to verify API key and reachability."""
+    endpoint_id = settings.runpod_light_endpoint_id
+    url = f"{_RUNPOD_BASE}/{endpoint_id}/health"
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(
+                url,
+                headers={"Authorization": f"Bearer {settings.runpod_api_key}"},
+            )
+        ok = resp.status_code < 500
+        return {
+            "status":          "ok" if ok else "error",
+            "provider":        "runpod",
+            "light_endpoint":  settings.runpod_light_endpoint_id,
+            "heavy_endpoint":  settings.runpod_heavy_endpoint_id,
+            "http_status":     resp.status_code,
+        }
+    except Exception as exc:
+        return {
+            "status":   "error",
+            "provider": "runpod",
+            "detail":   str(exc),
+        }

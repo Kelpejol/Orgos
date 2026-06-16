@@ -21,9 +21,10 @@ from fastapi import (
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
-from auth.validator import CurrentUser, get_current_user
 from agents.cdi_checker.service import DOC_CODE_PATTERN, run_cdi_check
 from agents.extractor.service import run_extraction_from_file
+from agents.llm_client import llm_generate
+from auth.validator import CurrentUser, get_current_user
 from config import settings
 from graph.auth import get_graph_access_token
 from graph.client import (
@@ -315,25 +316,6 @@ class FeedbackBody(BaseModel):
 #  Ollama helper for lifecycle AI features
 # =============================================================================
 
-async def _ollama_generate(prompt: str) -> str:
-    """Generic Ollama text generation. Returns empty string on failure."""
-    try:
-        payload = {
-            "model":   settings.ollama_model,
-            "prompt":  prompt,
-            "stream":  False,
-            "options": {"temperature": 0.2},
-        }
-        async with httpx.AsyncClient(timeout=settings.ollama_timeout) as client:
-            resp = await client.post(
-                f"{settings.ollama_base_url}/api/generate",
-                json=payload,
-            )
-            resp.raise_for_status()
-            return resp.json().get("response", "").strip()
-    except Exception as exc:
-        logger.warning(f"Ollama generate failed: {exc}")
-        return ""
 
 
 def _extract_json_payload(text: str):
@@ -548,13 +530,11 @@ async def progress_doc(
                     status_code=422,
                     detail="Upload a file before progressing from Review.",
                 )
-            # CDI gate temporarily disabled: keep CDI results visible, but do not
-            # block Review -> Sensitisation while onboarding legacy documents.
-            # if doc.get("CDIStatus") == "Failed":
-            #     raise HTTPException(
-            #         status_code=422,
-            #         detail="CDI check failed — fix the listed failures and re-upload before progressing.",
-            #     )
+            if doc.get("CDIStatus") == "Failed":
+                raise HTTPException(
+                    status_code=422,
+                    detail="CDI check failed — fix the listed failures and re-upload before progressing.",
+                )
             if not body.stakeholders and not body.skip_stakeholders:
                 raise HTTPException(
                     status_code=422,
@@ -567,12 +547,11 @@ async def progress_doc(
                     status_code=422,
                     detail="Select an approver or skip to progress to Approval.",
                 )
-            # TODO: re-enable once role separation is enforced in production
-            # if body.approver_id == doc.get("OwnerEntraId"):
-            #     raise HTTPException(
-            #         status_code=422,
-            #         detail="The approver cannot be the same person as the document owner.",
-            #     )
+            if body.approver_id == doc.get("OwnerEntraId"):
+                raise HTTPException(
+                    status_code=422,
+                    detail="The approver cannot be the same person as the document owner.",
+                )
 
         next_stage = NEXT_STAGE.get(body.current_stage)
         if not next_stage:
@@ -674,13 +653,12 @@ async def approve_doc(
                 detail="Only the designated approver can approve this document.",
             )
 
-        # TODO: re-enable once role separation is enforced in production
         # Enforce: owner cannot approve their own document
-        # if user.oid == doc.get("OwnerEntraId", ""):
-        #     raise HTTPException(
-        #         status_code=403,
-        #         detail="The document owner cannot approve their own document.",
-        #     )
+        if user.oid == doc.get("OwnerEntraId", ""):
+            raise HTTPException(
+                status_code=403,
+                detail="The document owner cannot approve their own document.",
+            )
 
         approver_resolved  = await resolve_user(user.oid)
         approver_email_val = approver_resolved.get("email", "")
@@ -1219,7 +1197,7 @@ Return a JSON array where each item has:
 
 Return only the JSON array, no other text."""
 
-        response_text = await _ollama_generate(prompt)
+        response_text = await llm_generate(prompt, tier="light", temperature=0.2)
         suggestions = _normalise_cdi_suggestions(
             _extract_json_payload(response_text),
             fallback_text=response_text,
@@ -1295,7 +1273,7 @@ Return a JSON array where each item has:
 
 Return only the JSON array, no other text."""
 
-        response_text = await _ollama_generate(prompt)
+        response_text = await llm_generate(prompt, tier="light", temperature=0.2)
 
         suggestions = []
         try:
@@ -1374,7 +1352,7 @@ Provide an approval readiness assessment. Return a JSON object with:
 
 Return only the JSON object, no other text."""
 
-        response_text = await _ollama_generate(prompt)
+        response_text = await llm_generate(prompt, tier="heavy", temperature=0.2)
 
         assessment = {}
         try:

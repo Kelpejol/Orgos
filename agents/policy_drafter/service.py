@@ -359,10 +359,9 @@
 import logging
 from typing import Optional
 
-import httpx
-
-from config import settings
+from agents.llm_client import llm_generate
 from agents.policy_drafter.docx_builder import build_docx
+from config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -388,31 +387,18 @@ DEPT_CODES = {
 
 
 # =============================================================================
-#  Ollama call helper
+#  LLM call helper
 # =============================================================================
 
 async def _ollama(prompt: str, max_tokens: int = 1500) -> str:
-    """Call Ollama and return the generated text."""
-    try:
-        async with httpx.AsyncClient(timeout=settings.ollama_timeout) as client:
-            resp = await client.post(
-                f"{settings.ollama_base_url}/api/generate",
-                json={
-                    "model":  settings.ollama_model,
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {
-                        "num_predict": max_tokens,
-                        "temperature": 0.3,
-                        "top_p":       0.9,
-                    },
-                },
-            )
-            resp.raise_for_status()
-            return resp.json().get("response", "").strip()
-    except Exception as exc:
-        logger.error(f"Ollama call failed: {exc}")
-        return ""
+    """Generate policy section text — heavy tier (14B)."""
+    return await llm_generate(
+        prompt,
+        tier="heavy",
+        max_tokens=max_tokens,
+        temperature=0.3,
+        top_p=0.9,
+    )
 
 
 # =============================================================================

@@ -21,8 +21,7 @@ import json
 import logging
 from datetime import date, timedelta
 
-import httpx
-
+from agents.llm_client import llm_generate
 from config import settings
 from graph.client import get_list_items
 
@@ -301,18 +300,12 @@ Respond with ONLY valid JSON in this exact structure (no extra text before or af
 }}"""
 
     try:
-        async with httpx.AsyncClient(timeout=settings.ollama_timeout) as client:
-            resp = await client.post(
-                f"{settings.ollama_base_url}/api/generate",
-                json={
-                    "model":  settings.ollama_model,
-                    "prompt": prompt,
-                    "stream": False,
-                    "options": {"num_predict": 800, "temperature": 0.2},
-                },
-            )
-            resp.raise_for_status()
-            raw = resp.json().get("response", "").strip()
+        raw = await llm_generate(
+            prompt,
+            tier="heavy",
+            max_tokens=800,
+            temperature=0.2,
+        )
 
         start = raw.find("{")
         end   = raw.rfind("}") + 1

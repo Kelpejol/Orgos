@@ -27,8 +27,7 @@ import re
 from difflib import SequenceMatcher
 from typing import Optional
 
-import httpx
-
+from agents.llm_client import llm_generate
 from config import settings
 from graph.client import create_list_item, get_list_items
 
@@ -150,25 +149,14 @@ Return JSON object only with exactly:
   "key_difference": "short note on scope/owner/frequency/evidence difference"
 }}"""
     try:
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(settings.ollama_timeout, connect=10.0)
-        ) as client:
-            resp = await client.post(
-                f"{settings.ollama_base_url}/api/generate",
-                json={
-                    "model": settings.ollama_model,
-                    "prompt": prompt,
-                    "stream": False,
-                    "format": "json",
-                    "options": {
-                        "temperature": 0.1,
-                        "top_p": 0.9,
-                        "num_predict": 500,
-                    },
-                },
-            )
-            resp.raise_for_status()
-        raw = resp.json().get("response", "").strip()
+        raw = await llm_generate(
+            prompt,
+            tier="light",
+            max_tokens=500,
+            temperature=0.1,
+            top_p=0.9,
+            json_mode=True,
+        )
         parsed = json.loads(raw)
         if not isinstance(parsed, dict):
             return fallback

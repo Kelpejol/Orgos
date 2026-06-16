@@ -63,10 +63,21 @@ class Settings(BaseSettings):
     log_level: str = Field(default="DEBUG")
     skip_auth: bool = Field(default=False)
 
-    # ── Ollama — Phase 3 Extractor Agent ──────────────────────────────────
+    # ── LLM provider ──────────────────────────────────────────────────────
+    # Set LLM_PROVIDER=runpod to route all inference to RunPod serverless.
+    # Leave as "ollama" (default) to use the local Ollama instance.
+    llm_provider: str = Field(default="ollama")   # "ollama" | "runpod"
+
+    # ── Ollama — local inference (used when LLM_PROVIDER=ollama) ──────────
     ollama_base_url: str = Field(default="http://localhost:11434")
     ollama_model: str = Field(default="llama3")
     ollama_timeout: int = Field(default=120)
+
+    # ── RunPod — serverless inference (used when LLM_PROVIDER=runpod) ─────
+    runpod_api_key: str = Field(default="")
+    runpod_light_endpoint_id: str = Field(default="")
+    runpod_heavy_endpoint_id: str = Field(default="")
+    runpod_timeout: int = Field(default=120)
 
     # ── Azure Document Intelligence — OCR fallback for scanned documents ──
     azure_document_intelligence_endpoint: str = Field(default="")

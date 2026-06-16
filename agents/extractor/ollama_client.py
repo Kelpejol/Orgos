@@ -13,6 +13,7 @@ from typing import Optional
 
 import httpx
 
+from agents.llm_client import check_llm_connectivity, llm_generate
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -200,30 +201,18 @@ async def run_extraction(
 
     logger.info(
         f"Extracting | {doc_code} | {document_type.value} | "
-        f"model={settings.ollama_model} | chars={len(document_text)}"
+        f"provider={settings.llm_provider} | chars={len(document_text)}"
     )
 
-    async with httpx.AsyncClient(
-        timeout=httpx.Timeout(settings.ollama_timeout, connect=10.0)
-    ) as client:
-        response = await client.post(
-            f"{settings.ollama_base_url}/api/generate",
-            json={
-                "model":  settings.ollama_model,
-                "prompt": prompt,
-                "stream": False,
-                "format": "json",
-                "options": {
-                    "temperature":    0.1,
-                    "top_p":          0.9,
-                    "repeat_penalty": 1.2,
-                    "num_predict":    2000,
-                },
-            },
-        )
-        response.raise_for_status()
-
-    raw = response.json().get("response", "")
+    raw = await llm_generate(
+        prompt,
+        tier="heavy",
+        max_tokens=2000,
+        temperature=0.1,
+        top_p=0.9,
+        repeat_penalty=1.2,
+        json_mode=True,
+    )
     return _parse_response(raw, doc_code)
 
 
@@ -292,21 +281,5 @@ def _parse_response(raw: str, doc_code: str) -> list[dict]:
 
 
 async def check_ollama_connectivity() -> dict:
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            resp = await client.get(f"{settings.ollama_base_url}/api/tags")
-            resp.raise_for_status()
-            models = [m["name"] for m in resp.json().get("models", [])]
-            return {
-                "status":          "ok",
-                "model":           settings.ollama_model,
-                "model_available": any(settings.ollama_model in m for m in models),
-                "available_models":models,
-            }
-    except httpx.ConnectError:
-        return {
-            "status": "error",
-            "detail": f"Cannot connect to Ollama at {settings.ollama_base_url}. Run: ollama serve",
-        }
-    except Exception as exc:
-        return {"status": "error", "detail": str(exc)}
+    """Delegates to the central LLM client health check (Ollama or RunPod)."""
+    return await check_llm_connectivity()
