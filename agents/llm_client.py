@@ -198,6 +198,7 @@ async def _runpod_generate(
             if not status or status == "COMPLETED":
                 logger.debug(f"RunPod {tier} COMPLETED response keys={list(data.keys())} output_type={type(data.get('output')).__name__} output_preview={str(data.get('output'))[:300]}")
                 return _extract_runpod_text(data)
+            
 
             # runsync sync-timeout hit — job is queued/running, poll until done
             job_id = data.get("id")
