@@ -245,6 +245,15 @@ def _extract_runpod_text(data: dict) -> str:
     if isinstance(output, list) and output:
         first = output[0]
         if isinstance(first, dict):
+            # vLLM batch output: [{"choices": [{"text": "..."}]}]
+            if "choices" in first:
+                choices = first.get("choices") or []
+                if choices:
+                    c = choices[0]
+                    if isinstance(c, dict):
+                        if "message" in c:
+                            return str(c["message"].get("content", "")).strip()
+                        return str(c.get("text") or c.get("content", "")).strip()
             return str(first.get("text") or first.get("content") or "").strip()
         return str(first).strip()
 
