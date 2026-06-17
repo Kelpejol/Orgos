@@ -43,6 +43,13 @@ DOC_FIELDS = {
     "linked_controls_count":"LinkedControlsCount",
     "status":              "Status",
     "sharepoint_url":      "SharePointUrl",
+    # Withdrawal provenance — new SharePoint columns required on Document Register list
+    "withdrawal_reason":   "WithdrawalReason",
+    "withdrawn_date":      "WithdrawnDate",
+    "withdrawn_by_oid":    "WithdrawnByEntraId",
+    "withdrawn_by_name":   "WithdrawnByName",
+    "replaced_by_code":    "ReplacedByCode",
+    "withdrawal_note":     "WithdrawalNote",
 }
 
 DOC_TYPE_CHOICES    = ["Policy", "Procedure", "SOP", "Form", "Guidelines"]

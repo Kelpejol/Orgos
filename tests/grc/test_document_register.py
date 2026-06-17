@@ -127,16 +127,40 @@ class TestDocumentRegisterCreate:
         assert response.status_code == 422
 
 
-class TestDocumentRegisterSoftDelete:
-    """Tests for DELETE /api/v1/grc/documents/{id}"""
+class TestDocumentRegisterWithdraw:
+    """Tests for POST /api/v1/grc/documents/{id}/withdraw"""
 
-    def test_soft_delete_returns_204(self):
-        """Soft delete sets status to Withdrawn and returns 204 No Content."""
+    def test_withdraw_returns_200(self):
+        """Withdraw endpoint calls service and returns cascade result."""
+        cascade_result = {
+            "document_code": "DRG-TEST-POL-01-26",
+            "withdrawal_reason": "Revoked",
+            "queue_items_cancelled": [],
+            "controls_flagged": [],
+            "evidence_items_flagged": [],
+            "lifecycles_cancelled": [],
+            "gaps_reopened": [],
+            "obligations_flagged": [],
+            "coverage_gaps_created": [],
+            "errors": [],
+            "cascade_summary": "0 queue items cancelled | 0 controls flagged Under Review",
+        }
         with patch(
-            "grc.router.service.soft_delete_document", new_callable=AsyncMock
+            "grc.router.service.withdraw_document", new_callable=AsyncMock
         ) as mock_svc:
-            mock_svc.return_value = None
-            response = client.delete("/api/v1/grc/documents/1")
+            mock_svc.return_value = cascade_result
+            response = client.post(
+                "/api/v1/grc/documents/1/withdraw",
+                json={
+                    "withdrawal_reason": "Revoked",
+                    "rationale": "Regulation changed; document no longer applicable",
+                },
+            )
 
-        assert response.status_code == 204
-        mock_svc.assert_called_once_with("1")
+        assert response.status_code == 200
+        assert response.json()["document_code"] == "DRG-TEST-POL-01-26"
+
+    def test_delete_endpoint_returns_405(self):
+        """Legacy DELETE endpoint returns 405 directing callers to /withdraw."""
+        response = client.delete("/api/v1/grc/documents/1")
+        assert response.status_code == 405

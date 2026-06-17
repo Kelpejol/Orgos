@@ -8,9 +8,9 @@
 
 from datetime import date, datetime
 from enum import Enum
-from typing import Any, Optional
+from typing import Optional
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 # =============================================================================
@@ -117,6 +117,35 @@ class DocumentRead(DocumentBase):
     sharepoint_url: Optional[str] = None
     created: Optional[datetime] = None
     modified: Optional[datetime] = None
+
+
+class DocumentWithdrawReason(str, Enum):
+    SUPERSEDED         = "Superseded"
+    REVOKED            = "Revoked"
+    OBSOLETE           = "Obsolete"
+    ERROR              = "Error"
+    PROCESS_ELIMINATED = "Process Eliminated"
+
+
+class DocumentWithdraw(BaseModel):
+    """
+    Request body for POST /documents/{id}/withdraw.
+    withdrawal_reason is required and must be one of the defined values.
+    rationale is required (min 10 chars) — per DRG-QI-REF-DINT-01-26.
+    replaced_by_code is required when reason is Superseded.
+    """
+    withdrawal_reason: DocumentWithdrawReason
+    rationale: str = Field(min_length=10, description="Minimum 10 characters — per DINT integrity rules")
+    replaced_by_code: Optional[str] = Field(
+        default=None,
+        description="Document code of the replacement document. Required when reason is Superseded.",
+    )
+
+    @model_validator(mode="after")
+    def superseded_requires_replacement(self) -> "DocumentWithdraw":
+        if self.withdrawal_reason == DocumentWithdrawReason.SUPERSEDED and not self.replaced_by_code:
+            raise ValueError("replaced_by_code is required when withdrawal_reason is Superseded")
+        return self
 
 
 # =============================================================================

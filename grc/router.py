@@ -194,19 +194,85 @@ async def update_document(
         _handle_graph_error(exc, f"update document {item_id}")
 
 
+@router.get(
+    "/documents/{item_id}/withdrawal-impact",
+    summary="Preview full dependency chain before withdrawing a document",
+)
+async def get_withdrawal_impact(
+    item_id: str,
+    user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    """
+    Returns every item that will be affected by withdrawing this document:
+    open queue items, active controls, evidence items, lifecycle entries,
+    compliance obligations, and which Standards Map clauses will lose coverage.
+    Call this before POST /withdraw to show the reviewer the full impact.
+    """
+    try:
+        return await service.get_withdrawal_impact(item_id)
+    except Exception as exc:
+        _handle_graph_error(exc, f"withdrawal impact {item_id}")
+
+
+@router.post(
+    "/documents/{item_id}/withdraw",
+    summary="Withdraw a document with full dependency cascade",
+)
+async def withdraw_document(
+    item_id: str,
+    body: schemas.DocumentWithdraw,
+    user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    """
+    Withdraws the document and cascades to all dependent records:
+    - Cancels open AI Review Queue items from this document (with provenance)
+    - Flags sourced controls to Under Review (with provenance)
+    - Flags linked pending/submitted evidence items
+    - Cancels in-progress Document Lifecycle entries
+    - Re-opens Gap Analysis items whose lifecycle was cancelled
+    - Notes Compliance Calendar obligations referencing this document
+    - Auto-creates Critical gap findings for Standards Map clauses that lose all coverage
+
+    Requires Compliance Lead or OrgOS Admin role.
+    Rationale must be at least 10 characters.
+    If withdrawal_reason is Superseded, replaced_by_code must reference an existing document.
+    """
+    if "Compliance.Lead" not in user.roles and "OrgOS.Admin" not in user.roles:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Compliance Lead or OrgOS Admin role required to withdraw documents.",
+        )
+    try:
+        return await service.withdraw_document(
+            item_id=item_id,
+            withdrawal_reason=body.withdrawal_reason.value,
+            rationale=body.rationale,
+            replaced_by_code=body.replaced_by_code,
+            user=user,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc))
+    except Exception as exc:
+        _handle_graph_error(exc, f"withdraw document {item_id}")
+
+
 @router.delete(
     "/documents/{item_id}",
-    status_code=status.HTTP_204_NO_CONTENT,
-    summary="Soft-delete a document (sets status to Withdrawn)",
+    status_code=status.HTTP_405_METHOD_NOT_ALLOWED,
+    summary="Deprecated — use POST /documents/{id}/withdraw",
+    include_in_schema=False,
 )
-async def delete_document(
+async def delete_document_deprecated(
     item_id: str,
     user: CurrentUser = Depends(get_current_user),
 ) -> None:
-    try:
-        await service.soft_delete_document(item_id)
-    except Exception as exc:
-        _handle_graph_error(exc, f"soft-delete document {item_id}")
+    raise HTTPException(
+        status_code=status.HTTP_405_METHOD_NOT_ALLOWED,
+        detail=(
+            "Direct deletion is not permitted. "
+            "Use POST /api/v1/grc/documents/{id}/withdraw with a withdrawal reason and rationale."
+        ),
+    )
 
 
 # =============================================================================

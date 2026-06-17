@@ -8,12 +8,13 @@
 import calendar
 import logging
 import re
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Optional
 
 from pydantic import ValidationError
 
 from agents.cdi_checker.service import DOC_CODE_PATTERN
+from auth.validator import CurrentUser
 from graph.client import (
     create_list_item,
     get_list_item,
@@ -533,6 +534,560 @@ async def soft_delete_document(item_id: str) -> None:
         LIST_NAMES["document_register"],
         item_id,
     )
+
+
+# =============================================================================
+#  Document withdrawal — full dependency cascade
+# =============================================================================
+
+async def get_withdrawal_impact(item_id: str) -> dict:
+    """
+    Returns the full dependency chain for a document before withdrawal is confirmed.
+    Called by GET /documents/{id}/withdrawal-impact.
+    Lets the reviewer see what the cascade will do before committing.
+    """
+    doc = await get_document(item_id)
+
+    queue_items      = await get_list_items(LIST_IDS["ai_review_queue"],    LIST_NAMES["ai_review_queue"])
+    controls         = await get_list_items(LIST_IDS["control_register"],   LIST_NAMES["control_register"])
+    evidence_items   = await get_list_items(LIST_IDS["evidence_tracker"],   LIST_NAMES["evidence_tracker"])
+    lifecycle_items  = await get_list_items(LIST_IDS["document_lifecycle"], LIST_NAMES["document_lifecycle"])
+    obligations      = await get_list_items(LIST_IDS["compliance_calendar"], LIST_NAMES["compliance_calendar"])
+
+    _open_q_statuses  = {"Pending Review", "Pending Second Review", "Routed to Owner", "Second Review Requested"}
+    _active_lc_stages = {"Review", "Sensitisation"}
+
+    open_queue = [
+        {
+            "id":                str(i["id"]),
+            "review_status":     i.get("fields", {}).get("ReviewStatus", ""),
+            "control_statement": i.get("fields", {}).get("ControlStatement", "")[:120],
+        }
+        for i in queue_items
+        if i.get("fields", {}).get("SourceDocumentCode") == doc.document_code
+        and i.get("fields", {}).get("ReviewStatus") in _open_q_statuses
+    ]
+
+    affected_controls = [
+        {
+            "id":                str(i["id"]),
+            "control_statement": i.get("fields", {}).get("ControlStatement", "")[:120],
+            "iso_clause":        i.get("fields", {}).get("ISOClause", ""),
+            "owner_role":        i.get("fields", {}).get("OwnerRole", ""),
+            "status":            i.get("fields", {}).get("Status", ""),
+        }
+        for i in controls
+        if i.get("fields", {}).get("SourceDocument") == doc.document_code
+        and i.get("fields", {}).get("Status") in ("Active", "Blocked")
+    ]
+    affected_control_ids = {c["id"] for c in affected_controls}
+
+    affected_evidence = [
+        {
+            "id":          str(i["id"]),
+            "description": i.get("fields", {}).get("EvidenceDescription", "")[:100],
+            "status":      i.get("fields", {}).get("Status", ""),
+            "control_id":  i.get("fields", {}).get("LinkedControlId", ""),
+        }
+        for i in evidence_items
+        if i.get("fields", {}).get("LinkedControlId") in affected_control_ids
+        and i.get("fields", {}).get("Status") in ("Pending", "Submitted")
+    ]
+
+    active_lifecycles = [
+        {
+            "id":             str(i["id"]),
+            "stage":          i.get("fields", {}).get("Stage", ""),
+            "trigger":        i.get("fields", {}).get("Trigger", ""),
+            "linked_gap_id":  i.get("fields", {}).get("LinkedGapId"),
+        }
+        for i in lifecycle_items
+        if i.get("fields", {}).get("DocumentCode") == doc.document_code
+        and i.get("fields", {}).get("Stage") in _active_lc_stages
+    ]
+
+    linked_obligations = [
+        {
+            "id":        str(i["id"]),
+            "name":      i.get("fields", {}).get("Title", ""),
+            "due_date":  i.get("fields", {}).get("DueDate", ""),
+            "authority": i.get("fields", {}).get("Authority", ""),
+        }
+        for i in obligations
+        if i.get("fields", {}).get("SourceDocumentCode") == doc.document_code
+    ]
+
+    # Standards Map: which clauses will lose all active control coverage?
+    from standards_map.router import CLAUSES
+    all_active = [
+        i for i in controls
+        if i.get("fields", {}).get("Status") not in ("Withdrawn", "Superseded", "Under Review")
+    ]
+    clauses_at_risk = []
+    for clause_def in CLAUSES:
+        code = clause_def["clause"]
+        clause_controls = [
+            c for c in all_active
+            if c.get("fields", {}).get("ISOClause", "").startswith(code)
+        ]
+        affected_in_clause = [c for c in clause_controls if str(c["id"]) in affected_control_ids]
+        if not affected_in_clause:
+            continue
+        remaining = [c for c in clause_controls if str(c["id"]) not in affected_control_ids]
+        clauses_at_risk.append({
+            "standard":                  clause_def["standard"],
+            "clause":                    code,
+            "title":                     clause_def["title"],
+            "affected_controls_count":   len(affected_in_clause),
+            "remaining_active_controls": len(remaining),
+            "will_lose_all_coverage":    len(remaining) == 0,
+        })
+
+    coverage_loss = [c for c in clauses_at_risk if c["will_lose_all_coverage"]]
+
+    return {
+        "document": {
+            "id":            item_id,
+            "document_code": doc.document_code,
+            "title":         doc.title,
+            "status":        doc.status,
+        },
+        "impact": {
+            "open_queue_items":            open_queue,
+            "controls_to_flag":            affected_controls,
+            "evidence_items_to_flag":      affected_evidence,
+            "lifecycles_to_cancel":        active_lifecycles,
+            "obligations_to_note":         linked_obligations,
+            "clauses_at_risk":             clauses_at_risk,
+        },
+        "warnings": [
+            f"Clause {c['clause']} ({c['title']}) will have no active controls — "
+            f"a Critical gap finding will be created automatically."
+            for c in coverage_loss
+        ],
+    }
+
+
+async def _auto_create_coverage_gaps(
+    affected_control_ids: set[str],
+    all_controls: list[dict],
+    existing_gaps: list[dict],
+    doc_code: str,
+    today: str,
+    user: CurrentUser,
+) -> list[str]:
+    """
+    After flagging controls Under Review, check Standards Map coverage.
+    Auto-creates Critical gap findings for clauses that now have zero active controls.
+    Returns a list of GapIds created.
+    """
+    from standards_map.router import CLAUSES
+
+    active_controls = [
+        i for i in all_controls
+        if i.get("fields", {}).get("Status") not in ("Withdrawn", "Superseded", "Under Review")
+        and str(i["id"]) not in affected_control_ids
+    ]
+
+    year_short = _today().strftime("%y")
+    created_gap_ids: list[str] = []
+
+    for clause_def in CLAUSES:
+        code     = clause_def["clause"]
+        standard = clause_def["standard"]
+
+        # Only care about clauses that had at least one of the affected controls
+        had_affected = any(
+            str(i["id"]) in affected_control_ids
+            and i.get("fields", {}).get("ISOClause", "").startswith(code)
+            for i in all_controls
+        )
+        if not had_affected:
+            continue
+
+        remaining_active = [
+            c for c in active_controls
+            if c.get("fields", {}).get("ISOClause", "").startswith(code)
+        ]
+        if remaining_active:
+            continue  # Clause still covered by at least one other control
+
+        # Check whether an open gap already exists for this clause
+        already_open = any(
+            i.get("fields", {}).get("Clause") == code
+            and i.get("fields", {}).get("Status") in ("Open", "In progress")
+            for i in existing_gaps
+        )
+        if already_open:
+            continue
+
+        std_key    = standard.replace(" ", "").replace("/", "")
+        gap_prefix = f"GAP-{std_key}-{year_short}-"
+        count      = sum(
+            1 for i in existing_gaps
+            if i.get("fields", {}).get("GapId", "").startswith(gap_prefix)
+        )
+        gap_id     = f"{gap_prefix}{count + 1:03d}"
+        target_date = (_today() + timedelta(days=30)).isoformat()
+
+        try:
+            await create_list_item(
+                LIST_IDS["gap_analysis"],
+                LIST_NAMES["gap_analysis"],
+                {
+                    "Title":        f"Coverage gap: {code} — {clause_def['title']}",
+                    "GapId":        gap_id,
+                    "GapKey":       f"{standard}|{code}|CoverageGap|{doc_code}",
+                    "Standard":     standard,
+                    "Clause":       code,
+                    "ClauseTitle":  clause_def["title"],
+                    "GapCategory":  "Coverage gap from document withdrawal",
+                    "Severity":     "Critical",
+                    "Finding": (
+                        f"Document {doc_code} was withdrawn. All controls covering clause "
+                        f"{code} ({clause_def['title']}) are now Under Review. "
+                        f"No active control coverage exists for this clause."
+                    ),
+                    "Impact": (
+                        f"Clause {code} of {standard} has no active controls. "
+                        f"Compliance posture for this clause is unconfirmed."
+                    ),
+                    "Status":      "Open",
+                    "TargetDate":  target_date,
+                    "WithdrawnDocumentCode": doc_code,
+                },
+            )
+            created_gap_ids.append(gap_id)
+            logger.info(f"Auto-created coverage gap {gap_id} for clause {code} after withdrawal of {doc_code}")
+        except Exception as exc:
+            logger.error(f"Failed to create coverage gap for clause {code}: {exc}")
+
+    return created_gap_ids
+
+
+async def withdraw_document(
+    item_id: str,
+    withdrawal_reason: str,
+    rationale: str,
+    replaced_by_code: Optional[str],
+    user: CurrentUser,
+) -> dict:
+    """
+    Full document withdrawal cascade per DOCUMENT_WITHDRAWAL_CASCADE_ANALYSIS.md.
+
+    Steps (all executed; errors collected but do not short-circuit):
+    1.  Validate inputs. Resolve document. Validate replaced_by_code exists if provided.
+    2.  Cancel open AI Review Queue items from this document.
+    3.  Flag Active/Blocked controls to Under Review with full provenance.
+    4.  Flag Pending/Submitted evidence items linked to those controls.
+    5.  Cancel in-progress Document Lifecycle entries; collect linked gap IDs.
+    6.  Re-open gaps linked to cancelled lifecycles.
+    7.  Note Compliance Calendar obligations referencing this document.
+    8.  Standards Map recalculation: auto-create Critical gaps for coverage loss.
+    9.  Mark the document as Withdrawn with full provenance.
+    10. Write Audit Log entry.
+
+    Returns a WithdrawalCascadeResult dict.
+    """
+    # ── Step 1: Validate ──────────────────────────────────────────────────────
+    if len(rationale.strip()) < 10:
+        raise ValueError("Rationale must be at least 10 characters.")
+
+    doc = await get_document(item_id)
+
+    if doc.status == "Withdrawn":
+        raise ValueError(f"Document {doc.document_code} is already withdrawn.")
+
+    if replaced_by_code:
+        replacement_docs = await get_documents()
+        replacement_codes = {d.document_code for d in replacement_docs}
+        if replaced_by_code.upper() not in replacement_codes:
+            raise ValueError(
+                f"Replacement document '{replaced_by_code}' not found in Document Register. "
+                f"Register the replacement document before withdrawing the original."
+            )
+
+    today          = _today().isoformat()
+    now_ts         = datetime.now(timezone.utc).isoformat()
+    errors:  list[str] = []
+    results: dict      = {
+        "document_code":              doc.document_code,
+        "withdrawal_reason":          withdrawal_reason,
+        "queue_items_cancelled":      [],
+        "controls_flagged":           [],
+        "evidence_items_flagged":     [],
+        "lifecycles_cancelled":       [],
+        "gaps_reopened":              [],
+        "obligations_flagged":        [],
+        "coverage_gaps_created":      [],
+        "errors":                     errors,
+    }
+
+    base_provenance = {
+        "WithdrawalReason":   withdrawal_reason,
+        "WithdrawnDate":      today,
+        "WithdrawnByEntraId": user.oid,
+        "WithdrawnByName":    user.name or user.oid,
+    }
+    if replaced_by_code:
+        base_provenance["ReplacedByCode"] = replaced_by_code.upper()
+
+    # ── Step 2: Cancel open queue items ───────────────────────────────────────
+    _open_q_statuses = {"Pending Review", "Pending Second Review", "Routed to Owner", "Second Review Requested"}
+    try:
+        queue_items = await get_list_items(LIST_IDS["ai_review_queue"], LIST_NAMES["ai_review_queue"])
+        for item in queue_items:
+            f = item.get("fields", {})
+            if (
+                f.get("SourceDocumentCode") == doc.document_code
+                and f.get("ReviewStatus") in _open_q_statuses
+            ):
+                try:
+                    await update_list_item(
+                        LIST_IDS["ai_review_queue"], LIST_NAMES["ai_review_queue"],
+                        str(item["id"]),
+                        {
+                            "ReviewStatus":      "Cancelled",
+                            "Decision":          "Cancelled — Source Document Withdrawn",
+                            "DecisionRationale": (
+                                f"Source document {doc.document_code} withdrawn on {today} "
+                                f"by {user.name or user.oid}. Reason: {withdrawal_reason}."
+                            ),
+                            "ReviewedByEntraId": user.oid,
+                        },
+                    )
+                    results["queue_items_cancelled"].append(str(item["id"]))
+                except Exception as exc:
+                    errors.append(f"Queue item {item['id']} cancel failed: {exc}")
+    except Exception as exc:
+        errors.append(f"Queue cancellation scan failed: {exc}")
+
+    # ── Step 3: Flag controls Under Review ────────────────────────────────────
+    affected_control_ids: set[str] = set()
+    all_controls: list[dict] = []
+    try:
+        all_controls = await get_list_items(LIST_IDS["control_register"], LIST_NAMES["control_register"])
+        for item in all_controls:
+            f = item.get("fields", {})
+            if (
+                f.get("SourceDocument") == doc.document_code
+                and f.get("Status") in ("Active", "Blocked")
+            ):
+                try:
+                    await update_list_item(
+                        LIST_IDS["control_register"], LIST_NAMES["control_register"],
+                        str(item["id"]),
+                        {
+                            "Status":                       "Under Review",
+                            "WithdrawalTrigger":            "Source document withdrawn",
+                            "SourceDocumentWithdrawnCode":  doc.document_code,
+                            "SourceDocumentWithdrawnDate":  today,
+                            **base_provenance,
+                        },
+                    )
+                    affected_control_ids.add(str(item["id"]))
+                    results["controls_flagged"].append(str(item["id"]))
+                except Exception as exc:
+                    errors.append(f"Control {item['id']} flag failed: {exc}")
+    except Exception as exc:
+        errors.append(f"Control register scan failed: {exc}")
+
+    # ── Step 4: Flag evidence items ───────────────────────────────────────────
+    try:
+        evidence_items = await get_list_items(LIST_IDS["evidence_tracker"], LIST_NAMES["evidence_tracker"])
+        for item in evidence_items:
+            f = item.get("fields", {})
+            if (
+                f.get("LinkedControlId") in affected_control_ids
+                and f.get("Status") in ("Pending", "Submitted")
+            ):
+                try:
+                    await update_list_item(
+                        LIST_IDS["evidence_tracker"], LIST_NAMES["evidence_tracker"],
+                        str(item["id"]),
+                        {
+                            "SourceControlUnderReview": True,
+                            "ReviewNote": (
+                                f"Linked control {f.get('LinkedControlId')} placed under review "
+                                f"on {today} — source document {doc.document_code} was withdrawn "
+                                f"by {user.name or user.oid}. "
+                                f"Evidence collection paused pending control confirmation."
+                            ),
+                        },
+                    )
+                    results["evidence_items_flagged"].append(str(item["id"]))
+                except Exception as exc:
+                    errors.append(f"Evidence item {item['id']} flag failed: {exc}")
+    except Exception as exc:
+        errors.append(f"Evidence tracker scan failed: {exc}")
+
+    # ── Step 5: Cancel active lifecycle entries ───────────────────────────────
+    collected_gap_ids: list[str] = []
+    _active_lc_stages = {"Review", "Sensitisation"}
+    try:
+        lifecycle_items = await get_list_items(LIST_IDS["document_lifecycle"], LIST_NAMES["document_lifecycle"])
+        for item in lifecycle_items:
+            f = item.get("fields", {})
+            if (
+                f.get("DocumentCode") == doc.document_code
+                and f.get("Stage") in _active_lc_stages
+            ):
+                try:
+                    await update_list_item(
+                        LIST_IDS["document_lifecycle"], LIST_NAMES["document_lifecycle"],
+                        str(item["id"]),
+                        {
+                            "Stage":           "Withdrawn",
+                            "WithdrawalReason": (
+                                f"Source document {doc.document_code} withdrawn by "
+                                f"{user.name or user.oid} on {today}. Reason: {withdrawal_reason}."
+                            ),
+                            "WithdrawnByEntraId": user.oid,
+                            "WithdrawnDate":   today,
+                            **({ "ReplacedByCode": replaced_by_code.upper() } if replaced_by_code else {}),
+                        },
+                    )
+                    results["lifecycles_cancelled"].append(str(item["id"]))
+                    gap_id = f.get("LinkedGapId")
+                    if gap_id:
+                        collected_gap_ids.append(gap_id)
+                except Exception as exc:
+                    errors.append(f"Lifecycle {item['id']} cancel failed: {exc}")
+    except Exception as exc:
+        errors.append(f"Lifecycle scan failed: {exc}")
+
+    # ── Step 6: Re-open linked gaps ───────────────────────────────────────────
+    if collected_gap_ids:
+        try:
+            gap_items = await get_list_items(LIST_IDS["gap_analysis"], LIST_NAMES["gap_analysis"])
+            gap_by_gap_id = {
+                i.get("fields", {}).get("GapId"): i
+                for i in gap_items
+                if i.get("fields", {}).get("GapId")
+            }
+            for gap_id in collected_gap_ids:
+                gap_item = gap_by_gap_id.get(gap_id)
+                if not gap_item:
+                    continue
+                prev_status = gap_item.get("fields", {}).get("Status", "In progress")
+                try:
+                    await update_list_item(
+                        LIST_IDS["gap_analysis"], LIST_NAMES["gap_analysis"],
+                        str(gap_item["id"]),
+                        {
+                            "Status":         "Open",
+                            "RemediationNote": (
+                                f"Remediation lifecycle cancelled on {today} — "
+                                f"source document {doc.document_code} was withdrawn by "
+                                f"{user.name or user.oid}. Reason: {withdrawal_reason}. "
+                                f"Remediation must be restarted or accepted as risk."
+                            ),
+                            "LastRemediationAttempt": (
+                                results["lifecycles_cancelled"][0]
+                                if results["lifecycles_cancelled"] else ""
+                            ),
+                            "PreviousStatus": prev_status,
+                        },
+                    )
+                    results["gaps_reopened"].append(gap_id)
+                except Exception as exc:
+                    errors.append(f"Gap {gap_id} re-open failed: {exc}")
+        except Exception as exc:
+            errors.append(f"Gap analysis scan failed: {exc}")
+
+    # ── Step 7: Note compliance obligations ───────────────────────────────────
+    try:
+        obligations = await get_list_items(LIST_IDS["compliance_calendar"], LIST_NAMES["compliance_calendar"])
+        for item in obligations:
+            f = item.get("fields", {})
+            if f.get("SourceDocumentCode") == doc.document_code:
+                try:
+                    await update_list_item(
+                        LIST_IDS["compliance_calendar"], LIST_NAMES["compliance_calendar"],
+                        str(item["id"]),
+                        {
+                            "SourceDocumentNote": (
+                                f"Source document {doc.document_code} was withdrawn on {today} "
+                                f"by {user.name or user.oid}. Reason: {withdrawal_reason}. "
+                                f"Verify whether this obligation is still applicable."
+                            ),
+                            "SourceDocumentWithdrawnDate": today,
+                        },
+                    )
+                    results["obligations_flagged"].append(str(item["id"]))
+                except Exception as exc:
+                    errors.append(f"Obligation {item['id']} note failed: {exc}")
+    except Exception as exc:
+        errors.append(f"Compliance calendar scan failed: {exc}")
+
+    # ── Step 8: Auto-create coverage gap findings ─────────────────────────────
+    if affected_control_ids:
+        try:
+            existing_gaps = await get_list_items(LIST_IDS["gap_analysis"], LIST_NAMES["gap_analysis"])
+            created = await _auto_create_coverage_gaps(
+                affected_control_ids=affected_control_ids,
+                all_controls=all_controls,
+                existing_gaps=existing_gaps,
+                doc_code=doc.document_code,
+                today=today,
+                user=user,
+            )
+            results["coverage_gaps_created"] = created
+        except Exception as exc:
+            errors.append(f"Coverage gap creation failed: {exc}")
+
+    # ── Step 9: Mark document Withdrawn ───────────────────────────────────────
+    await update_list_item(
+        LIST_IDS["document_register"], LIST_NAMES["document_register"],
+        item_id,
+        {
+            DOC_FIELDS["status"]:         "Withdrawn",
+            DOC_FIELDS["withdrawal_reason"]: withdrawal_reason,
+            DOC_FIELDS["withdrawn_date"]:    today,
+            DOC_FIELDS["withdrawn_by_oid"]:  user.oid,
+            DOC_FIELDS["withdrawn_by_name"]: user.name or user.oid,
+            DOC_FIELDS["withdrawal_note"]:   rationale,
+            **({ DOC_FIELDS["replaced_by_code"]: replaced_by_code.upper() } if replaced_by_code else {}),
+        },
+    )
+
+    # ── Step 10: Audit Log ────────────────────────────────────────────────────
+    cascade_summary = (
+        f"{len(results['queue_items_cancelled'])} queue items cancelled | "
+        f"{len(results['controls_flagged'])} controls flagged Under Review | "
+        f"{len(results['evidence_items_flagged'])} evidence items flagged | "
+        f"{len(results['lifecycles_cancelled'])} lifecycles cancelled | "
+        f"{len(results['gaps_reopened'])} gaps re-opened | "
+        f"{len(results['obligations_flagged'])} obligations noted | "
+        f"{len(results['coverage_gaps_created'])} coverage gaps created"
+    )
+    if errors:
+        cascade_summary += f" | ERRORS: {len(errors)}"
+
+    try:
+        await create_list_item(
+            LIST_IDS["audit_log"], LIST_NAMES["audit_log"],
+            {
+                "Title":             f"Document Withdrawn — {doc.document_code}",
+                "Action":            "Document Withdrawn",
+                "DocumentCode":      doc.document_code,
+                "DocumentTitle":     doc.title,
+                "WithdrawalReason":  withdrawal_reason,
+                "WithdrawnByEntraId": user.oid,
+                "WithdrawnByName":   user.name or user.oid,
+                "Timestamp":         now_ts,
+                "ReplacedByCode":    replaced_by_code.upper() if replaced_by_code else "",
+                "CascadeSummary":    cascade_summary,
+                "CascadeErrors":     "; ".join(errors) if errors else "",
+                "Rationale":         rationale,
+            },
+        )
+    except Exception as exc:
+        logger.error(f"Audit log write failed for withdrawal of {doc.document_code}: {exc}")
+
+    results["cascade_summary"] = cascade_summary
+    logger.info(f"Document {doc.document_code} withdrawn by {user.oid}. {cascade_summary}")
+    return results
 
 
 # =============================================================================
