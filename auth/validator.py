@@ -80,7 +80,13 @@ async def _find_signing_key(token: str, jwks: dict) -> str:
     If the key is not found, clears the cache, fetches fresh JWKS, and retries once.
     Microsoft rotates keys periodically — a stale cache causes this failure.
     """
-    unverified_header = jwt.get_unverified_header(token)
+    try:
+        unverified_header = jwt.get_unverified_header(token)
+    except JWTError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=f"Invalid token format: {exc}",
+        )
     kid = unverified_header.get("kid")
 
     def _search(keys):
