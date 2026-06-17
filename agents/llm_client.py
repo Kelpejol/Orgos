@@ -16,6 +16,7 @@
 #   text = await llm_generate(prompt, tier="heavy", max_tokens=2000)
 # =============================================================================
 
+import asyncio
 import logging
 from typing import Optional
 
@@ -191,15 +192,36 @@ async def _runpod_generate(
             resp.raise_for_status()
             data = resp.json()
 
-        status = data.get("status")
-        if status and status != "COMPLETED":
+            status = data.get("status")
+
+            # Completed inline — common when worker is warm
+            if not status or status == "COMPLETED":
+                return _extract_runpod_text(data)
+
+            # runsync sync-timeout hit — job is queued/running, poll until done
+            job_id = data.get("id")
+            if status in ("IN_PROGRESS", "IN_QUEUE") and job_id:
+                poll_url = f"{_RUNPOD_BASE}/{endpoint_id}/status/{job_id}"
+                logger.info(f"RunPod {tier} job {job_id} is {status} — polling")
+                for _ in range(120):  # up to 10 min (120 × 5s)
+                    await asyncio.sleep(5)
+                    poll_resp = await client.get(poll_url, headers=headers)
+                    poll_resp.raise_for_status()
+                    poll_data = poll_resp.json()
+                    poll_status = poll_data.get("status")
+                    if poll_status == "COMPLETED":
+                        return _extract_runpod_text(poll_data)
+                    if poll_status in ("FAILED", "CANCELLED", "TIMED_OUT"):
+                        logger.warning(f"RunPod {tier} job {job_id} ended with {poll_status}")
+                        return ""
+                logger.warning(f"RunPod {tier} job {job_id} did not complete after 10 min of polling")
+                return ""
+
             logger.warning(
                 f"RunPod {tier} ({endpoint_id}) status={status}: "
                 f"{data.get('error', '')}"
             )
             return ""
-
-        return _extract_runpod_text(data)
 
     except Exception as exc:
         logger.warning(f"RunPod {tier} ({endpoint_id}) generate failed: {exc}")
