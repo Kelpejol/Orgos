@@ -402,8 +402,8 @@ async def _get_document_text(doc: dict) -> str:
         file_bytes, filename = await download_file_from_sharepoint(url)
         name = (filename or "").lower()
         if name.endswith(".pdf"):
-            return extract_text_from_pdf(file_bytes)
-        return extract_text_from_docx(file_bytes)
+            return await extract_text_from_pdf(file_bytes)
+        return await extract_text_from_docx(file_bytes)
     except Exception as exc:
         logger.warning(f"Could not extract document text from SharePoint: {exc}")
         return ""
