@@ -270,6 +270,21 @@ async def _zone1_accept_cascade(item: dict, user: CurrentUser, overrides: dict) 
     except Exception as exc:
         logger.error(f"Audit Log cascade failed: {exc}")
 
+    # 4. NL Search index — embed control for semantic search (non-blocking)
+    if cr_id and control_stmt:
+        try:
+            from agents.nl_search.vector_store import embed_and_store_control
+            embed_meta = {
+                "document_code": item.get("SourceDocumentCode", ""),
+                "iso_clause":    iso_clause or "",
+                "control_type":  control_type or "",
+                "owner_oid":     user.oid,
+            }
+            await embed_and_store_control(cr_id, control_stmt, embed_meta)
+            created.append("NL Search: indexed")
+        except Exception as exc:
+            logger.warning(f"NL Search index step failed (non-fatal): {exc}")
+
     return " | ".join(created) if created else "Cascade failed — check logs"
 
 

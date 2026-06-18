@@ -77,7 +77,17 @@ class Settings(BaseSettings):
     runpod_api_key: str = Field(default="")
     runpod_light_endpoint_id: str = Field(default="")
     runpod_heavy_endpoint_id: str = Field(default="")
+    runpod_embed_endpoint_id: str = Field(default="")   # BGE-M3 embedding endpoint
     runpod_timeout: int = Field(default=120)
+
+    # ── Embedding model ───────────────────────────────────────────────────
+    # RunPod: BGE-M3 via runpod_embed_endpoint_id (when LLM_PROVIDER=runpod)
+    # Ollama: nomic-embed-text (when LLM_PROVIDER=ollama)
+    ollama_embed_model: str = Field(default="nomic-embed-text")
+
+    # ── NL Search ─────────────────────────────────────────────────────────
+    procedural_steps_list_id: str = Field(default="placeholder")
+    chroma_persist_dir: str = Field(default="./chroma_db")
 
     # ── Azure Document Intelligence — OCR fallback for scanned documents ──
     azure_document_intelligence_endpoint: str = Field(default="")

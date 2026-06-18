@@ -11,6 +11,7 @@ import { useIsAuthenticated, useMsal, useAccount } from "@azure/msal-react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { loginRequest } from "../../authConfig.js";
 import { lifecycleApi } from "../../api/grcApi.js";
+import { useAiSuggestion } from "../../hooks/useAiSuggestion.js";
 
 // =============================================================================
 //  Helpers
@@ -189,8 +190,11 @@ export default function LifecycleApprove() {
   const [showRejectModal, setShowRejectModal] = useState(false);
   const [showApproveConfirm, setShowApproveConfirm] = useState(false);
   const [approveNotes, setApproveNotes] = useState("");
-  const [aiAssessment, setAiAssessment] = useState(null);
-  const [aiLoading, setAiLoading] = useState(false);
+  const aiAssessmentHook = useAiSuggestion(
+    id,
+    'ai_assessment',
+    () => lifecycleApi.aiAssessment(id).then(r => r.data),
+  );
 
   const { data: doc, isLoading, error } = useQuery({
     queryKey: ["lifecycle-approve", id],
@@ -216,17 +220,8 @@ export default function LifecycleApprove() {
     },
   });
 
-  const loadAiAssessment = async () => {
-    setAiLoading(true);
-    try {
-      const resp = await lifecycleApi.aiAssessment(id);
-      setAiAssessment(resp.data);
-    } catch (err) {
-      setAiAssessment({ error: "AI assessment unavailable" });
-    } finally {
-      setAiLoading(false);
-    }
-  };
+  const loadAiAssessment = () =>
+    aiAssessmentHook.hasSuggestion ? aiAssessmentHook.regenerate() : aiAssessmentHook.generate();
 
   if (!isAuthenticated) return <LoginGate />;
 
@@ -447,7 +442,7 @@ export default function LifecycleApprove() {
             padding: 20, marginBottom: 16,
           }}>
             <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>AI assessment</div>
-            {!aiAssessment && !aiLoading && (
+            {!aiAssessmentHook.hasSuggestion && !aiAssessmentHook.loading && (
               <>
                 <div style={{ fontSize: 12, color: "#666", lineHeight: 1.6, marginBottom: 12 }}>
                   Get an AI analysis of whether the document appears to address
@@ -465,44 +460,47 @@ export default function LifecycleApprove() {
                 </button>
               </>
             )}
-            {aiLoading && (
+            {aiAssessmentHook.loading && (
               <div style={{ textAlign: "center", padding: "20px 0", color: "#888", fontSize: 12 }}>
                 Analysing document…
               </div>
             )}
-            {aiAssessment && !aiAssessment.error && (
+            {aiAssessmentHook.hasSuggestion && !aiAssessmentHook.suggestion?.error && (
               <div>
                 <div style={{
                   display: "flex", gap: 8, alignItems: "center", marginBottom: 12,
                 }}>
                   <span style={{
                     fontSize: 11, padding: "2px 8px", borderRadius: 4,
-                    background: aiAssessment.assessment?.ready_for_approval ? "#E1F5EE" : "#FCEBEB",
-                    color: aiAssessment.assessment?.ready_for_approval ? "#085041" : "#791F1F",
-                    border: `0.5px solid ${aiAssessment.assessment?.ready_for_approval ? "#5DCAA5" : "#F09595"}`,
+                    background: aiAssessmentHook.suggestion?.assessment?.ready_for_approval ? "#E1F5EE" : "#FCEBEB",
+                    color: aiAssessmentHook.suggestion?.assessment?.ready_for_approval ? "#085041" : "#791F1F",
+                    border: `0.5px solid ${aiAssessmentHook.suggestion?.assessment?.ready_for_approval ? "#5DCAA5" : "#F09595"}`,
                   }}>
-                    {aiAssessment.assessment?.ready_for_approval ? "Ready for approval" : "Not yet ready"}
+                    {aiAssessmentHook.suggestion?.assessment?.ready_for_approval ? "Ready for approval" : "Not yet ready"}
                   </span>
-                  {aiAssessment.assessment?.confidence && (
+                  {aiAssessmentHook.suggestion?.assessment?.confidence && (
                     <span style={{ fontSize: 11, color: "#888" }}>
-                      {aiAssessment.assessment.confidence} confidence
+                      {aiAssessmentHook.suggestion.assessment.confidence} confidence
                     </span>
                   )}
+                  {aiAssessmentHook.isFromCache && (
+                    <span style={{ fontSize: 10, color: "#9ca3af" }}>(cached)</span>
+                  )}
                 </div>
-                {aiAssessment.assessment?.approver_note && (
+                {aiAssessmentHook.suggestion?.assessment?.approver_note && (
                   <div style={{
                     fontSize: 12, color: "#333", lineHeight: 1.6, marginBottom: 10,
                     padding: "10px 12px", background: "#F8F8F8", borderRadius: 8,
                   }}>
-                    {aiAssessment.assessment.approver_note}
+                    {aiAssessmentHook.suggestion.assessment.approver_note}
                   </div>
                 )}
-                {aiAssessment.assessment?.unresolved_concerns?.length > 0 && (
+                {aiAssessmentHook.suggestion?.assessment?.unresolved_concerns?.length > 0 && (
                   <div style={{ marginBottom: 10 }}>
                     <div style={{ fontSize: 11, fontWeight: 600, color: "#791F1F", marginBottom: 6 }}>
                       Unresolved concerns
                     </div>
-                    {aiAssessment.assessment.unresolved_concerns.map((c, i) => (
+                    {aiAssessmentHook.suggestion.assessment.unresolved_concerns.map((c, i) => (
                       <div key={i} style={{
                         fontSize: 11, color: "#791F1F", padding: "3px 0",
                         borderBottom: "0.5px solid #F0F0F0",
@@ -523,9 +521,9 @@ export default function LifecycleApprove() {
                 </button>
               </div>
             )}
-            {aiAssessment?.error && (
+            {aiAssessmentHook.suggestion?.error && (
               <div style={{ fontSize: 12, color: "#888" }}>
-                {aiAssessment.error}
+                {aiAssessmentHook.suggestion.error}
                 <button
                   onClick={loadAiAssessment}
                   style={{

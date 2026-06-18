@@ -320,6 +320,22 @@ class ExtractionRequest(BaseModel):
     write_to_sharepoint:  bool = False
 
 
+class ProceduralStep(BaseModel):
+    """
+    A single how-to step extracted from a procedure document.
+    Written to the Procedural Steps Index (SharePoint list) and ChromaDB.
+    Does NOT go through review zones — informational content from approved documents.
+    """
+    process_name:       str
+    step_number:        int
+    step_text:          str
+    section_ref:        Optional[str] = None
+    roles_involved:     Optional[str] = None
+    forms_referenced:   Optional[str] = None
+    systems_referenced: Optional[str] = None
+    keywords:           Optional[str] = None
+
+
 class ExtractionResponse(BaseModel):
     """Returned by both extraction endpoints."""
     source_document_code: str
@@ -330,3 +346,4 @@ class ExtractionResponse(BaseModel):
     written_to_sharepoint: bool
     skipped_reason:       Optional[str] = None  # Set when document is a non-extraction target
     items:                list[dict]             # Mixed types depending on document_type
+    procedural_steps_indexed: int = 0           # Count of procedural steps indexed in ChromaDB

@@ -16,6 +16,8 @@ import { AlertProvider } from "./components/shared/AlertModal.jsx";
 import AccessDenied from "./pages/shared/AccessDenied.jsx";
 import LifecycleFeedback from "./pages/LifecycleFeedback/index.jsx";
 import LifecycleApprove from "./pages/LifecycleApprove/index.jsx";
+import ChatButton from "./components/chat/ChatButton.jsx";
+import ChatPanel from "./components/chat/ChatPanel.jsx";
 
 // Tier 1 — wired pages
 import DocumentRegister from "./pages/DocumentRegister/index.jsx";
@@ -489,6 +491,9 @@ function OrgOSShell() {
 
 // ── Root — wires URL routes then falls back to the shell ─────────────────────
 export default function OrgOS() {
+  const [chatOpen, setChatOpen] = useState(false);
+  const isAuthenticated = useIsAuthenticated();
+
   return (
     <AlertProvider>
       <Routes>
@@ -498,6 +503,14 @@ export default function OrgOS() {
         {/* All other paths → full app shell with sidebar */}
         <Route path="*" element={<OrgOSShell />} />
       </Routes>
+
+      {/* Global AI chat — visible on all pages when authenticated */}
+      {isAuthenticated && (
+        <>
+          <ChatButton onClick={() => setChatOpen(true)} />
+          <ChatPanel isOpen={chatOpen} onClose={() => setChatOpen(false)} />
+        </>
+      )}
     </AlertProvider>
   );
 }

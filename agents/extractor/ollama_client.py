@@ -283,3 +283,118 @@ def _parse_response(raw: str, doc_code: str) -> list[dict]:
 async def check_ollama_connectivity() -> dict:
     """Delegates to the central LLM client health check (Ollama or RunPod)."""
     return await check_llm_connectivity()
+
+
+# =============================================================================
+#  Procedural step extraction (second output stream for Policy/PRO documents)
+# =============================================================================
+
+_PROCEDURAL_PROMPT = """You are reading a policy or procedure document. Extract procedural HOW-TO content only.
+
+You are looking for: numbered workflow steps, approval chains, form references, timelines,
+contact points, escalation paths, threshold criteria, and system references.
+
+DO NOT extract: policy statements with SHALL/MUST (those are controls, not procedures),
+definitions, purpose sections, revision history, or scope statements.
+
+For each distinct process or workflow you find, return one object per step:
+  "process": name of the process (e.g. "Asset acquisition", "Leave application")
+  "section": section number in the document (e.g. "8.4") or null
+  "step": integer step number within this process
+  "text": the actual instruction for this step
+  "roles": comma-separated roles involved in this step, or null
+  "forms": any form names or codes mentioned, or null
+  "systems": any systems mentioned (AAMP, SeamlessHR, etc.), or null
+  "tags": 3-5 comma-separated keywords for search (e.g. "laptop, procurement, asset")
+
+Return a JSON array of step objects. If no procedural content exists, return [].
+Return only the JSON array, nothing else."""
+
+
+def _build_procedural_prompt(text: str, doc_code: str) -> str:
+    if len(text) > MAX_CHUNK_CHARS:
+        text = text[:MAX_CHUNK_CHARS]
+    return (
+        f"{_PROCEDURAL_PROMPT}\n\n"
+        f"Document: {doc_code}\n\n"
+        f"===BEGIN===\n{text}\n===END===\n\n"
+        f"JSON array:"
+    )
+
+
+async def extract_procedural_steps(
+    document_text: str,
+    doc_code: str,
+) -> list[dict]:
+    """
+    Extract procedural how-to steps from a policy/procedure document.
+    Returns normalised step dicts ready for procedures_service.write_procedural_steps().
+    Fails soft — returns [] on any error.
+    """
+    prompt = _build_procedural_prompt(document_text, doc_code)
+
+    logger.info(
+        f"Procedural extraction | {doc_code} | "
+        f"provider={settings.llm_provider} | chars={len(document_text)}"
+    )
+
+    raw = await llm_generate(
+        prompt,
+        tier="light",
+        max_tokens=3000,
+        temperature=0.1,
+        top_p=0.9,
+        json_mode=True,
+    )
+    return _parse_procedural_response(raw, doc_code)
+
+
+def _parse_procedural_response(raw: str, doc_code: str) -> list[dict]:
+    cleaned = raw.strip()
+    if cleaned.startswith("```"):
+        lines   = cleaned.split("\n")
+        cleaned = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+
+    if cleaned.startswith("{"):
+        try:
+            wrapper = json.loads(cleaned)
+            for k in ("steps", "items", "procedures", "results"):
+                if k in wrapper and isinstance(wrapper[k], list):
+                    cleaned = json.dumps(wrapper[k])
+                    break
+            else:
+                cleaned = json.dumps([wrapper])
+        except json.JSONDecodeError:
+            pass
+
+    try:
+        parsed = json.loads(cleaned)
+    except json.JSONDecodeError:
+        logger.warning(f"{doc_code}: procedural JSON parse failed | raw[:200]: {raw[:200]}")
+        return []
+
+    if isinstance(parsed, dict):
+        parsed = [parsed]
+    if not isinstance(parsed, list):
+        return []
+
+    steps = []
+    for item in parsed:
+        if not isinstance(item, dict):
+            continue
+        step_text = str(item.get("text") or item.get("step_text") or "").strip()
+        if not step_text or len(step_text) < 10:
+            continue
+        steps.append({
+            "process_name":      str(item.get("process") or item.get("process_name") or "").strip(),
+            "section_ref":       str(item.get("section") or item.get("section_ref") or "").strip(),
+            "step_number":       int(item.get("step") or item.get("step_number") or 0),
+            "step_text":         step_text,
+            "roles_involved":    str(item.get("roles") or item.get("roles_involved") or "").strip(),
+            "forms_referenced":  str(item.get("forms") or item.get("forms_referenced") or "").strip(),
+            "systems_referenced":str(item.get("systems") or item.get("systems_referenced") or "").strip(),
+            "keywords":          str(item.get("tags") or item.get("keywords") or "").strip(),
+        })
+
+    logger.info(f"{doc_code}: {len(steps)} procedural steps parsed")
+    return steps

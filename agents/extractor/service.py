@@ -616,6 +616,86 @@ async def _write_to_queue(
 #  Public API
 # =============================================================================
 
+_PROCEDURAL_DOC_TYPES = {DocumentType.POLICY}
+
+
+async def _run_procedural_extraction(
+    text: str,
+    doc_code: str,
+    doc_type: DocumentType,
+    write_to_sharepoint: bool,
+    web_url: str,
+) -> int:
+    """
+    Extract procedural steps from a Policy document and index them.
+    Returns count of steps written. Fires after the control extraction path.
+    Always fails soft — never raises, never blocks the control extraction response.
+    """
+    if doc_type not in _PROCEDURAL_DOC_TYPES:
+        return 0
+
+    try:
+        from agents.extractor.ollama_client import extract_procedural_steps
+        from agents.nl_search.procedures_service import write_procedural_steps
+        from agents.nl_search.vector_store import (
+            delete_procedural_steps_by_document,
+            embed_and_store_procedural_step,
+        )
+
+        steps = await extract_procedural_steps(text, doc_code)
+        if not steps:
+            logger.info(f"{doc_code}: no procedural steps extracted")
+            return 0
+
+        # Remove stale index entries before re-indexing
+        await delete_procedural_steps_by_document(doc_code)
+
+        steps_indexed = 0
+        if write_to_sharepoint:
+            written = await write_procedural_steps(steps, doc_code, doc_link=web_url)
+            # write_procedural_steps attaches "sp_item_id" to each step dict
+            for step in steps:
+                step_id = step.get("sp_item_id") or f"{doc_code}-step-{step.get('step_number', 0)}"
+                metadata = {
+                    "document_code":  doc_code,
+                    "document_title": step.get("document_title", doc_code),
+                    "process_name":   step.get("process_name", ""),
+                    "step_number":    str(step.get("step_number", 0)),
+                    "section_ref":    step.get("section_ref", ""),
+                    "roles_involved": step.get("roles_involved", ""),
+                    "forms_referenced": step.get("forms_referenced", ""),
+                }
+                ok = await embed_and_store_procedural_step(
+                    step_id, step["step_text"], metadata
+                )
+                if ok:
+                    steps_indexed += 1
+            logger.info(
+                f"{doc_code}: {written} procedural steps written to SharePoint, "
+                f"{steps_indexed} embedded"
+            )
+        else:
+            # Not writing to SharePoint — still embed using a synthetic ID
+            for step in steps:
+                step_id = f"{doc_code}-step-{step.get('step_number', 0)}"
+                metadata = {
+                    "document_code": doc_code,
+                    "process_name":  step.get("process_name", ""),
+                    "step_number":   str(step.get("step_number", 0)),
+                }
+                ok = await embed_and_store_procedural_step(
+                    step_id, step["step_text"], metadata
+                )
+                if ok:
+                    steps_indexed += 1
+
+        return steps_indexed
+
+    except Exception as exc:
+        logger.warning(f"{doc_code}: procedural extraction failed (non-fatal): {exc}")
+        return 0
+
+
 async def run_extraction_from_text(
     text: str,
     doc_code: str,
@@ -644,6 +724,7 @@ async def run_extraction_from_text(
             written_to_sharepoint=False,
             skipped_reason=f"Type '{doc_type.value}' is not an extraction target",
             items=[],
+            procedural_steps_indexed=0,
         )
 
     raw_items = await run_extraction(text, doc_code, doc_type)
@@ -662,6 +743,11 @@ async def run_extraction_from_text(
             except Exception as exc:
                 logger.warning(f"Automatic classifier run after extraction failed for {doc_code}: {exc}")
 
+    # Second output stream: procedural steps (Policy documents only, non-blocking)
+    steps_indexed = await _run_procedural_extraction(
+        text, doc_code, doc_type, write_to_sharepoint, web_url
+    )
+
     return ExtractionResponse(
         source_document_code=doc_code,
         document_type=doc_type.value,
@@ -670,6 +756,7 @@ async def run_extraction_from_text(
         deficient_count=deficient,
         written_to_sharepoint=written > 0,
         items=items,
+        procedural_steps_indexed=steps_indexed,
     )
 
 

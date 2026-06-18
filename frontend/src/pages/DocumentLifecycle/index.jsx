@@ -15,6 +15,7 @@ import { Field } from "../../components/shared/Forms.jsx";
 import { LoadingState, ErrorState, EmptyState } from "../../components/shared/LoadingState.jsx";
 import UserSearchField from "../../components/shared/UserSearchField.jsx";
 import apiClient from "../../api/grcApi.js";
+import { useAiSuggestion } from "../../hooks/useAiSuggestion.js";
 
 // =============================================================================
 //  API layer
@@ -1184,8 +1185,11 @@ const LifecycleCard = ({
   const [uploadCdiResult, setUploadCdiResult] = useState(null);
   const [downloading,     setDownloading]     = useState(false);
   const [downloadError,   setDownloadError]   = useState("");
-  const [fixingAi,        setFixingAi]        = useState(false);
-  const [aiFixResult,     setAiFixResult]     = useState(null);
+  const cdiFix = useAiSuggestion(
+    doc.id,
+    'cdi_fix',
+    () => apiClient.post(`/api/v1/lifecycle/documents/${doc.id}/cdi-fix-suggestions`).then(r => r.data),
+  );
   const [claiming,        setClaiming]        = useState(false);
   const [claimError,      setClaimError]      = useState("");
   const qc = useQueryClient();
@@ -1211,18 +1215,7 @@ const LifecycleCard = ({
   const dlExpired  = dlDeadline && dlStatus.expired;
   const dlDaysLeft = dlDeadline ? dlStatus.daysLeft : 0;
 
-  const handleGetCdiFix = async () => {
-    setFixingAi(true);
-    setAiFixResult(null);
-    try {
-      const resp = await apiClient.post(`/api/v1/lifecycle/documents/${doc.id}/cdi-fix-suggestions`);
-      setAiFixResult(resp.data);
-    } catch (err) {
-      setAiFixResult({ error: err.response?.data?.detail || "AI fix suggestions unavailable." });
-    } finally {
-      setFixingAi(false);
-    }
-  };
+  const handleGetCdiFix = () => cdiFix.hasSuggestion ? cdiFix.regenerate() : cdiFix.generate();
 
   let cdiCount = 0;
   if (doc.CDIFailures) {
@@ -1233,7 +1226,7 @@ const LifecycleCard = ({
   }
 
   const feedbackEntries = parseFeedback(doc.SensitisationFeedback);
-  const aiFixSuggestions = normalizeCdiSuggestions(aiFixResult);
+  const aiFixSuggestions = normalizeCdiSuggestions(cdiFix.suggestion);
   const stakeholderCount = (doc.Stakeholders || []).length;
   const hasStakeholders = stakeholderCount > 0;
  
@@ -1370,13 +1363,21 @@ const LifecycleCard = ({
       )}
 
       {/* AI fix suggestions panel */}
-      {aiFixResult && !aiFixResult.error && (
+      {cdiFix.hasSuggestion && !cdiFix.suggestion?.error && (
         <div style={{
           padding: "10px 12px", background: "#F0F4FF", borderRadius: 8,
           border: "1px solid #AFA9EC", marginBottom: 8, fontSize: 11,
         }}>
-          <div style={{ fontWeight: 600, color: "#3C3489", marginBottom: 6 }}>
-            AI fix suggestions
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+            <div style={{ fontWeight: 600, color: "#3C3489" }}>
+              AI fix suggestions
+            </div>
+            {cdiFix.generatedAt && (
+              <span style={{ fontSize: 9, color: "#9ca3af" }}>
+                {new Date(cdiFix.generatedAt).toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit" })}
+                {cdiFix.isFromCache ? " (cached)" : ""}
+              </span>
+            )}
           </div>
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             {aiFixSuggestions.map((s, i) => (
@@ -1397,17 +1398,12 @@ const LifecycleCard = ({
               </div>
             )}
           </div>
-          <button onClick={() => setAiFixResult(null)}
-            style={{ fontSize: 10, color: "#888", background: "none", border: "none",
-                     cursor: "pointer", padding: "4px 0 0", textDecoration: "underline" }}>
-            Dismiss
-          </button>
         </div>
       )}
-      {aiFixResult?.error && (
+      {cdiFix.suggestion?.error && (
         <div style={{ padding: "6px 10px", background: "#FCEBEB", borderRadius: 6,
                       fontSize: 11, color: "#791F1F", marginBottom: 8 }}>
-          {aiFixResult.error}
+          {cdiFix.suggestion.error}
         </div>
       )}
 
@@ -1649,13 +1645,13 @@ const LifecycleCard = ({
               )}
               {/* Fix with AI — only in Review when CDI failures exist */}
               {isReview && cdiCount > 0 && (
-                <button onClick={handleGetCdiFix} disabled={fixingAi} style={{
+                <button onClick={handleGetCdiFix} disabled={cdiFix.loading} style={{
                   padding: "7px", fontSize: 11, borderRadius: 7,
-                  border: "1.5px solid #AFA9EC", background: fixingAi ? "#F0F0F0" : "#EEEDFE",
-                  color: fixingAi ? "#999" : "#3C3489",
-                  cursor: fixingAi ? "not-allowed" : "pointer", fontWeight: 500,
+                  border: "1.5px solid #AFA9EC", background: cdiFix.loading ? "#F0F0F0" : "#EEEDFE",
+                  color: cdiFix.loading ? "#999" : "#3C3489",
+                  cursor: cdiFix.loading ? "not-allowed" : "pointer", fontWeight: 500,
                 }}>
-                  {fixingAi ? "Thinking..." : "Fix with AI"}
+                  {cdiFix.loading ? "Thinking..." : cdiFix.hasSuggestion ? "Refresh AI fix" : "Fix with AI"}
                 </button>
               )}
               {/* Reassign */}

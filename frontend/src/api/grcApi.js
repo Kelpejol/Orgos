@@ -264,6 +264,38 @@ export const healthApi = {
 export default apiClient;
 
 // =============================================================================
+//  NL Search (chatbot backend)
+// =============================================================================
+
+export const nlSearchApi = {
+  /**
+   * Send a question to the dual-mode NL Search pipeline.
+   * @param {string} question
+   * @param {string|null} sessionId  — informational, stored by frontend in IndexedDB
+   * @returns {Promise<{mode, answer, sources, compliance_data, procedural_data, intent}>}
+   */
+  query: (question, sessionId = null) =>
+    apiClient
+      .post('/api/v1/nl-search/query', { question, session_id: sessionId })
+      .then(r => r.data),
+
+  /**
+   * Health check — ChromaDB collections + embed model status.
+   * No auth required.
+   */
+  health: () =>
+    axios.get(`${BASE_URL}/api/v1/nl-search/health`).then(r => r.data),
+
+  /**
+   * Trigger a full index rebuild (Compliance Lead only).
+   */
+  rebuildIndex: () =>
+    apiClient
+      .post('/api/v1/nl-search/index/rebuild', { confirm: true })
+      .then(r => r.data),
+};
+
+// =============================================================================
 //  Extractor Agent
 // =============================================================================
 
