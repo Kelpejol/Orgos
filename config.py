@@ -88,6 +88,10 @@ class Settings(BaseSettings):
     # ── NL Search ─────────────────────────────────────────────────────────
     procedural_steps_list_id: str = Field(default="placeholder")
     chroma_persist_dir: str = Field(default="./chroma_db")
+    # Custom GPU embed endpoint — takes priority over RunPod and Ollama
+    # POST {embed_api_url} with {"text": "..."}, expects {"embedding": [...]}
+    embed_api_url: str = Field(default="")
+    inference_api_key: str = Field(default="")
 
     # ── Azure Document Intelligence — OCR fallback for scanned documents ──
     azure_document_intelligence_endpoint: str = Field(default="")

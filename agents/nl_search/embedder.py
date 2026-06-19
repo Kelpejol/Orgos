@@ -29,6 +29,8 @@ EMBED_DIM_NOMIC = 768
 
 def get_embed_dim() -> int:
     """Return the embedding dimension for the currently configured model."""
+    if settings.embed_api_url:
+        return EMBED_DIM_BGE_M3  # gpu.idhub.ng serves BGE-M3 (1024-dim)
     if settings.llm_provider == "runpod" and settings.runpod_embed_endpoint_id:
         return EMBED_DIM_BGE_M3
     return EMBED_DIM_NOMIC
@@ -39,11 +41,18 @@ async def get_embedding(text: str) -> Optional[list[float]]:
     Embed a single text string. Returns a float list, or None on failure.
     Caller must handle None gracefully — embedding failure must not crash
     the Zone 1 cascade or the extractor pipeline.
+
+    Provider priority:
+      1. Custom GPU endpoint (embed_api_url set)
+      2. RunPod BGE-M3
+      3. Ollama nomic-embed-text (local fallback)
     """
     if not text or not text.strip():
         logger.warning("embed: empty text, skipping")
         return None
 
+    if settings.embed_api_url:
+        return await _custom_embed(text)
     if settings.llm_provider == "runpod" and settings.runpod_embed_endpoint_id:
         return await _runpod_embed(text)
     return await _ollama_embed(text)
@@ -59,6 +68,37 @@ async def get_embeddings_batch(texts: list[str]) -> list[Optional[list[float]]]:
         vec = await get_embedding(text)
         results.append(vec)
     return results
+
+
+# =============================================================================
+#  Custom GPU endpoint (gpu.idhub.ng)
+#  POST {"text": "..."} → {"embedding": [float, ...]}
+# =============================================================================
+
+async def _custom_embed(text: str) -> Optional[list[float]]:
+    headers = {
+        "Authorization": f"Bearer {settings.inference_api_key}",
+        "Content-Type":  "application/json",
+    }
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10.0)) as client:
+            resp = await client.post(
+                settings.embed_api_url,
+                headers=headers,
+                json={"text": text},
+            )
+            resp.raise_for_status()
+            data = resp.json()
+
+        embedding = data.get("embedding")
+        if not embedding or not isinstance(embedding, list):
+            logger.warning(f"Custom embed: unexpected response shape: {data}")
+            return None
+        return [float(v) for v in embedding]
+
+    except Exception as exc:
+        logger.warning(f"Custom embed failed: {exc}")
+        return None
 
 
 # =============================================================================
@@ -156,16 +196,19 @@ async def check_embed_connectivity() -> dict:
     """Health check for the embedding service."""
     test_vec = await get_embedding("test connectivity")
     if test_vec:
-        provider = "runpod" if (
-            settings.llm_provider == "runpod" and settings.runpod_embed_endpoint_id
-        ) else "ollama"
+        if settings.embed_api_url:
+            provider, model = "custom", settings.embed_api_url
+        elif settings.llm_provider == "runpod" and settings.runpod_embed_endpoint_id:
+            provider, model = "runpod", "bge-m3"
+        else:
+            provider, model = "ollama", settings.ollama_embed_model
         return {
             "status":    "ok",
             "provider":  provider,
-            "model":     "bge-m3" if provider == "runpod" else settings.ollama_embed_model,
+            "model":     model,
             "dimension": len(test_vec),
         }
     return {
         "status":  "error",
-        "detail":  "Embedding test failed — check RunPod endpoint ID or Ollama model availability",
+        "detail":  "Embedding test failed — check EMBED_API_URL / INFERENCE_API_KEY or Ollama availability",
     }
