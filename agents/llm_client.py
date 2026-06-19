@@ -1,15 +1,14 @@
 # =============================================================================
 # agents/llm_client.py — Central LLM routing layer
 #
-# Provider is selected via LLM_PROVIDER env var:
-#   "ollama"  → local Ollama at settings.ollama_base_url  (default)
-#   "runpod"  → RunPod serverless via settings.runpod_*
+# Provider priority:
+#   1. Gateway  (chat_api_url set)  → gpu.idhub.ng/chat  — gpt-4o-mini via Azure
+#   2. RunPod   (LLM_PROVIDER=runpod)
+#   3. Ollama   (default, local)
 #
-# Model tiers (RunPod only — Ollama always uses settings.ollama_model):
-#   "light"   → 7B  endpoint  — classification, CDI checks, harmonisation,
-#                                 lifecycle suggestions
-#   "heavy"   → 14B endpoint  — extraction, gap analysis, policy drafting,
-#                                 approval assessment
+# Model tiers (RunPod only — gateway and Ollama ignore tier):
+#   "light"   → 7B  endpoint  — classification, CDI checks, harmonisation
+#   "heavy"   → 14B endpoint  — extraction, gap analysis, policy drafting
 #
 # Usage:
 #   from agents.llm_client import llm_generate, check_llm_connectivity
@@ -42,23 +41,31 @@ async def llm_generate(
     top_p: float = 0.9,
     repeat_penalty: float = 1.2,
     json_mode: bool = False,
+    system_prompt: str = "",
 ) -> str:
     """
     Generate text from the configured LLM provider.
 
     Args:
-        prompt:         Full prompt string.
-        tier:           "light" (7B) or "heavy" (14B). Ignored when provider=ollama.
+        prompt:         Full prompt string (sent as user message to gateway).
+        tier:           "light" or "heavy". Ignored by gateway and ollama.
         max_tokens:     Maximum tokens to generate.
         temperature:    Sampling temperature.
         top_p:          Nucleus sampling p.
         repeat_penalty: Repetition penalty (Ollama only).
-        json_mode:      Hint model to return JSON (adds format=json on Ollama;
-                        has no effect on RunPod — prompts must request JSON themselves).
+        json_mode:      Hint model to return JSON.
+        system_prompt:  Optional system message override (gateway only).
 
     Returns:
         Generated text, or "" on failure.
     """
+    if settings.chat_api_url:
+        return await _gateway_generate(
+            prompt,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            system_prompt=system_prompt,
+        )
     if settings.llm_provider == "runpod":
         return await _runpod_generate(
             prompt, tier,
@@ -78,9 +85,86 @@ async def llm_generate(
 
 async def check_llm_connectivity() -> dict:
     """Health check — delegates to the active provider."""
+    if settings.chat_api_url:
+        return await _check_gateway()
     if settings.llm_provider == "runpod":
         return await _check_runpod()
     return await _check_ollama()
+
+
+# =============================================================================
+#  Gateway backend  (gpu.idhub.ng — Azure OpenAI via custom proxy)
+# =============================================================================
+
+_GATEWAY_SYSTEM = (
+    "You are a compliance and document analysis assistant for Dragnet Solutions. "
+    "Follow the instructions in the user message exactly. "
+    "Return only valid JSON when asked for JSON — no explanation, no markdown fences."
+)
+
+
+async def _gateway_generate(
+    prompt: str,
+    *,
+    max_tokens: int,
+    temperature: float,
+    system_prompt: str = "",
+) -> str:
+    headers = {
+        "Authorization": f"Bearer {settings.inference_api_key}",
+        "Content-Type":  "application/json",
+    }
+    messages = [
+        {"role": "system", "content": system_prompt or _GATEWAY_SYSTEM},
+        {"role": "user",   "content": prompt},
+    ]
+    payload = {
+        "messages":    messages,
+        "max_tokens":  max_tokens,
+        "temperature": temperature,
+    }
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(120.0, connect=10.0)
+        ) as client:
+            resp = await client.post(settings.chat_api_url, headers=headers, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+
+        # Standard OpenAI response shape
+        choices = data.get("choices") or []
+        if choices:
+            msg = choices[0].get("message") or {}
+            return str(msg.get("content", "")).strip()
+
+        # Fallback — some proxies return {"content": "..."}
+        return str(data.get("content") or data.get("text") or "").strip()
+
+    except Exception as exc:
+        logger.warning(f"Gateway generate failed: {exc}")
+        return ""
+
+
+async def _check_gateway() -> dict:
+    try:
+        result = await _gateway_generate(
+            "Reply with the single word: ok",
+            max_tokens=5,
+            temperature=0.0,
+        )
+        ok = bool(result)
+        return {
+            "status":   "ok" if ok else "error",
+            "provider": "gateway",
+            "model":    "gpt-4o-mini",
+            "url":      settings.chat_api_url,
+        }
+    except Exception as exc:
+        return {
+            "status":   "error",
+            "provider": "gateway",
+            "detail":   str(exc),
+        }
 
 
 # =============================================================================

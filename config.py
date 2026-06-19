@@ -88,8 +88,11 @@ class Settings(BaseSettings):
     # ── NL Search ─────────────────────────────────────────────────────────
     procedural_steps_list_id: str = Field(default="placeholder")
     chroma_persist_dir: str = Field(default="./chroma_db")
-    # Custom GPU embed endpoint — takes priority over RunPod and Ollama
-    # POST {embed_api_url} with {"text": "..."}, expects {"embedding": [...]}
+    # Custom GPU gateway — takes priority over RunPod and Ollama for all LLM calls
+    # POST {chat_api_url}  with {"messages": [...], "max_tokens": N}
+    # POST {embed_api_url} with {"text": "..."}
+    # Both endpoints use the same inference_api_key (Bearer token)
+    chat_api_url: str = Field(default="")
     embed_api_url: str = Field(default="")
     inference_api_key: str = Field(default="")
 
