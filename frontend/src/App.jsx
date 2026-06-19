@@ -405,15 +405,13 @@ function OrgOSShell() {
   // Must be called unconditionally — hook runs regardless of auth state
   const { isCompliance } = useCurrentUserRole();
 
-  // AUTH BYPASS — comment this block back in to re-enable login gate
-  // if (!isAuthenticated) return <LoginScreen />;
+  if (!isAuthenticated) return <LoginScreen />;
 
   const go = (id) => setNav(id);
 
   const renderScreen = () => {
     // Guard compliance-only routes — Standard Users see AccessDenied
-    // AUTH BYPASS — comment condition back in to re-enable role guard
-    if (false && COMPLIANCE_ONLY_ROUTES.has(nav) && !isCompliance) {
+    if (COMPLIANCE_ONLY_ROUTES.has(nav) && !isCompliance) {
       return (
         <AccessDenied
           pageName={ROUTE_NAMES[nav]}
@@ -506,8 +504,8 @@ export default function OrgOS() {
         <Route path="*" element={<OrgOSShell />} />
       </Routes>
 
-      {/* Global AI chat — AUTH BYPASS: always show; restore {isAuthenticated && (...)} to re-enable */}
-      {(true /* isAuthenticated */) && (
+      {/* Global AI chat — visible on all pages when authenticated */}
+      {isAuthenticated && (
         <>
           <ChatButton onClick={() => setChatOpen(true)} />
           <ChatPanel isOpen={chatOpen} onClose={() => setChatOpen(false)} />
