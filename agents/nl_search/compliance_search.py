@@ -20,8 +20,7 @@ from typing import Optional
 
 from agents.llm_client import llm_generate
 from config import settings
-from graph.client import get_list_items
-from graph.auth import resolve_user
+from graph.client import get_list_items, resolve_user
 
 logger = logging.getLogger(__name__)
 
