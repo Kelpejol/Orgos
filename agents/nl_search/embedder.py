@@ -90,11 +90,21 @@ async def _custom_embed(text: str) -> Optional[list[float]]:
             resp.raise_for_status()
             data = resp.json()
 
-        embedding = data.get("embedding")
-        if not embedding or not isinstance(embedding, list):
-            logger.warning(f"Custom embed: unexpected response shape: {data}")
-            return None
-        return [float(v) for v in embedding]
+        # Shape 1: raw array  →  [float, ...]
+        if isinstance(data, list):
+            return [float(v) for v in data]
+
+        # Shape 2: {"embedding": [float, ...]}
+        if isinstance(data, dict):
+            embedding = data.get("embedding") or data.get("embeddings") or data.get("data")
+            if isinstance(embedding, list):
+                # unwrap one level if nested: [[float, ...]]
+                if embedding and isinstance(embedding[0], list):
+                    embedding = embedding[0]
+                return [float(v) for v in embedding]
+
+        logger.warning(f"Custom embed: unrecognised response shape: {type(data)}")
+        return None
 
     except Exception as exc:
         logger.warning(f"Custom embed failed: {exc}")
