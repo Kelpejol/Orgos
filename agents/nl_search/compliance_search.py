@@ -107,7 +107,7 @@ async def _search_controls(keywords: list[str], iso_clause: Optional[str]) -> li
     elif keywords:
         # Build an OR clause across all keywords so multi-topic queries hit all relevant controls
         kw_parts = [
-            f"(contains(fields/ControlStatement, '{kw}') or contains(fields/RiskStatement, '{kw}'))"
+            f"(contains(fields/ControlStatement, '{kw}') or contains(fields/RiskImplication, '{kw}'))"
             for kw in keywords[:5]
         ]
         filters.append("(" + " or ".join(kw_parts) + ")")
@@ -122,7 +122,7 @@ async def _search_controls(keywords: list[str], iso_clause: Optional[str]) -> li
             select_fields=(
                 "id,fields/Title,fields/ControlStatement,fields/ControlType,"
                 "fields/ISOClause,fields/OwnerRoleEntraId,fields/SourceDocumentCode,"
-                "fields/RiskStatement,fields/Status"
+                "fields/RiskImplication,fields/Status"
             ),
             top=_CONTROLS_FETCH_TOP,
         )
@@ -141,7 +141,7 @@ def _map_control(item: dict) -> dict:
         "iso_clause":       f.get("ISOClause", ""),
         "owner_oid":        f.get("OwnerRoleEntraId", ""),
         "source_document":  f.get("SourceDocumentCode", ""),
-        "risk_statement":   f.get("RiskStatement", ""),
+        "risk_statement":   f.get("RiskImplication", ""),
         "status":           f.get("Status", ""),
     }
 

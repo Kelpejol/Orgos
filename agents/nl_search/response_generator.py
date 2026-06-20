@@ -96,6 +96,7 @@ def _context_from_compliance(result: dict) -> str:
 
     for ctrl in controls[:3]:
         stmt  = (ctrl.get("control_statement") or "")[:280]
+        risk  = (ctrl.get("risk_statement") or "")[:200]
         iso   = ctrl.get("iso_clause", "")
         src   = ctrl.get("source_document", "")
         ctype = ctrl.get("control_type", "")
@@ -111,6 +112,8 @@ def _context_from_compliance(result: dict) -> str:
         header += "]"
         lines.append(header)
         lines.append(f"Rule: {stmt}")
+        if risk:
+            lines.append(f"Risk if fails: {risk}")
         lines.append(f"Type: {ctype or 'N/A'} | Owner: {name} | {_evidence_status(ev)}")
         lines.append("")
 
