@@ -83,8 +83,8 @@ async def nl_search_query(
     """
     question = request.question.strip()
 
-    # Classify intent — returns "compliance" | "procedural" | "both" | "conversational"
-    intent = await classify_intent(question)
+    # Classify intent — LLM at temp=0, sees last conversation turn for follow-up context
+    intent = await classify_intent(question, request.conversation_history)
     logger.info(f"NL Search | user={user.oid} | intent={intent} | q='{question[:80]}'")
 
     # 2. Route to search pipelines + generate RAG answer

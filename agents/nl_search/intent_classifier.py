@@ -1,21 +1,20 @@
 # =============================================================================
 # agents/nl_search/intent_classifier.py — Query intent detection
 #
-# Determines whether a user's question targets:
-#   "compliance"  — asking about rules, ownership, status, gaps, schedules
-#   "procedural"  — asking how to do something, what steps to follow
-#   "both"        — question spans both (e.g. "what is the password policy
-#                   and how do I change my password?")
+# Classifies a user's question as one of four intents:
+#   "compliance"     — rules, controls, ownership, evidence, ISO/NDPA clauses
+#   "procedural"     — how-to, steps, forms, who to contact, process flows
+#   "both"           — spans both categories
+#   "conversational" — greetings, follow-ups, social phrases with no GRC topic
 #
-# Two-layer approach:
-#   1. Fast keyword heuristic — handles the clear-cut cases without an LLM call
-#   2. LLM fallback — for ambiguous questions the heuristic can't classify
+# The LLM classifies every query at temperature=0.
+# Last conversation turn is included so follow-ups ("can you explain better",
+# "what do you mean") are classified correctly in context.
 #
-# Default when everything fails: "procedural" — most staff questions are how-to.
+# Default on LLM failure: "procedural" — most staff questions are how-to.
 # =============================================================================
 
 import logging
-import re
 from typing import Literal
 
 from agents.llm_client import llm_generate
@@ -26,153 +25,88 @@ IntentType = Literal["compliance", "procedural", "both", "conversational"]
 
 
 # =============================================================================
-#  Keyword heuristic (layer 1 — fast, no LLM)
-# =============================================================================
-
-# Greeting detection — anchored at start so "hi, good evening" and "hello there" match.
-# Length cap < 50 prevents "hi, what is the MFA policy?" from being eaten as a greeting.
-_GREETING_RE = re.compile(
-    r'^(hi|hello|hey|howdy|yo|sup|good\s+(morning|afternoon|evening|day|night))',
-    re.IGNORECASE,
-)
-
-_COMPLIANCE_PATTERNS = [
-    r"\bwhat (are|is) the .*(requirement|control|policy|rule|standard|clause|obligation)\b",
-    r"\bis .* compliant\b",
-    r"\bwho is responsible\b",
-    r"\bwho owns\b",
-    r"\bwhat evidence\b",
-    r"\bwhat is the status\b",
-    r"\bshow (me )?gaps?\b",
-    r"\bwhat are my overdue\b",
-    r"\boverdue (items|evidence|controls)\b",
-    r"\biso \d+\b",
-    r"\biso clause\b",
-    r"\bndpa\b",
-    r"\bwhen is .*(due|next)\b",
-    r"\bwhat controls?\b",
-    r"\btraffic light\b",
-    r"\bcompliance calendar\b",
-    r"\brisk register\b",
-    r"\bgap analysis\b",
-    r"\bevidence (status|tracker|required)\b",
-    r"\bcontrol register\b",
-    r"\bstandards? map\b",
-    r"\b(a\.\d+\.\d+)\b",   # ISO clause like A.5.17
-]
-
-_PROCEDURAL_PATTERNS = [
-    r"\bhow (do|can|should) (i|we|you)\b",
-    r"\bhow to\b",
-    r"\bwhat steps?\b",
-    r"\bwhat (is the )?process\b",
-    r"\bwhat form\b",
-    r"\bwhich form\b",
-    r"\bwho (do i|should i) (contact|speak|report)\b",
-    r"\bwhat (system|tool|platform)\b",
-    r"\bwhat happens (when|if|after)\b",
-    r"\bwhere do i\b",
-    r"\bhow (long|many|much)\b",
-    r"\bstep[- ]by[- ]step\b",
-    r"\bapproval (chain|process|workflow)\b",
-    r"\bwho approves?\b",
-    r"\bwho signs?\b",
-    r"\bwhat is the (procedure|workflow|process) for\b",
-    r"\bhow (do|does) .* work\b",
-    r"\bwalk me through\b",
-    r"\bguide (me|us)\b",
-    r"\bonboard\b",
-    r"\boffboard\b",
-    r"\brequest (a|an|the)\b",
-    r"\bsubmit (a|an|the)\b",
-    r"\bescalate\b",
-    r"\breport (a|an|the)\b",
-]
-
-_COMPLIANCE_RE  = [re.compile(p, re.IGNORECASE) for p in _COMPLIANCE_PATTERNS]
-_PROCEDURAL_RE  = [re.compile(p, re.IGNORECASE) for p in _PROCEDURAL_PATTERNS]
-
-
-def _keyword_classify(question: str) -> IntentType | None:
-    """
-    Returns intent if the keyword heuristic is confident, None if ambiguous.
-    Conversational is caught here for obvious greetings; follow-ups and
-    subtle conversational phrases are delegated to the LLM.
-    """
-    q = question.strip()
-
-    # Fast path — obvious greetings need no LLM call
-    if _GREETING_RE.match(q) and len(q) < 50:
-        return "conversational"
-
-    compliance_hits = sum(1 for p in _COMPLIANCE_RE if p.search(q))
-    procedural_hits = sum(1 for p in _PROCEDURAL_RE if p.search(q))
-
-    if compliance_hits > 0 and procedural_hits > 0:
-        return "both"
-    if compliance_hits >= 1:
-        return "compliance"
-    if procedural_hits >= 1:
-        return "procedural"
-    return None  # ambiguous — delegate to LLM
-
-
-# =============================================================================
-#  LLM fallback (layer 2)
+#  LLM prompt
 # =============================================================================
 
 _INTENT_PROMPT = """\
-You are the NL Search router for Dragnet OrgOS. Classify the user's question.
+You are a query router for OrgOS, Dragnet Solutions' GRC platform.
+Classify the user's question into exactly one of these four categories:
 
-COMPLIANCE — asking about rules, controls, policies, who is responsible, evidence needed,
-compliance status, deadlines, gaps, risks, ISO/NDPA clauses, or standards.
+COMPLIANCE — the user is asking about: policies, rules, controls, who is responsible,
+evidence required, compliance status, ISO or NDPA clauses, gaps, risks, deadlines,
+standards, what is due, or the status of a specific control or obligation.
 
-PROCEDURAL — asking how to do something, what steps to follow, what form to use,
-who to contact, which system to use, or what the process is.
+PROCEDURAL — the user is asking: how to do something, what steps to follow, what form
+to use, who to contact, which system to use, what the process is, what happens next,
+or how an approval workflow works.
 
-BOTH — clear signals from both compliance and procedural categories.
+BOTH — the question has clear signals from both compliance and procedural.
 
-CONVERSATIONAL — the user is greeting you (hi, hello, good evening), following up on a
-previous answer (can you explain, tell me more, can you elaborate, what do you mean,
-explain it better), or the message has no specific GRC topic (ok, thanks, got it, sure).
+CONVERSATIONAL — any of the following:
+• Greetings or social phrases: "hi", "hello", "good evening", "how are you", "hey"
+• Acknowledgements: "ok", "thanks", "got it", "sure", "i see", "makes sense"
+• Follow-up requests referencing a prior answer: "can you explain", "can you explain
+  better", "tell me more", "elaborate", "what do you mean", "explain that again",
+  "go on", "more details", "what does that mean", "can you clarify"
+• Any vague short message with no specific GRC topic of its own
 
-Return exactly one word: compliance, procedural, both, or conversational. No explanation."""
+{history_block}\
+Question: {question}
+
+Return exactly one word — compliance, procedural, both, or conversational:"""
 
 
-async def _llm_classify(question: str) -> IntentType:
-    prompt = f"{_INTENT_PROMPT}\n\nQuestion: {question}\n\nAnswer:"
-    raw = await llm_generate(prompt, tier="light", max_tokens=5, temperature=0.0)
-    word = raw.strip().lower().split()[0] if raw.strip() else ""
-    if word in ("compliance", "procedural", "both", "conversational"):
-        return word  # type: ignore[return-value]
-    logger.debug(f"Intent LLM returned unexpected: '{raw}' — defaulting to procedural")
-    return "procedural"
+# =============================================================================
+#  Helpers
+# =============================================================================
+
+def _build_history_block(conversation_history: list[dict]) -> str:
+    """
+    Include the last user+assistant pair so the LLM understands what a
+    follow-up like "can you explain better" is referring to.
+    """
+    if not conversation_history:
+        return ""
+    # Take the last two messages (one full turn)
+    recent = conversation_history[-2:]
+    lines: list[str] = []
+    for m in recent:
+        role    = "User" if m.get("role") == "user" else "Assistant"
+        content = (m.get("content") or "").strip()[:120]
+        lines.append(f"{role}: {content}")
+    return "Prior conversation:\n" + "\n".join(lines) + "\n\n"
 
 
 # =============================================================================
 #  Public interface
 # =============================================================================
 
-async def classify_intent(question: str) -> IntentType:
+async def classify_intent(
+    question: str,
+    conversation_history: list[dict] | None = None,
+) -> IntentType:
     """
-    Classify a user question as compliance, procedural, or both.
-    Fast keyword heuristic first; LLM fallback for ambiguous cases.
+    Classify a user question as compliance, procedural, both, or conversational.
+    LLM is called for every query at temperature=0 — no regex, no phrase lists.
     Always returns a valid IntentType — never raises.
     """
     if not question or not question.strip():
         return "procedural"
 
-    # Layer 1: keyword heuristic
-    heuristic = _keyword_classify(question)
-    if heuristic is not None:
-        logger.debug(f"Intent (heuristic): '{question[:60]}' → {heuristic}")
-        return heuristic
+    history_block = _build_history_block(conversation_history or [])
+    prompt = _INTENT_PROMPT.format(
+        history_block=history_block,
+        question=question.strip(),
+    )
 
-    # Layer 2: LLM for genuinely ambiguous cases
     try:
-        result = await _llm_classify(question)
-        logger.debug(f"Intent (LLM): '{question[:60]}' → {result}")
-        return result
+        raw  = await llm_generate(prompt, tier="light", max_tokens=5, temperature=0.0)
+        word = raw.strip().lower().split()[0] if raw.strip() else ""
+        if word in ("compliance", "procedural", "both", "conversational"):
+            logger.debug(f"Intent: '{question[:60]}' → {word}")
+            return word  # type: ignore[return-value]
+        logger.debug(f"Intent LLM returned unexpected '{raw}' — defaulting to procedural")
+        return "procedural"
     except Exception as exc:
-        logger.warning(f"Intent LLM failed: {exc} — defaulting to procedural")
+        logger.warning(f"Intent classifier failed: {exc} — defaulting to procedural")
         return "procedural"
