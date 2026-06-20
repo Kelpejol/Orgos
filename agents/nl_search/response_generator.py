@@ -1,16 +1,17 @@
 # =============================================================================
 # agents/nl_search/response_generator.py — RAG response generation
 #
-# Converts retrieved GRC context + conversation history into a natural,
-# grounded AI response using the LLM gateway.
+# Converts retrieved GRC context + Mem0 memory + conversation history into a
+# natural, grounded AI response using the LLM gateway.
 #
 # Token budget (approximate per query with gpt-4o-mini):
 #   ~150  system prompt
+#   ~100  Mem0 memory context (compact extracted facts — always fits)
 #   ~300  conversation history (last 3 turns, trimmed)
-#   ~450  context (retrieved controls/steps, capped per item)
+#   ~450  OrgOS context (retrieved controls/steps, capped per item)
 #   ~60   current question
-#   ────────────────────────────────
-#   ~960  input  |  ~480 output  ≈  $0.0003 per query
+#   ────────────────────────────────────────────────────────
+#   ~1060 input  |  ~480 output  ≈  $0.0003 per query
 #
 # Returns None on LLM failure — callers fall back to the structured formatter.
 # =============================================================================
@@ -37,16 +38,19 @@ CRITICAL RULES:
    stands for, what a governance role or body does, what a standard covers, definitions of
    industry terms): answer from your domain knowledge — these are industry fundamentals,
    not Dragnet-specific data.
-2. Follow-ups: if context is empty but the conversation history contains the relevant \
-information (e.g. the user asks "can you explain that" after a prior answer), answer \
-naturally from that history — you do not need fresh context to continue a conversation.
-3. No info: if context is empty AND history has nothing relevant AND it is not a general \
+2. Follow-ups: if context is empty but the conversation history or memory context contains
+   the relevant information (e.g. the user asks "can you explain that" after a prior answer),
+   answer naturally from that history — you do not need fresh context to continue.
+3. Memory context: if a "Memory from prior conversations" section is present, use it to
+   recall what was discussed before — especially when the user references a term, process,
+   or policy from a previous session.
+4. No info: if context is empty AND history has nothing relevant AND it is not a general \
 industry concept, say: "I don't have that information in OrgOS yet. Please contact the Compliance team."
-4. Greetings: for "hi", "hello" and similar, reply warmly in one sentence and invite a \
+5. Greetings: for "hi", "hello" and similar, reply warmly in one sentence and invite a \
 GRC or HR question. Example: "Hi! Ask me about Dragnet's policies, controls, or procedures."
-5. Nonsense: if the question is completely unclear, say: \
+6. Nonsense: if the question is completely unclear, say: \
 "I didn't quite catch that — try rephrasing with a specific policy, procedure, or compliance topic."
-6. Scope: only answer GRC, HR, and directly related questions about Dragnet. For anything \
+7. Scope: only answer GRC, HR, and directly related questions about Dragnet. For anything \
 completely outside that scope say you can only help with Dragnet GRC matters.
 
 STYLE:
@@ -56,7 +60,7 @@ STYLE:
 - If evidence is 🔴 Red or overdue, explicitly flag it — the user needs to know.
 - Use **bold** for key terms, policy names, and ISO clauses.
 - No markdown headers (###, ##). No bullet lists for compliance — prose only.
-- Reference prior conversation naturally when relevant.
+- Reference prior conversation or memory naturally when relevant.
 - Be concise. Do not pad responses."""
 
 
@@ -180,7 +184,7 @@ def _trim_history(history: list[dict], max_turns: int = 3) -> list[dict]:
     """
     Keep the last N user/assistant turn pairs.
     Strips all fields except role and content (no sources, mode, timestamps).
-    Caps assistant answers at 200 chars — they are context cues, not verbatim.
+    Caps assistant answers at 600 chars — enough to preserve full procedural answers.
     """
     clean: list[dict] = []
     for m in history:
@@ -208,6 +212,7 @@ async def generate_chat_response(
     conversation_history: list[dict],
     compliance_result: Optional[dict] = None,
     procedural_result: Optional[dict] = None,
+    mem0_context: str = "",
 ) -> Optional[str]:
     """
     Generate a natural, LLM-written answer grounded in retrieved GRC context.
@@ -215,36 +220,42 @@ async def generate_chat_response(
     Message layout sent to gateway:
       [{role: system, content: OrgOS persona}]
       [last 3 history pairs — user/assistant]
-      [{role: user, content: "<context block>\n\nQuestion: <question>"}]
+      [{role: user, content: "<mem0 facts> + <orgos context> + question"}]
 
+    mem0_context: pre-fetched facts from Mem0 (memory_service.get_context).
     Returns None on failure so the caller can fall back to the structured formatter.
     """
-    # Build context block
+    # ── Build OrgOS context block ────────────────────────────────────────────
     if intent == "conversational":
-        context = ""
+        orgos_context = ""
     elif intent == "compliance":
-        context = _context_from_compliance(search_result)
+        orgos_context = _context_from_compliance(search_result)
     elif intent == "procedural":
-        context = _context_from_procedural(search_result)
+        orgos_context = _context_from_procedural(search_result)
     else:  # "both"
-        context = _context_for_combined(
+        orgos_context = _context_for_combined(
             compliance_result or search_result,
             procedural_result or {},
         )
 
-    # Build user message — conversational queries carry no context prefix so the
-    # LLM focuses on conversation history rather than "no records found" noise.
-    if context:
-        user_content = f"Context from OrgOS:\n{context}\n\nQuestion: {question}"
-    elif intent == "conversational":
-        user_content = f"Question: {question}"
-    else:
-        user_content = (
-            f"Context from OrgOS: (no matching records found)\n\n"
-            f"Question: {question}"
-        )
+    # ── Build user message ───────────────────────────────────────────────────
+    # Order: memory facts → OrgOS search context → question
+    # Memory facts always appear even when OrgOS search returns nothing,
+    # enabling the LLM to answer from prior session knowledge.
+    parts: list[str] = []
 
-    # Build the full messages list
+    if mem0_context:
+        parts.append(f"Memory from prior conversations:\n{mem0_context}")
+
+    if orgos_context:
+        parts.append(f"Context from OrgOS:\n{orgos_context}")
+    elif intent != "conversational":
+        parts.append("Context from OrgOS: (no matching records found)")
+
+    parts.append(f"Question: {question}")
+    user_content = "\n\n".join(parts)
+
+    # ── Build full message list ──────────────────────────────────────────────
     history = _trim_history(conversation_history)
     messages: list[dict] = [{"role": "system", "content": _SYSTEM}]
     messages.extend(history)

@@ -23,6 +23,7 @@ from agents.nl_search.response_formatter import (
     format_combined_response,
 )
 from agents.nl_search.response_generator import generate_chat_response
+from agents.nl_search.memory_service import get_context, add_exchange
 from agents.nl_search.embedder import check_embed_connectivity
 from agents.nl_search.vector_store import get_collection_stats, embed_and_store_control
 
@@ -85,7 +86,7 @@ class NLSearchRequest(BaseModel):
 
 
 class NLSearchResponse(BaseModel):
-    mode:             str           # "compliance" | "procedural" | "combined"
+    mode:             str           # "compliance" | "procedural" | "combined" | "general"
     answer:           str           # Markdown text for the chat bubble
     sources:          list[dict]    # [{title, document_code, clause, link}]
     compliance_data:  Optional[dict] = None
@@ -112,23 +113,41 @@ async def nl_search_query(
     """
     Main dual-mode search endpoint. Classifies intent, searches appropriate
     indexes, and returns a formatted response for the chat UI.
+
+    Memory flow:
+      1. get_context(user.oid, question)  — fetch Mem0 facts BEFORE classify + search
+      2. classify_intent(...)             — sees both Mem0 facts + raw history
+      3. search pipelines                 — search OrgOS registers / ChromaDB
+      4. generate_chat_response(...)      — LLM sees Mem0 facts + OrgOS context
+      5. asyncio.create_task(add_exchange) — store this exchange in Mem0 (fire-and-forget)
     """
     question = request.question.strip()
 
-    # Classify intent — LLM at temp=0, sees last conversation turn for follow-up context
-    intent = await classify_intent(question, request.conversation_history)
+    # ── Step 1: Fetch Mem0 memory context (once, reused by classifier + generator) ──
+    # Returns compact extracted facts from all prior sessions for this user.
+    # Returns "" gracefully if Mem0 is unavailable.
+    mem0_context = await get_context(user.oid, question, limit=5)
+
+    # ── Step 2: Classify intent ──────────────────────────────────────────────
+    intent = await classify_intent(question, request.conversation_history, mem0_context=mem0_context)
     logger.info(f"NL Search | user={user.oid} | intent={intent} | q='{question[:80]}'")
 
-    # 2. Route to search pipelines + generate RAG answer
+    # ── Step 3 & 4: Route to search pipelines + generate RAG answer ─────────
     try:
         if intent == "conversational":
-            # No ChromaDB search — LLM responds from conversation history alone.
+            # No ChromaDB search — LLM responds from conversation history + memory alone.
             llm_ans = await generate_chat_response(
-                question, "conversational", {}, request.conversation_history
+                question, "conversational", {}, request.conversation_history,
+                mem0_context=mem0_context,
             )
+            answer = llm_ans or _conversational_fallback(question)
+
+            # Store this exchange so future sessions remember it
+            asyncio.create_task(add_exchange(user.oid, question, answer))
+
             return NLSearchResponse(
                 mode="general",
-                answer=llm_ans or _conversational_fallback(question),
+                answer=answer,
                 sources=[],
                 intent="conversational",
             )
@@ -139,14 +158,16 @@ async def nl_search_query(
             result    = await search_compliance(question, user_oid=user.oid)
             formatted = format_compliance_response(result)
             llm_ans   = await generate_chat_response(
-                question, "compliance", result, request.conversation_history
+                question, "compliance", result, request.conversation_history,
+                mem0_context=mem0_context,
             )
 
         elif intent == "procedural":
             result    = await search_procedural(question)
             formatted = format_procedural_response(result)
             llm_ans   = await generate_chat_response(
-                question, "procedural", result, request.conversation_history
+                question, "procedural", result, request.conversation_history,
+                mem0_context=mem0_context,
             )
 
         else:  # "both"
@@ -160,6 +181,7 @@ async def nl_search_query(
                 request.conversation_history,
                 compliance_result=comp_result,
                 procedural_result=proc_result,
+                mem0_context=mem0_context,
             )
 
     except Exception as exc:
@@ -171,6 +193,11 @@ async def nl_search_query(
 
     # LLM answer is primary; fall back to structured formatter if LLM failed
     answer = llm_ans if llm_ans else formatted["answer"]
+
+    # ── Step 5: Store exchange in Mem0 (fire-and-forget, user never waits) ──
+    # Mem0's AUDN cycle extracts facts, resolves conflicts with prior memory,
+    # and persists. If Mem0 is down this task fails silently.
+    asyncio.create_task(add_exchange(user.oid, question, answer))
 
     return NLSearchResponse(
         mode=formatted["mode"],

@@ -112,3 +112,10 @@ chromadb>=0.5.0
 # File-based persistent vector store. No separate server required.
 # Persists to ./chroma_db/ directory (gitignored).
 # Two collections: controls_v1 (accepted controls) + procedures_v1 (procedural steps).
+
+mem0ai>=0.1.0
+# Conversation memory for NL Search chatbot.
+# Extracts facts from Q&A exchanges, resolves conflicts (AUDN cycle), stores in ChromaDB.
+# Uses custom sync LLM + embedder providers that route through our gateway → Ollama chain.
+# Collection: nl_search_memory. History DB: ./chroma_db/mem0_history.db.
+# No OpenAI API key required — all inference through our existing infrastructure.

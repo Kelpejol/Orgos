@@ -11,6 +11,13 @@
 # a classification-specific system prompt is used (not the generic gateway
 # system prompt that wraps llm_generate).
 #
+# Context injected (in order of priority):
+#   1. mem0_context — extracted facts from prior sessions (cross-session memory)
+#      Compact, never truncated. Solves the "CISO cutoff" problem: a term that
+#      appeared late in a long prior answer is present as a clean extracted fact.
+#   2. conversation_history — last 4 raw messages from this session at 400 chars each.
+#      Provides the immediate turn-level context Mem0 hasn't yet processed.
+#
 # Default on LLM failure: "both" — safer than assuming one category.
 # =============================================================================
 
@@ -61,38 +68,64 @@ conversational — any of:
     - If the assistant gave a specific answer (a duration, a deadline, a count,
       a step) and the user is asking about that same detail → conversational.
     - If the user is asking for the definition or full meaning of any term,
-      acronym, role, or body that appeared in the prior assistant message
-      → conversational. They are clarifying vocabulary from that answer, not
-      starting a new GRC search.
+      acronym, role, or body that appeared in the prior assistant message OR in
+      the extracted memory facts → conversational. They are clarifying vocabulary
+      from a past answer, not starting a new GRC search.
     - Starting with "so", "but", "then", "and" is a strong follow-up signal.
   • Requests for elaboration: "can you explain", "can you explain better",
     "tell me more", "elaborate", "what do you mean", "explain that again",
     "go on", "more details", "can you clarify".
   • Any short vague message with no new GRC topic of its own.
 
-{history_block}Question: {question}
+{context_block}Question: {question}
 
 Return exactly one word — compliance, procedural, both, or conversational:"""
 
 
-def _history_block(history: list[dict]) -> str:
-    if not history:
+def _context_block(
+    history: list[dict],
+    mem0_context: str = "",
+) -> str:
+    """
+    Build the context block injected before the question.
+    Mem0 extracted facts come first (compact, no truncation risk).
+    Raw conversation history comes second (truncated to 400 chars per message).
+    """
+    sections: list[str] = []
+
+    # ── Mem0 cross-session facts ─────────────────────────────────────────────
+    # These are clean extracted facts (not raw text) so they are never cut off
+    # mid-sentence. A term like "CISO" that appeared at position 450 in a prior
+    # answer will be present here as a fact regardless of char limits.
+    if mem0_context:
+        sections.append(f"Extracted facts from prior conversations:\n{mem0_context}")
+
+    # ── Raw conversation history (this session) ──────────────────────────────
+    if history:
+        recent = history[-_HISTORY_LOOKBACK:]
+        lines: list[str] = []
+        for m in recent:
+            role    = "User" if m.get("role") == "user" else "Assistant"
+            content = (m.get("content") or "").strip()[:_HISTORY_CHARS_PER_MSG]
+            lines.append(f"{role}: {content}")
+        sections.append("Prior conversation:\n" + "\n".join(lines))
+
+    if not sections:
         return ""
-    recent = history[-_HISTORY_LOOKBACK:]
-    lines = []
-    for m in recent:
-        role    = "User" if m.get("role") == "user" else "Assistant"
-        content = (m.get("content") or "").strip()[:_HISTORY_CHARS_PER_MSG]
-        lines.append(f"{role}: {content}")
-    return "Prior conversation:\n" + "\n".join(lines) + "\n\n"
+    return "\n\n".join(sections) + "\n\n"
 
 
 async def classify_intent(
     question: str,
     conversation_history: list[dict] | None = None,
+    mem0_context: str = "",
 ) -> IntentType:
     """
     Classify a user question. Always returns a valid IntentType — never raises.
+
+    mem0_context: pre-fetched Mem0 memory facts (from memory_service.get_context).
+    Pass "" if memory is unavailable — the classifier degrades gracefully to
+    raw conversation history only.
     """
     if not question or not question.strip():
         return "both"
@@ -100,7 +133,7 @@ async def classify_intent(
     messages = [
         {"role": "system", "content": _SYSTEM},
         {"role": "user",   "content": _PROMPT.format(
-            history_block=_history_block(conversation_history or []),
+            context_block=_context_block(conversation_history or [], mem0_context),
             question=question.strip(),
         )},
     ]
