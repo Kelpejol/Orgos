@@ -34,6 +34,18 @@ _EVIDENCE_PER_CONTROL  = 5    # Max evidence items per control
 _VECTOR_RESULTS        = 8    # ChromaDB hits before distance filtering
 
 
+def _date_only(val) -> str:
+    """
+    Return just the YYYY-MM-DD part of any date or datetime value.
+    Handles ISO strings ("2026-06-10T07:00:00Z"), date-only strings,
+    and None/empty safely. Strips the time portion so the LLM never
+    outputs "at 07:00:00 (UTC)" noise.
+    """
+    if not val:
+        return ""
+    return str(val)[:10]
+
+
 # =============================================================================
 #  Entity extraction from question
 # =============================================================================
@@ -253,12 +265,11 @@ async def _get_all_evidence() -> list[dict]:
 def _map_evidence(item: dict) -> dict:
     f = item.get("fields", item)
     # "Last collected" may live in different columns depending on how the router wrote it.
-    # Try all candidates; the first non-empty value wins.
-    last_collected = (
+    # Try all candidates; the first non-empty value wins. _date_only strips the time part.
+    last_collected = _date_only(
         f.get("LastCollected") or f.get("CollectionDate") or
         f.get("SubmissionDate") or f.get("DateCollected") or
-        # Fall back to the SharePoint item modification time — updated on every verify/submit.
-        (item.get("lastModifiedDateTime") or "")[:10]  # trim to date only
+        item.get("lastModifiedDateTime", "")
     )
     return {
         "id":                 str(item.get("id", "")),
@@ -267,7 +278,7 @@ def _map_evidence(item: dict) -> dict:
         "type":               f.get("EvidenceType", ""),
         "format":             f.get("EvidenceFormat", ""),
         "status":             f.get("Status", "Pending"),
-        "due_date":           f.get("DueDate", ""),
+        "due_date":           _date_only(f.get("DueDate", "")),
         "last_collected":     last_collected,
         "link":               (f.get("EvidenceLink") or "").strip(),
         "source_system":      f.get("SourceSystem", ""),
@@ -339,7 +350,7 @@ def _map_obligation(item: dict) -> dict:
         "name":       f.get("Title", ""),
         "type":       f.get("ObligationType", ""),
         "authority":  f.get("Authority", ""),
-        "due_date":   f.get("DueDate", ""),
+        "due_date":   _date_only(f.get("DueDate", "")),
         "recurrence": f.get("Recurrence", ""),
         "notes":      f.get("Notes", ""),
         "owner_oid":  f.get("OwnerEntraId", ""),
@@ -362,7 +373,7 @@ def _map_gap(item: dict) -> dict:
         "severity":             f.get("Severity", ""),
         "status":               f.get("Status", ""),
         "proposed_remediation": (f.get("ProposedRemediation") or "")[:400],
-        "target_date":          f.get("TargetDate", ""),
+        "target_date":          _date_only(f.get("TargetDate", "")),
         "source":               f.get("Source", ""),
         "owner_oid":            f.get("OwnerEntraId", ""),
     }
@@ -430,8 +441,8 @@ def _map_document(item: dict) -> dict:
         "department":          f.get("Department", ""),
         "status":              f.get("DocumentStatus", ""),
         "current_version":     f.get("CurrentVersion", ""),
-        "effective_date":      f.get("EffectiveDate", ""),
-        "next_review_date":    f.get("NextReviewDate", ""),
+        "effective_date":      _date_only(f.get("EffectiveDate", "")),
+        "next_review_date":    _date_only(f.get("NextReviewDate", "")),
         "applicable_standards":f.get("ApplicableStandards", ""),
         "owner_oid":           f.get("OwnerEntraId", ""),
     }

@@ -95,6 +95,8 @@ touch multiple registers — e.g. "what is the risk and when is the next review?
 both [CONTROL] and [DOCUMENT REGISTER] data.
 
 STYLE:
+- Links: when the OrgOS context contains a markdown link like [label](url), reproduce it exactly as-is — never rewrite the label, never paraphrase the URL, never omit the link. If the user asks for a link, output the exact markdown link from context.
+- Dates: show dates as YYYY-MM-DD. Never add time, timezone, or "at" suffix — the data contains dates only.
 - Conversational and clear — explain the rule or process, not just state it.
 - For procedures: numbered steps, mention key roles and forms naturally in the step text.
 - For compliance: 2–4 sentences covering what the rule is, its ISO/NDPA reference, who owns it, and evidence status.
@@ -210,7 +212,16 @@ def _context_from_compliance(result: dict) -> str:
                 if esub_notes:
                     extras.append(f"Submission notes: {esub_notes}")
                 if elink:
-                    extras.append(f"Evidence link: {elink}")
+                    # Extract filename from SharePoint URL (?file=name.docx&...) for the label.
+                    # Falls back to "View submitted evidence" if no filename param found.
+                    fname = ""
+                    if "file=" in elink:
+                        try:
+                            fname = elink.split("file=")[1].split("&")[0].replace("%20", " ")
+                        except Exception:
+                            pass
+                    link_label = fname if fname else "View submitted evidence"
+                    extras.append(f"Evidence link: [{link_label}]({elink})")
                 if evalid:
                     extras.append(f"Validation criteria: {evalid}")
                 eline += " [" + " | ".join(extras) + "]"
@@ -371,7 +382,14 @@ def _context_from_procedural(result: dict) -> str:
         header += "]"
         lines.append(header)
         if doc_link:
-            lines.append(f"Document link: {doc_link}")
+            fname = ""
+            if "file=" in doc_link:
+                try:
+                    fname = doc_link.split("file=")[1].split("&")[0].replace("%20", " ")
+                except Exception:
+                    pass
+            dl_label = fname if fname else "View document"
+            lines.append(f"Document link: [{dl_label}]({doc_link})")
 
         for step in steps[:8]:
             n       = step.get("step_number", "")
