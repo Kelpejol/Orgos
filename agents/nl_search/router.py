@@ -445,15 +445,39 @@ async def seed_index(
 @router.get("/debug")
 async def debug_search(question: str) -> dict:
     """
-    Run the compliance search pipeline for a question and return every intermediate
-    result: entity extraction output, OData filter string, raw SharePoint rows,
-    ChromaDB hits, and compliance calendar results.
+    Run the full query pipeline for a question and return every intermediate
+    result: intent classification, entity extraction, OData filter, raw SharePoint
+    rows, ChromaDB hits, compliance calendar results, and the final LLM context block.
 
     Use this to pinpoint exactly which stage is failing.
 
     Example: GET /api/v1/nl-search/debug?question=who+owns+the+access+control+policy
     """
-    return await debug_compliance_pipeline(question)
+    from agents.nl_search.intent_classifier import classify_intent
+    from agents.nl_search.compliance_search import search_compliance
+    from agents.nl_search.response_generator import _context_from_compliance
+
+    result = await debug_compliance_pipeline(question)
+
+    # Stage 0: intent classification (runs before everything else in the real query)
+    try:
+        intent = await classify_intent(question, conversation_history=[], mem0_context="")
+        result["stages"] = {"0_intent": {"status": "ok", "intent": intent}, **result["stages"]}
+    except Exception as exc:
+        result["stages"] = {"0_intent": {"status": "error", "error": str(exc)}, **result["stages"]}
+
+    # Stage 6: what the LLM actually sees — the context block sent to response_generator
+    try:
+        compliance_result = await search_compliance(question, conversation_history=[])
+        ctx = _context_from_compliance(compliance_result)
+        result["stages"]["6_llm_context"] = {
+            "controls_found": len(compliance_result.get("controls", [])),
+            "context_sent_to_llm": ctx if ctx else "(empty — LLM will say no info)",
+        }
+    except Exception as exc:
+        result["stages"]["6_llm_context"] = {"status": "error", "error": str(exc)}
+
+    return result
 
 
 # =============================================================================

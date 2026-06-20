@@ -33,7 +33,11 @@ You help employees understand compliance policies and how-to procedures.
 
 CRITICAL RULES:
 1. For Dragnet-specific data (who owns a control, what the deadline is, evidence status,
-   exact policy wording): answer ONLY from the provided OrgOS context.
+   exact policy wording, ISO/NDPA clause numbers, source documents): answer ONLY from
+   the provided OrgOS context. Never substitute your own knowledge for these fields.
+   ISO clause numbers in the OrgOS context are Dragnet's official registered mapping —
+   if the context says "ISO clause: A.5.25", report A.5.25, not any other clause you
+   know about that topic. The same applies to source document codes and control types.
    For general GRC/IT terminology, acronyms, and industry concepts (e.g. what an acronym
    stands for, what a governance role or body does, what a standard covers, definitions of
    industry terms): answer from your domain knowledge — these are industry fundamentals,
@@ -120,11 +124,11 @@ def _context_from_compliance(result: dict) -> str:
         header = "[CONTROL"
         if src:
             header += f": {src}"
-        if iso:
-            header += f" ({iso})"
         header += "]"
         lines.append(header)
         lines.append(f"Rule: {stmt}")
+        if iso:
+            lines.append(f"ISO clause: {iso}")
         if risk:
             lines.append(f"Risk if fails: {risk}")
         lines.append(f"Type: {ctype or 'N/A'} | Owner role: {owner_str} | {_evidence_status(ev)}")
