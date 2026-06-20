@@ -165,11 +165,6 @@ async def _search_controls(keywords: list[str], iso_clause: Optional[str]) -> li
             list_id=list_id,
             list_name="Control Register",
             odata_filter=odata_filter,
-            select_fields=(
-                "id,fields/Title,fields/ControlStatement,fields/ControlType,"
-                "fields/ISOClause,fields/OwnerRole,fields/OwnerEntraId,"
-                "fields/SourceDocumentCode,fields/RiskImplication,fields/Status"
-            ),
             top=_CONTROLS_FETCH_TOP,
         )
         return [_map_control(i) for i in items if i.get("fields", {}).get("Status") == "Active"]
@@ -187,7 +182,7 @@ def _map_control(item: dict) -> dict:
         "iso_clause":       f.get("ISOClause", ""),
         "owner_role_title": f.get("OwnerRole", ""),     # role title string (always present)
         "owner_oid":        f.get("OwnerEntraId", ""),  # Entra OID → resolved to person name
-        "source_document":  f.get("SourceDocumentCode", ""),
+        "source_document":  f.get("SourceDocument", ""),
         "risk_statement":   f.get("RiskImplication", ""),
         "status":           f.get("Status", ""),
     }
@@ -203,10 +198,6 @@ async def _get_evidence_for_control(control_id: str) -> list[dict]:
             list_id=list_id,
             list_name="Evidence Tracker",
             odata_filter=f"fields/LinkedControlId eq '{control_id}'",
-            select_fields=(
-                "id,fields/EvidenceDescription,fields/EvidenceType,"
-                "fields/Status,fields/DueDate,fields/EvidenceLink"
-            ),
             top=5,
         )
         return [_map_evidence(i) for i in items]
@@ -254,10 +245,6 @@ async def _search_compliance_calendar(keywords: list[str]) -> list[dict]:
             list_id=list_id,
             list_name="Compliance Calendar",
             odata_filter=odata_filter,
-            select_fields=(
-                "id,fields/Title,fields/ObligationType,fields/Authority,"
-                "fields/DueDate,fields/Recurrence,fields/OwnerEntraId"
-            ),
             top=5,
         )
         return [_map_obligation(i) for i in items]
@@ -471,11 +458,6 @@ async def debug_compliance_pipeline(question: str) -> dict:
                 list_id=list_id,
                 list_name="Control Register",
                 odata_filter=odata_filter,
-                select_fields=(
-                    "id,fields/Title,fields/ControlStatement,fields/ControlType,"
-                    "fields/ISOClause,fields/OwnerRole,fields/OwnerEntraId,"
-                    "fields/SourceDocumentCode,fields/RiskImplication,fields/Status"
-                ),
                 top=_CONTROLS_FETCH_TOP,
             )
             active = [i for i in raw_items if i.get("fields", {}).get("Status") == "Active"]

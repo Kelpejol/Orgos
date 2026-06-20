@@ -273,10 +273,6 @@ async def rebuild_index(
                 list_id=ctrl_list_id,
                 list_name="Control Register",
                 odata_filter="fields/Status eq 'Active'",
-                select_fields=(
-                    "id,fields/ControlStatement,fields/ControlType,"
-                    "fields/ISOClause,fields/OwnerRole,fields/OwnerEntraId,fields/SourceDocumentCode"
-                ),
                 top=500,
             )
             for item in items:
@@ -285,7 +281,7 @@ async def rebuild_index(
                 if not stmt:
                     continue
                 meta = {
-                    "document_code": f.get("SourceDocumentCode", ""),
+                    "document_code": f.get("SourceDocument", ""),
                     "iso_clause":    f.get("ISOClause", ""),
                     "control_type":  f.get("ControlType", ""),
                     "owner_oid":     f.get("OwnerEntraId", ""),
