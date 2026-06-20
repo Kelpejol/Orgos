@@ -137,40 +137,46 @@ async def _extract_entities(question: str, recent_history: list[dict] | None = N
 async def _search_controls(keywords: list[str], iso_clause: Optional[str]) -> list[dict]:
     """Query Control Register for controls matching keywords or ISO clause.
 
-    All extracted keywords are combined with OR so a multi-topic question (e.g.
-    "training requirements and NDPA obligations") matches controls from every
-    topic — not just the first keyword.
+    Fetches all controls from SharePoint and filters in Python.
+    OData contains() is not used for text matching because ControlStatement is
+    not indexed in SharePoint — unindexed columns cause contains() to return 404.
+    ISO clause exact-match still uses OData since ISOClause is a short fixed value.
+    Python substring matching handles both single and multi-word keywords correctly.
     """
     list_id = settings.control_register_list_id
     if not settings.is_list_configured(list_id):
         return []
 
-    filters = []
-    if iso_clause:
-        filters.append(f"fields/ISOClause eq '{iso_clause}'")
-    elif keywords:
-        # Filter only on ControlStatement — risk/owner columns are not reliable
-        # as OData filter targets (may not be indexed, may not support contains()).
-        # They are fetched in select_fields for display, not used for matching.
-        kw_parts = [
-            f"contains(fields/ControlStatement, '{kw}')"
-            for kw in keywords[:5]
-        ]
-        filters.append("(" + " or ".join(kw_parts) + ")")
-
-    odata_filter = " and ".join(filters) if filters else None
+    # Use OData only for exact ISO clause match (short value, reliable).
+    # All other filtering is done in Python after fetching.
+    odata_filter = f"fields/ISOClause eq '{iso_clause}'" if iso_clause else None
 
     try:
         items = await get_list_items(
             list_id=list_id,
             list_name="Control Register",
             odata_filter=odata_filter,
-            top=_CONTROLS_FETCH_TOP,
+            top=500,
         )
-        return [_map_control(i) for i in items if i.get("fields", {}).get("Status") == "Active"]
     except Exception as exc:
         logger.warning(f"compliance_search: control query failed: {exc}")
         return []
+
+    active = [i for i in items if i.get("fields", {}).get("Status") == "Active"]
+
+    if not active:
+        return []
+
+    # Keyword matching in Python — handles multi-word phrases, case-insensitive.
+    if keywords and not iso_clause:
+        def _matches(item: dict) -> bool:
+            stmt = (item.get("fields", {}).get("ControlStatement", "") or "").lower()
+            risk = (item.get("fields", {}).get("RiskImplication", "") or "").lower()
+            haystack = stmt + " " + risk
+            return any(kw.lower() in haystack for kw in keywords)
+        active = [i for i in active if _matches(i)]
+
+    return [_map_control(i) for i in active[:_CONTROLS_FETCH_TOP]]
 
 
 def _map_control(item: dict) -> dict:
@@ -438,17 +444,18 @@ async def debug_compliance_pipeline(question: str) -> dict:
     keywords  = entities.get("keywords") or []
     iso_clause = entities.get("iso_clause")
 
-    # Stage 2: Build and show OData filter
-    filters = []
-    if iso_clause:
-        filters.append(f"fields/ISOClause eq '{iso_clause}'")
-    elif keywords:
-        kw_parts = [f"contains(fields/ControlStatement, '{kw}')" for kw in keywords[:5]]
-        filters.append("(" + " or ".join(kw_parts) + ")")
-    odata_filter = " and ".join(filters) if filters else None
-    result["stages"]["2_odata_filter"] = {"filter": odata_filter}
+    # Stage 2: Show matching strategy (OData only for ISO clause; keywords matched in Python)
+    odata_filter = f"fields/ISOClause eq '{iso_clause}'" if iso_clause else None
+    result["stages"]["2_odata_filter"] = {
+        "filter": odata_filter,
+        "note": (
+            "ISO clause exact-match via OData" if iso_clause
+            else "No OData filter — keyword matching done in Python after fetch"
+        ),
+        "keywords_for_python_match": keywords,
+    }
 
-    # Stage 3: Raw SharePoint query
+    # Stage 3: Raw SharePoint query + Python keyword filtering
     list_id = settings.control_register_list_id
     if not settings.is_list_configured(list_id):
         result["stages"]["3_sharepoint_query"] = {"status": "skipped", "reason": "list not configured"}
@@ -458,14 +465,25 @@ async def debug_compliance_pipeline(question: str) -> dict:
                 list_id=list_id,
                 list_name="Control Register",
                 odata_filter=odata_filter,
-                top=_CONTROLS_FETCH_TOP,
+                top=500,
             )
             active = [i for i in raw_items if i.get("fields", {}).get("Status") == "Active"]
+
+            # Apply Python keyword filter (same logic as _search_controls)
+            if keywords and not iso_clause:
+                def _kw_match(item: dict) -> bool:
+                    stmt = (item.get("fields", {}).get("ControlStatement", "") or "").lower()
+                    risk = (item.get("fields", {}).get("RiskImplication", "") or "").lower()
+                    return any(kw.lower() in (stmt + " " + risk) for kw in keywords)
+                matched = [i for i in active if _kw_match(i)]
+            else:
+                matched = active
+
             result["stages"]["3_sharepoint_query"] = {
                 "status": "ok",
                 "total_returned": len(raw_items),
                 "active_count": len(active),
-                # Show first 3 raw items (control statement + status only, for readability)
+                "keyword_matched": len(matched),
                 "sample": [
                     {
                         "id": str(i.get("id", "")),
@@ -474,7 +492,7 @@ async def debug_compliance_pipeline(question: str) -> dict:
                         "OwnerRole": i.get("fields", {}).get("OwnerRole", ""),
                         "RiskImplication": (i.get("fields", {}).get("RiskImplication") or "")[:100],
                     }
-                    for i in active[:3]
+                    for i in matched[:3]
                 ],
             }
         except Exception as exc:
