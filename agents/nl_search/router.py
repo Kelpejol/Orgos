@@ -57,7 +57,7 @@ def _conversational_fallback(question: str) -> str:
 
     # Follow-up / elaboration request with no prior LLM context
     if any(w in q for w in ("explain", "elaborate", "clarify", "more detail", "tell me more")):
-        return "I'd be happy to elaborate — could you ask a specific question? For example: 'What is the MFA policy?' or 'How do I apply for leave?'"
+        return "I'd be happy to elaborate — could you ask a specific question about the policy, control, or procedure you're interested in?"
 
     # Generic greeting or short social phrase
     return "Hi! I'm your OrgOS GRC assistant. Ask me about Dragnet's compliance policies, controls, evidence requirements, or how-to procedures."
@@ -134,6 +134,8 @@ async def nl_search_query(
             )
 
         elif intent == "compliance":
+            # Multi-topic handling is done inside search_compliance via all-keyword
+            # OData OR filters — no question splitting needed at the router level.
             result    = await search_compliance(question, user_oid=user.oid)
             formatted = format_compliance_response(result)
             llm_ans   = await generate_chat_response(

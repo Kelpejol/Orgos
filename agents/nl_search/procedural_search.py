@@ -27,6 +27,15 @@ logger = logging.getLogger(__name__)
 # Results above this threshold are considered poor matches and excluded.
 _DISTANCE_THRESHOLD = 0.42
 
+# How many ChromaDB hits to fetch before threshold filtering and deduplication.
+# Higher value means the threshold filter has more material to work with, which
+# improves recall for multi-topic questions where two procedures may sit at
+# different positions in the top-N results.
+_VECTOR_FETCH = 15
+
+# Cap on how many distinct processes to return per query — keeps responses readable.
+_MAX_PROCESSES = 3
+
 
 async def search_procedural(question: str) -> dict:
     """
@@ -51,8 +60,9 @@ async def search_procedural(question: str) -> dict:
       "found": bool,
     }
     """
-    # Step 1: semantic search in ChromaDB
-    hits = await search_procedures(question, n_results=5)
+    # Step 1: semantic search in ChromaDB — fetch more hits so threshold filter
+    # has enough candidates when the question covers multiple distinct procedures.
+    hits = await search_procedures(question, n_results=_VECTOR_FETCH)
     if not hits:
         logger.info(f"procedural_search: no ChromaDB hits for: {question[:60]}")
         return {"question": question, "processes": [], "found": False}
@@ -82,7 +92,7 @@ async def search_procedural(question: str) -> dict:
 
     # Step 3: expand each hit to the full workflow (all steps for that process)
     processes = []
-    for cand in candidates[:3]:  # cap at 3 processes per query
+    for cand in candidates[:_MAX_PROCESSES]:
         doc_code     = cand["document_code"]
         process_name = cand["process_name"]
 

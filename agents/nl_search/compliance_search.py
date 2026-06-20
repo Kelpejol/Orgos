@@ -6,14 +6,16 @@
 # using OData filters derived from entity extraction.
 #
 # Strategy:
-#   1. Extract entities from the question (topic keyword, ISO clause, standard hint)
-#      using a lightweight LLM call.
+#   1. Extract entities from the question (topic keywords, ISO clause, standard hint)
+#      using a lightweight LLM call. All extracted keywords are used in the filter
+#      with OR logic so multi-topic questions match across all relevant controls.
 #   2. Run targeted OData queries against the relevant registers.
 #   3. Collect controls + evidence items + owner info + standards status.
 #   4. Return a structured result dict for response_formatter.py.
 # =============================================================================
 
 import asyncio
+import json
 import logging
 import re
 from typing import Optional
@@ -25,6 +27,12 @@ from graph.client import get_list_items, resolve_user
 
 logger = logging.getLogger(__name__)
 
+# Fetch limits — named so they are easy to tune without hunting the code.
+_CONTROLS_FETCH_TOP    = 20   # OData top — how many raw rows SharePoint returns
+_CONTROLS_ENRICH_LIMIT = 8    # Max controls we enrich with evidence (N+1 guard)
+_EVIDENCE_PER_CONTROL  = 5    # Max evidence items per control
+_VECTOR_RESULTS        = 8    # ChromaDB hits before distance filtering
+
 
 # =============================================================================
 #  Entity extraction from question
@@ -33,9 +41,11 @@ logger = logging.getLogger(__name__)
 _ENTITY_PROMPT = """\
 Extract search entities from a compliance question. Return JSON only.
 
+If the question covers multiple topics, extract keywords that cover ALL of them.
+
 Fields:
-  "keywords": list of 1-3 topic keywords (e.g. ["password", "access control"])
-  "iso_clause": ISO 27001/9001 clause if mentioned (e.g. "A.5.17") or null
+  "keywords": list of up to 5 topic keywords covering all topics in the question
+  "iso_clause": ISO 27001/9001 clause if explicitly mentioned (e.g. "A.5.17") or null
   "standard": "ISO 27001" | "ISO 9001" | "NDPA" or null
   "is_personal_query": true if asking about "my" items, "my overdue", "assigned to me"
 
@@ -46,31 +56,34 @@ JSON:"""
 
 async def _extract_entities(question: str) -> dict:
     prompt = _ENTITY_PROMPT.format(question=question)
-    raw = await llm_generate(prompt, tier="light", max_tokens=150, temperature=0.0, json_mode=True)
+    raw = await llm_generate(prompt, tier="light", max_tokens=200, temperature=0.0, json_mode=True)
     raw = raw.strip()
-    if raw.startswith("```"):
-        lines = raw.split("\n")
-        raw = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
-    try:
-        import json
-        data = json.loads(raw)
-        return {
-            "keywords":         data.get("keywords") or [],
-            "iso_clause":       data.get("iso_clause"),
-            "standard":         data.get("standard"),
-            "is_personal_query":bool(data.get("is_personal_query", False)),
-        }
-    except Exception:
-        # Fallback: extract keywords from the question directly
-        words = re.findall(r'\b[a-zA-Z]{4,}\b', question.lower())
-        stop = {"what", "when", "where", "which", "that", "this", "with", "from",
-                "have", "does", "your", "their", "show", "give", "tell", "about"}
-        return {
-            "keywords":         [w for w in words if w not in stop][:3],
-            "iso_clause":       None,
-            "standard":         None,
-            "is_personal_query":False,
-        }
+
+    # Try to find the JSON object anywhere in the response (handles fences and prose)
+    json_match = re.search(r'\{.*?\}', raw, re.DOTALL)
+    if json_match:
+        try:
+            data = json.loads(json_match.group())
+            return {
+                "keywords":          data.get("keywords") or [],
+                "iso_clause":        data.get("iso_clause"),
+                "standard":          data.get("standard"),
+                "is_personal_query": bool(data.get("is_personal_query", False)),
+            }
+        except Exception:
+            pass
+
+    # Fallback: derive keywords from question text when JSON parse fails entirely
+    words = re.findall(r'\b[a-zA-Z]{4,}\b', question.lower())
+    stop = {"what", "when", "where", "which", "that", "this", "with", "from",
+            "have", "does", "your", "their", "show", "give", "tell", "about",
+            "many", "much", "long", "often", "must", "should", "would", "could"}
+    return {
+        "keywords":          [w for w in words if w not in stop][:5],
+        "iso_clause":        None,
+        "standard":          None,
+        "is_personal_query": False,
+    }
 
 
 # =============================================================================
@@ -78,7 +91,12 @@ async def _extract_entities(question: str) -> dict:
 # =============================================================================
 
 async def _search_controls(keywords: list[str], iso_clause: Optional[str]) -> list[dict]:
-    """Query Control Register for controls matching keywords or ISO clause."""
+    """Query Control Register for controls matching keywords or ISO clause.
+
+    All extracted keywords are combined with OR so a multi-topic question (e.g.
+    "training requirements and NDPA obligations") matches controls from every
+    topic — not just the first keyword.
+    """
     list_id = settings.control_register_list_id
     if not settings.is_list_configured(list_id):
         return []
@@ -87,12 +105,12 @@ async def _search_controls(keywords: list[str], iso_clause: Optional[str]) -> li
     if iso_clause:
         filters.append(f"fields/ISOClause eq '{iso_clause}'")
     elif keywords:
-        # OData: substringof is not universally available; use contains where supported
-        kw = keywords[0]
-        filters.append(
-            f"(contains(fields/ControlStatement, '{kw}') "
-            f"or contains(fields/RiskStatement, '{kw}'))"
-        )
+        # Build an OR clause across all keywords so multi-topic queries hit all relevant controls
+        kw_parts = [
+            f"(contains(fields/ControlStatement, '{kw}') or contains(fields/RiskStatement, '{kw}'))"
+            for kw in keywords[:5]
+        ]
+        filters.append("(" + " or ".join(kw_parts) + ")")
 
     odata_filter = " and ".join(filters) if filters else None
 
@@ -106,7 +124,7 @@ async def _search_controls(keywords: list[str], iso_clause: Optional[str]) -> li
                 "fields/ISOClause,fields/OwnerRoleEntraId,fields/SourceDocumentCode,"
                 "fields/RiskStatement,fields/Status"
             ),
-            top=10,
+            top=_CONTROLS_FETCH_TOP,
         )
         return [_map_control(i) for i in items if i.get("fields", {}).get("Status") == "Active"]
     except Exception as exc:
@@ -180,8 +198,11 @@ async def _search_compliance_calendar(keywords: list[str]) -> list[dict]:
     if not settings.is_list_configured(list_id):
         return []
     try:
-        kw = keywords[0] if keywords else ""
-        odata_filter = f"contains(fields/Title, '{kw}')" if kw else None
+        if keywords:
+            kw_parts = [f"contains(fields/Title, '{kw}')" for kw in keywords[:5]]
+            odata_filter = "(" + " or ".join(kw_parts) + ")"
+        else:
+            odata_filter = None
         items = await get_list_items(
             list_id=list_id,
             list_name="Compliance Calendar",
@@ -241,7 +262,7 @@ async def _vector_search_controls(question: str) -> list[dict]:
     Returns controls in the same dict shape as _search_controls().
     """
     try:
-        hits = await search_controls(question, n_results=5)
+        hits = await search_controls(question, n_results=_VECTOR_RESULTS)
         controls = []
         for hit in hits:
             if hit.get("distance", 1.0) > _VECTOR_DISTANCE_THRESHOLD:
@@ -307,7 +328,7 @@ async def search_compliance(question: str, user_oid: Optional[str] = None) -> di
 
     enriched_controls = []
     if controls_raw:
-        enriched_controls = await asyncio.gather(*[_enrich(c) for c in controls_raw[:5]])
+        enriched_controls = await asyncio.gather(*[_enrich(c) for c in controls_raw[:_CONTROLS_ENRICH_LIMIT]])
         enriched_controls = list(enriched_controls)
 
     # Resolve all owner OIDs in one batch
