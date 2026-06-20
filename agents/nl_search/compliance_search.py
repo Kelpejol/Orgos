@@ -19,6 +19,7 @@ import re
 from typing import Optional
 
 from agents.llm_client import llm_generate
+from agents.nl_search.vector_store import search_controls
 from config import settings
 from graph.client import get_list_items, resolve_user
 
@@ -227,6 +228,43 @@ async def _resolve_owners(oids: list[str]) -> dict[str, dict]:
 
 
 # =============================================================================
+#  ChromaDB vector search fallback
+# =============================================================================
+
+_VECTOR_DISTANCE_THRESHOLD = 0.6  # cosine distance — lower = more similar
+
+
+async def _vector_search_controls(question: str) -> list[dict]:
+    """
+    Semantic search over controls_v1 ChromaDB collection.
+    Used as a fallback when SharePoint Control Register is not configured or empty.
+    Returns controls in the same dict shape as _search_controls().
+    """
+    try:
+        hits = await search_controls(question, n_results=5)
+        controls = []
+        for hit in hits:
+            if hit.get("distance", 1.0) > _VECTOR_DISTANCE_THRESHOLD:
+                continue
+            meta = hit.get("metadata", {})
+            controls.append({
+                "id":               hit.get("id", ""),
+                "control_statement":hit.get("document", ""),
+                "control_type":     meta.get("control_type", ""),
+                "iso_clause":       meta.get("iso_clause", ""),
+                "owner_oid":        meta.get("owner_oid", ""),
+                "source_document":  meta.get("document_code", ""),
+                "risk_statement":   "",
+                "status":           "Active",
+            })
+        logger.info(f"compliance_search: vector fallback returned {len(controls)} controls")
+        return controls
+    except Exception as exc:
+        logger.warning(f"compliance_search: vector fallback failed: {exc}")
+        return []
+
+
+# =============================================================================
 #  Public interface
 # =============================================================================
 
@@ -256,6 +294,10 @@ async def search_compliance(question: str, user_oid: Optional[str] = None) -> di
         _search_controls(keywords, iso_clause),
         _search_compliance_calendar(keywords),
     )
+
+    # If SharePoint returned nothing, fall back to ChromaDB vector search
+    if not controls_raw:
+        controls_raw = await _vector_search_controls(question)
 
     # Enrich controls with evidence items (parallel per control, capped at 5)
     async def _enrich(ctrl: dict) -> dict:
