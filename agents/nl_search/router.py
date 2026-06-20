@@ -165,7 +165,7 @@ async def nl_search_query(
             )
 
         elif intent == "procedural":
-            result    = await search_procedural(question)
+            result    = await search_procedural(question, conversation_history=request.conversation_history)
             formatted = format_procedural_response(result)
             llm_ans   = await generate_chat_response(
                 question, "procedural", result, request.conversation_history,
@@ -179,7 +179,7 @@ async def nl_search_query(
                     user_oid=user.oid,
                     conversation_history=request.conversation_history,
                 ),
-                search_procedural(question),
+                search_procedural(question, conversation_history=request.conversation_history),
             )
             formatted = format_combined_response(comp_result, proc_result)
             llm_ans   = await generate_chat_response(

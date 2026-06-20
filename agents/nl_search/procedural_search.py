@@ -37,10 +37,49 @@ _VECTOR_FETCH = 15
 _MAX_PROCESSES = 3
 
 
-async def search_procedural(question: str) -> dict:
+def _build_procedural_query(question: str, conversation_history: list[dict] | None) -> str:
+    """
+    Build the query string to embed for ChromaDB search.
+
+    For short or vague questions (under 12 words), append the prior user message
+    so the embedding captures the actual topic. Example:
+      Prior: "how do I apply for leave?"
+      Current: "what form do I need for that?"
+      Query: "what form do I need for that? how do I apply for leave?"
+
+    This is the same context-enrichment principle used in compliance entity extraction:
+    a short follow-up alone doesn't carry enough signal for semantic search to work.
+    The combined query always embeds correctly because the vector space is topic-driven.
+    """
+    if not conversation_history or len(question.split()) >= 12:
+        return question
+
+    prior_user = [
+        m for m in conversation_history
+        if m.get("role") == "user"
+        and (m.get("content") or "").strip() != question.strip()
+    ]
+    if not prior_user:
+        return question
+
+    prior_text = (prior_user[-1].get("content") or "").strip()[:200]
+    if not prior_text:
+        return question
+
+    return f"{question} {prior_text}"
+
+
+async def search_procedural(
+    question: str,
+    conversation_history: list[dict] | None = None,
+) -> dict:
     """
     Semantic search over procedural steps.
     Returns a structured dict consumed by response_formatter.format_procedural_response().
+
+    conversation_history: used to enrich the embedding query when the question is short
+    or referential. The prior user message is appended so ChromaDB finds the right
+    procedure even for follow-ups like "what form do I need" or "who does this step".
 
     Shape:
     {
@@ -60,9 +99,12 @@ async def search_procedural(question: str) -> dict:
       "found": bool,
     }
     """
+    # Build the embedding query — enriched with context for short/vague questions.
+    embed_query = _build_procedural_query(question, conversation_history)
+
     # Step 1: semantic search in ChromaDB — fetch more hits so threshold filter
     # has enough candidates when the question covers multiple distinct procedures.
-    hits = await search_procedures(question, n_results=_VECTOR_FETCH)
+    hits = await search_procedures(embed_query, n_results=_VECTOR_FETCH)
     if not hits:
         logger.info(f"procedural_search: no ChromaDB hits for: {question[:60]}")
         return {"question": question, "processes": [], "found": False}
