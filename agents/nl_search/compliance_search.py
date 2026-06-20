@@ -329,11 +329,13 @@ async def _search_compliance_calendar(keywords: list[str]) -> list[dict]:
         matched = []
         for i in items:
             f = i.get("fields", {})
+            # CAL_FIELDS maps: obligation_name→Title, type→ObligationType, notes→ObligationNotes
+            # There is no "ObligationName" column — Title IS the obligation name.
             haystack = " ".join([
                 (f.get("Title") or ""),
-                (f.get("ObligationName") or ""),
                 (f.get("Authority") or ""),
                 (f.get("ObligationType") or ""),
+                (f.get("ObligationNotes") or ""),
             ]).lower()
             if any(kw in haystack for kw in kw_lower):
                 matched.append(i)
@@ -352,8 +354,10 @@ def _map_obligation(item: dict) -> dict:
         "authority":  f.get("Authority", ""),
         "due_date":   _date_only(f.get("DueDate", "")),
         "recurrence": f.get("Recurrence", ""),
-        "notes":      f.get("Notes", ""),
-        "owner_oid":  f.get("OwnerEntraId", ""),
+        # CAL_FIELDS["notes"] = "ObligationNotes" (not "Notes")
+        "notes":      f.get("ObligationNotes", ""),
+        # CAL_FIELDS["owner_id"] = "OwnerId" (not "OwnerEntraId")
+        "owner_oid":  f.get("OwnerId", ""),
     }
 
 
@@ -439,12 +443,16 @@ def _map_document(item: dict) -> dict:
         "title":               f.get("Title", ""),
         "type":                f.get("DocumentType", ""),
         "department":          f.get("Department", ""),
-        "status":              f.get("DocumentStatus", ""),
+        # DOC_FIELDS["status"] = "Status" (not "DocumentStatus")
+        "status":              f.get("Status", ""),
         "current_version":     f.get("CurrentVersion", ""),
         "effective_date":      _date_only(f.get("EffectiveDate", "")),
         "next_review_date":    _date_only(f.get("NextReviewDate", "")),
         "applicable_standards":f.get("ApplicableStandards", ""),
-        "owner_oid":           f.get("OwnerEntraId", ""),
+        # DOC_FIELDS["sharepoint_url"] = "SharePointUrl"
+        "sharepoint_url":      f.get("SharePointUrl", ""),
+        # DOC_FIELDS["owner_id"] = "OwnerId" (not "OwnerEntraId")
+        "owner_oid":           f.get("OwnerId", ""),
     }
 
 
@@ -462,8 +470,8 @@ async def _search_document_register(
         return []
     try:
         items = await get_list_items(list_id=list_id, list_name="Document Register", top=200)
-        # Exclude withdrawn documents
-        active = [i for i in items if i.get("fields", {}).get("DocumentStatus") != "Withdrawn"]
+        # Exclude withdrawn documents — DOC_FIELDS["status"] = "Status" (not "DocumentStatus")
+        active = [i for i in items if i.get("fields", {}).get("Status") != "Withdrawn"]
 
         # Document code matching — normalized contains-check so spaces, hyphens,
         # underscores, and missing year suffixes all resolve to the right document.
@@ -507,14 +515,18 @@ async def _search_document_register(
 #  Strategic Risk Register search
 # =============================================================================
 
+# Mirrors strategic_risks/router.py — Likelihood and Impact are stored as strings.
+_LIKELIHOOD_MAP = {"Low": 1, "Medium": 2, "High": 3}
+_IMPACT_MAP     = {"Low": 1, "Medium": 2, "High": 3, "Critical": 4}
+
+
 def _map_risk(item: dict) -> dict:
     f = item.get("fields", item)
-    likelihood = f.get("Likelihood") or 0
-    impact     = f.get("Impact") or 0
-    try:
-        score = int(likelihood) * int(impact)
-    except (ValueError, TypeError):
-        score = 0
+    likelihood = f.get("Likelihood") or "Low"
+    impact     = f.get("Impact") or "Low"
+    # Likelihood/Impact are stored as strings ("Low", "Medium", "High", "Critical").
+    # int() would raise ValueError — use the same lookup maps as strategic_risks/router.py.
+    score = _LIKELIHOOD_MAP.get(str(likelihood), 1) * _IMPACT_MAP.get(str(impact), 1)
     if score <= 3:
         level = "Low"
     elif score <= 6:
@@ -603,6 +615,7 @@ async def _vector_search_controls(question: str) -> list[dict]:
                 "control_statement":hit.get("document", ""),
                 "control_type":     meta.get("control_type", ""),
                 "iso_clause":       meta.get("iso_clause", ""),
+                "owner_role_title": meta.get("owner_role", ""),  # needed for ownership display
                 "owner_oid":        meta.get("owner_oid", ""),
                 "source_document":  meta.get("document_code", ""),
                 "risk_statement":   "",

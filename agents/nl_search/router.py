@@ -443,7 +443,10 @@ async def seed_index(
 # =============================================================================
 
 @router.get("/debug")
-async def debug_search(question: str) -> dict:
+async def debug_search(
+    question: str,
+    user: CurrentUser = Depends(require_compliance_lead),
+) -> dict:
     """
     Run the full query pipeline for a question and return every intermediate
     result: intent classification, entity extraction, OData filter, raw SharePoint

@@ -48,7 +48,11 @@ def format_compliance_response(search_result: dict) -> dict:
     if not search_result.get("found"):
         return _not_found_response(question, "compliance")
 
-    # Build markdown answer
+    gaps      = search_result.get("gaps", [])
+    documents = search_result.get("documents", [])
+    risks     = search_result.get("risks", [])
+
+    # Build markdown answer (fallback when LLM is unavailable)
     lines = []
     sources = []
 
@@ -90,15 +94,53 @@ def format_compliance_response(search_result: dict) -> dict:
             owner_n = owner.get("display_name") or "Unassigned"
             lines.append(f"- {name} — due {due}, authority: {auth}, owner: {owner_n}")
 
+    if documents:
+        lines.append("\n**Document Register:**")
+        for doc in documents[:3]:
+            code   = doc.get("document_code", "")
+            title  = doc.get("title", "")
+            status = doc.get("status", "")
+            review = doc.get("next_review_date", "")
+            own    = (doc.get("owner") or {}).get("display_name") or "Unassigned"
+            parts  = [f"**{title or code}**"]
+            if status:
+                parts.append(f"Status: {status}")
+            if review:
+                parts.append(f"Next review: {review}")
+            parts.append(f"Owner: {own}")
+            lines.append(" | ".join(parts))
+            sources.append({"title": title or code, "document_code": code, "clause": "", "link": ""})
+
+    if gaps:
+        lines.append("\n**Compliance gaps:**")
+        for gap in gaps[:3]:
+            gid      = gap.get("gap_id", "")
+            finding  = (gap.get("finding") or "")[:150]
+            severity = gap.get("severity", "")
+            status   = gap.get("status", "")
+            target   = gap.get("target_date", "")
+            lines.append(f"- [{gid}] {finding} — Severity: {severity}, Status: {status}, Target: {target}")
+
+    if risks:
+        lines.append("\n**Strategic risks:**")
+        for risk in risks[:3]:
+            desc  = (risk.get("description") or "")[:120]
+            level = risk.get("risk_level", "")
+            score = risk.get("risk_score", "")
+            lines.append(f"- {desc} — Score: {score} ({level})")
+
     if std_hint:
         lines.append(f"\nFor live traffic lights, see the **Standards Map** for {std_hint.get('clause', '')}.")
 
     answer = "\n".join(lines).strip()
 
-    # Structured data for rich UI rendering
+    # Structured data for rich UI rendering — includes all register results
     compliance_data = {
         "controls":       controls,
         "obligations":    obligations,
+        "gaps":           gaps,
+        "documents":      documents,
+        "risks":          risks,
         "standards_hint": std_hint,
         "entities":       entities,
     }

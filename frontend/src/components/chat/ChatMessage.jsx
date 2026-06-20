@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import SourcesAccordion from './SourcesAccordion.jsx';
 
 const MODE_LABELS = {
@@ -198,6 +199,89 @@ function renderMarkdown(text) {
 //  Inline parser — handles **bold**, *italic*, and [label](url) links
 // =============================================================================
 
+// =============================================================================
+//  LinkChip — renders [label](url) as a pill button + copy icon.
+//  URL is NEVER shown as text: click opens in new tab, copy icon copies to clipboard.
+// =============================================================================
+
+function LinkChip({ label, url }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    navigator.clipboard.writeText(url).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1800);
+    }).catch(() => {});
+  };
+
+  return (
+    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', verticalAlign: 'middle' }}>
+      {/* Open link */}
+      <a
+        href={url}
+        target="_blank"
+        rel="noopener noreferrer"
+        style={{
+          display:      'inline-flex',
+          alignItems:   'center',
+          gap:          '5px',
+          background:   '#eff6ff',
+          border:       '1px solid #bfdbfe',
+          borderRadius: '6px',
+          padding:      '3px 9px',
+          color:        '#1d4ed8',
+          fontWeight:   500,
+          fontSize:     '12px',
+          textDecoration: 'none',
+          maxWidth:     '260px',
+          overflow:     'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace:   'nowrap',
+          cursor:       'pointer',
+          transition:   'background 0.15s',
+        }}
+        onMouseEnter={e => e.currentTarget.style.background = '#dbeafe'}
+        onMouseLeave={e => e.currentTarget.style.background = '#eff6ff'}
+        title={`Open: ${label}`}
+      >
+        <svg width="12" height="12" viewBox="0 0 16 16" fill="none" style={{ flexShrink: 0 }}>
+          <path d="M6.5 3H3a1 1 0 00-1 1v9a1 1 0 001 1h9a1 1 0 001-1V9.5" stroke="#1d4ed8" strokeWidth="1.5" strokeLinecap="round"/>
+          <path d="M9 2h5v5M14 2L8 8" stroke="#1d4ed8" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+        </svg>
+        {label}
+      </a>
+
+      {/* Copy URL */}
+      <button
+        onClick={handleCopy}
+        title="Copy link"
+        style={{
+          display:      'inline-flex',
+          alignItems:   'center',
+          justifyContent: 'center',
+          width:        '24px',
+          height:       '24px',
+          background:   copied ? '#dcfce7' : '#f9fafb',
+          border:       `1px solid ${copied ? '#86efac' : '#e5e7eb'}`,
+          borderRadius: '5px',
+          cursor:       'pointer',
+          padding:      0,
+          flexShrink:   0,
+          transition:   'background 0.2s, border-color 0.2s',
+        }}
+      >
+        {copied
+          ? <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><path d="M2 8l4 4 8-8" stroke="#16a34a" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+          : <svg width="12" height="12" viewBox="0 0 16 16" fill="none"><rect x="5" y="1" width="9" height="11" rx="1.5" stroke="#6b7280" strokeWidth="1.5"/><path d="M3 5H2a1 1 0 00-1 1v9a1 1 0 001 1h8a1 1 0 001-1v-1" stroke="#6b7280" strokeWidth="1.5" strokeLinecap="round"/></svg>
+        }
+      </button>
+    </span>
+  );
+}
+
+
 // Matches [label](url) — label may contain hyphens/dots, URL must start with http(s)
 const LINK_RE = /\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g;
 
@@ -226,29 +310,7 @@ function parseLine(text) {
   // ── Step 2: render each segment ─────────────────────────────────────────────
   return segments.flatMap((seg, si) => {
     if (seg.kind === 'link') {
-      return [
-        <a
-          key={`lnk-${si}`}
-          href={seg.url}
-          target="_blank"
-          rel="noopener noreferrer"
-          style={{
-            display:        'inline-flex',
-            alignItems:     'center',
-            gap:            '4px',
-            color:          '#1d4ed8',
-            fontWeight:     500,
-            textDecoration: 'underline',
-            textUnderlineOffset: '2px',
-            borderRadius:   '3px',
-            padding:        '0 1px',
-            wordBreak:      'break-all',
-          }}
-        >
-          <span style={{ fontSize: '12px', flexShrink: 0 }}>📎</span>
-          {seg.label}
-        </a>,
-      ];
+      return [<LinkChip key={`lnk-${si}`} label={seg.label} url={seg.url} />];
     }
 
     // Text segment — apply bold then italic

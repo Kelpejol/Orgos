@@ -143,7 +143,7 @@ class _OrgOSEmbedder:
                 with httpx.Client(timeout=30) as client:
                     resp = client.post(
                         settings.embed_api_url,
-                        json={"input": text},
+                        json={"text": text},   # API expects "text", not "input"
                         headers=headers,
                     )
                     resp.raise_for_status()
@@ -275,9 +275,13 @@ def _sync_search(user_oid: str, question: str, limit: int) -> str:
     if not m:
         return ""
     results = m.search(question, user_id=user_oid, limit=limit)
+    # Mem0 v1.1 wraps results as {"results": [...], "relations": [...]} instead of a plain list.
+    # Iterating a dict gives string keys ("results", "relations") — calling .get() on a str crashes.
+    if isinstance(results, dict):
+        results = results.get("results") or []
     if not results:
         return ""
-    facts = [r.get("memory") or r.get("text", "") for r in results if r.get("memory") or r.get("text")]
+    facts = [r.get("memory") or r.get("text", "") for r in results if isinstance(r, dict) and (r.get("memory") or r.get("text"))]
     return "; ".join(f for f in facts if f)
 
 

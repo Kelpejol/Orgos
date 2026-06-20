@@ -145,15 +145,18 @@ async def search_procedural(
             steps = await get_steps_for_document(doc_code)
 
         if not steps:
-            # ChromaDB has the embedding but SharePoint list isn't configured yet
-            # Still return the semantic match with the matched step text as a stub
+            # ChromaDB has the embedding but SharePoint list isn't configured yet.
+            # Build a stub from the good hits only (distance-filtered, same doc_code).
+            # Never use the raw unfiltered `hits` — that would mix steps from unrelated
+            # documents if a poor-quality hit happens to share the same doc_code.
+            good_hits = [h for h in hits if h.get("distance", 1.0) <= _DISTANCE_THRESHOLD]
             steps = [{
-                "step_number": int(hit.get("metadata", {}).get("step_number", 1)),
-                "step_text":   hit.get("document", ""),
+                "step_number":    int(hit.get("metadata", {}).get("step_number", 1)),
+                "step_text":      hit.get("document", ""),
                 "roles_involved": hit.get("metadata", {}).get("roles_involved", ""),
-                "forms_referenced": "",
+                "forms_referenced":   "",
                 "systems_referenced": "",
-            } for hit in hits
+            } for hit in good_hits
               if hit.get("metadata", {}).get("document_code") == doc_code]
 
         doc_link = steps[0].get("document_link", "") if steps else ""

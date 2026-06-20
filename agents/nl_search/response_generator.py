@@ -136,16 +136,18 @@ def _clean_link_label(fname: str) -> str:
 def _extract_link_label(raw_url: str, fallback: str = "View document") -> str:
     """
     Extract and clean the filename from a SharePoint ?file=... URL parameter.
-    Falls back to the given fallback string if no file param found.
+    Falls back to the given fallback string if no file param found or filename is empty.
+    Never returns an empty string — the LLM must always have a non-empty label to copy.
     """
     if "file=" in raw_url:
         try:
-            fname = raw_url.split("file=")[1].split("&")[0].replace("%20", " ")
+            fname = raw_url.split("file=")[1].split("&")[0].replace("%20", " ").strip()
             if fname:
-                return _clean_link_label(fname)
+                cleaned = _clean_link_label(fname)
+                return cleaned if cleaned else fallback
         except Exception:
             pass
-    return fallback
+    return fallback or "View document"
 
 
 # =============================================================================
@@ -330,6 +332,7 @@ def _context_from_compliance(result: dict) -> str:
             eff      = doc.get("effective_date", "")
             review   = doc.get("next_review_date", "")
             stds     = doc.get("applicable_standards", "")
+            sp_url   = (doc.get("sharepoint_url") or "").strip()
             own      = (doc.get("owner") or {}).get("display_name") or "Unassigned"
             header   = f"[DOC: {code}]" if code else "[DOC]"
             lines.append(header)
@@ -353,6 +356,9 @@ def _context_from_compliance(result: dict) -> str:
             parts.append(f"Owner: {own}")
             if parts:
                 lines.append(" | ".join(parts))
+            if sp_url:
+                doc_label = _extract_link_label(sp_url, fallback=title or code or "View document")
+                lines.append(f"Document link: [{doc_label}]({sp_url})")
             lines.append("")
 
     # Strategic Risks

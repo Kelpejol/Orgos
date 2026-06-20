@@ -50,7 +50,9 @@ Classify the question into exactly one of these four categories:
 
 compliance   — the user is asking about: policies, rules, controls, who is
                responsible, evidence required, compliance status, ISO or NDPA
-               clauses, gaps, risks, deadlines, standards, what is due, how long
+               clauses, gaps, gap findings, gap status, remediation packages,
+               strategic risks, risk register, risk score, risk treatment, risk
+               level, risk owner, deadlines, standards, what is due, how long
                something must take, the status of a specific obligation, OR any
                document register query such as: next review date, effective date,
                document status, document version, document owner, applicable
