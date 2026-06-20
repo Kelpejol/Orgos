@@ -1,123 +1,252 @@
 import SourcesAccordion from './SourcesAccordion.jsx';
 
 const MODE_LABELS = {
-  compliance:  { label: 'Compliance', bg: '#dbeafe', color: '#1d4ed8' },
-  procedural:  { label: 'How-to',     bg: '#d1fae5', color: '#065f46' },
-  combined:    { label: 'Combined',   bg: '#ede9fe', color: '#5b21b6' },
+  compliance: { label: 'Compliance', bg: '#dbeafe', color: '#1d4ed8' },
+  procedural: { label: 'How-to',     bg: '#d1fae5', color: '#065f46' },
+  combined:   { label: 'Combined',   bg: '#ede9fe', color: '#5b21b6' },
 };
 
-// Very light markdown renderer — handles **bold**, numbered lists, bullet lists
+// =============================================================================
+//  Markdown renderer
+//  Handles: **bold**, *italic*, numbered lists (with sub-items), bullet lists,
+//  ### headers, **bold-only lines** (section headings), blank lines.
+//
+//  Key invariant: ordered items accumulate into ONE <ol> without flushing
+//  between items. Italic sub-lines attach to their parent <li>.
+// =============================================================================
+
 function renderMarkdown(text) {
   if (!text) return null;
-  const lines = text.split('\n');
-  const elements = [];
-  let listItems = [];
-  let orderedItems = [];
 
-  const flushList = (key) => {
-    if (listItems.length) {
-      elements.push(
-        <ul key={`ul-${key}`} style={{ margin: '6px 0', paddingLeft: '18px' }}>
-          {listItems.map((t, i) => <li key={i} style={{ marginBottom: '2px' }}>{parseLine(t)}</li>)}
-        </ul>
-      );
-      listItems = [];
-    }
-    if (orderedItems.length) {
-      elements.push(
-        <ol key={`ol-${key}`} style={{ margin: '6px 0', paddingLeft: '18px' }}>
-          {orderedItems.map((t, i) => <li key={i} style={{ marginBottom: '3px' }}>{parseLine(t)}</li>)}
-        </ol>
-      );
-      orderedItems = [];
-    }
+  const lines   = text.split('\n');
+  const elements = [];
+
+  // orderedItems stores { text: string, subs: string[] }
+  let orderedItems = [];
+  let listItems    = [];
+
+  // ── Flush helpers ──────────────────────────────────────────────────────────
+
+  const flushOrdered = (key) => {
+    if (!orderedItems.length) return;
+    elements.push(
+      <ol
+        key={`ol-${key}`}
+        style={{ margin: '10px 0', padding: 0, listStyle: 'none' }}
+      >
+        {orderedItems.map((item, i) => (
+          <li
+            key={i}
+            style={{
+              display:      'flex',
+              gap:          '10px',
+              marginBottom: item.subs.length ? '10px' : '5px',
+              alignItems:   'flex-start',
+            }}
+          >
+            {/* Number badge */}
+            <span
+              style={{
+                flexShrink:      0,
+                minWidth:        '22px',
+                height:          '22px',
+                borderRadius:    '50%',
+                background:      '#dbeafe',
+                color:           '#1d4ed8',
+                fontSize:        '11px',
+                fontWeight:      700,
+                display:         'flex',
+                alignItems:      'center',
+                justifyContent:  'center',
+                marginTop:       '1px',
+              }}
+            >
+              {i + 1}
+            </span>
+            {/* Step text + optional sub-items */}
+            <span style={{ flex: 1, lineHeight: 1.55 }}>
+              <span>{parseLine(item.text)}</span>
+              {item.subs.length > 0 && (
+                <div style={{ marginTop: '5px', display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
+                  {item.subs.map((sub, j) => (
+                    <span
+                      key={j}
+                      style={{
+                        fontSize:     '11px',
+                        color:        '#6b7280',
+                        background:   '#f3f4f6',
+                        borderRadius: '4px',
+                        padding:      '2px 7px',
+                      }}
+                    >
+                      {sub}
+                    </span>
+                  ))}
+                </div>
+              )}
+            </span>
+          </li>
+        ))}
+      </ol>
+    );
+    orderedItems = [];
   };
 
+  const flushUnordered = (key) => {
+    if (!listItems.length) return;
+    elements.push(
+      <ul key={`ul-${key}`} style={{ margin: '7px 0', paddingLeft: '20px' }}>
+        {listItems.map((t, i) => (
+          <li key={i} style={{ marginBottom: '4px', lineHeight: 1.55 }}>
+            {parseLine(t)}
+          </li>
+        ))}
+      </ul>
+    );
+    listItems = [];
+  };
+
+  const flushAll = (key) => {
+    flushOrdered(key);
+    flushUnordered(key);
+  };
+
+  // ── Line-by-line processing ────────────────────────────────────────────────
+
   lines.forEach((line, idx) => {
-    // Headers (###)
+
+    // ### Section header
     if (line.startsWith('### ')) {
-      flushList(idx);
+      flushAll(idx);
       elements.push(
-        <p key={idx} style={{ fontWeight: 700, margin: '10px 0 4px', fontSize: '13px' }}>
+        <p
+          key={idx}
+          style={{ fontWeight: 700, margin: '13px 0 4px', fontSize: '13px', color: '#111827' }}
+        >
           {parseLine(line.slice(4))}
         </p>
       );
       return;
     }
-    // Bold header (**)
-    if (line.startsWith('**') && line.endsWith('**') && line.length > 4) {
-      flushList(idx);
+
+    // **Bold-only line** — treat as a lightweight heading
+    if (/^\*\*[^*]+\*\*$/.test(line)) {
+      flushAll(idx);
       elements.push(
-        <p key={idx} style={{ fontWeight: 600, margin: '8px 0 2px' }}>
+        <p key={idx} style={{ fontWeight: 600, margin: '9px 0 3px', fontSize: '13px' }}>
           {line.slice(2, -2)}
         </p>
       );
       return;
     }
-    // Ordered list
-    const orderedMatch = line.match(/^(\d+)\. (.*)/);
-    if (orderedMatch) {
-      flushList(`pre-${idx}`);
-      orderedItems.push(orderedMatch[2]);
+
+    // Ordered list item (1. 2. 3. ...)
+    const ordMatch = line.match(/^(\d+)\. (.*)/);
+    if (ordMatch) {
+      flushUnordered(`pre-ord-${idx}`);   // switch list type — flush bullets only
+      orderedItems.push({ text: ordMatch[2], subs: [] });
       return;
     }
+
+    // Indented italic sub-line  (   *text*)  — attach to last ordered item
+    if (/^\s{2,}\*[^*].*\*\s*$/.test(line) || /^\s{2,}\*[^*]\*\s*$/.test(line)) {
+      const subText = line.trim().replace(/^\*|\*$/g, '');
+      if (orderedItems.length > 0) {
+        orderedItems[orderedItems.length - 1].subs.push(subText);
+      } else {
+        // Outside of a list — render as standalone grey note
+        flushAll(idx);
+        elements.push(
+          <div key={idx} style={{ fontSize: '11px', color: '#6b7280', marginLeft: '8px', marginBottom: '3px' }}>
+            {subText}
+          </div>
+        );
+      }
+      return;
+    }
+
     // Unordered list
     if (line.startsWith('- ') || line.startsWith('* ')) {
-      flushList(`pre-${idx}`);
+      flushOrdered(`pre-ul-${idx}`);   // switch list type — flush ordered only
       listItems.push(line.slice(2));
       return;
     }
-    // Italic prefix (   *...*) — step detail lines
-    if (line.match(/^\s{2,}\*.*\*$/)) {
-      elements.push(
-        <div key={idx} style={{ fontSize: '11px', color: '#6b7280', marginLeft: '16px', marginBottom: '2px' }}>
-          {line.trim().replace(/^\*|\*$/g, '')}
-        </div>
-      );
-      return;
-    }
-    // Blank line
+
+    // Blank line — flush everything
     if (!line.trim()) {
-      flushList(idx);
+      flushAll(idx);
       return;
     }
-    // Normal line
-    flushList(idx);
+
+    // Normal paragraph line
+    flushAll(idx);
     elements.push(
-      <p key={idx} style={{ margin: '3px 0' }}>{parseLine(line)}</p>
+      <p key={idx} style={{ margin: '4px 0', lineHeight: 1.6 }}>
+        {parseLine(line)}
+      </p>
     );
   });
-  flushList('end');
-  return elements;
+
+  flushAll('end');
+  return elements.length ? elements : null;
 }
 
-// Inline bold: **text**
+
+// =============================================================================
+//  Inline parser — handles **bold** and *italic* within a line
+// =============================================================================
+
 function parseLine(text) {
-  const parts = text.split(/(\*\*[^*]+\*\*)/g);
-  return parts.map((part, i) => {
-    if (part.startsWith('**') && part.endsWith('**')) {
-      return <strong key={i}>{part.slice(2, -2)}</strong>;
+  if (!text) return text;
+
+  // First split on **bold** markers
+  const boldParts = text.split(/(\*\*[^*]+\*\*)/g);
+
+  return boldParts.flatMap((part, i) => {
+    if (part.startsWith('**') && part.endsWith('**') && part.length > 4) {
+      return [<strong key={`b-${i}`}>{part.slice(2, -2)}</strong>];
     }
-    return part;
+    // Within a non-bold segment, handle *italic*
+    const italicParts = part.split(/(\*[^*]+\*)/g);
+    return italicParts.map((ip, j) => {
+      if (ip.startsWith('*') && ip.endsWith('*') && ip.length > 2) {
+        return (
+          <em key={`i-${i}-${j}`} style={{ color: '#6b7280', fontStyle: 'italic' }}>
+            {ip.slice(1, -1)}
+          </em>
+        );
+      }
+      return ip;
+    });
   });
 }
 
+
+// =============================================================================
+//  ChatMessage component
+// =============================================================================
+
 export default function ChatMessage({ message }) {
-  const isUser = message.role === 'user';
+  const isUser   = message.role === 'user';
   const modeInfo = message.mode ? MODE_LABELS[message.mode] : null;
+
+  // Detect "I don't have information" type responses for subtle styling
+  const isNoInfo = !message.loading && /i (don't|do not|couldn't|didn't|cannot) (have|find|know)/i.test(
+    message.content || ''
+  );
 
   if (isUser) {
     return (
-      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '12px' }}>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: '14px' }}>
         <div
           style={{
             maxWidth:     '82%',
             background:   '#1d4ed8',
             color:        '#fff',
             borderRadius: '14px 14px 2px 14px',
-            padding:      '9px 13px',
+            padding:      '9px 14px',
             fontSize:     '13.5px',
-            lineHeight:   1.45,
+            lineHeight:   1.5,
           }}
         >
           {message.content}
@@ -126,40 +255,42 @@ export default function ChatMessage({ message }) {
     );
   }
 
-  // Assistant message
+  // ── Assistant message ──────────────────────────────────────────────────────
   return (
-    <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: '14px' }}>
+    <div style={{ display: 'flex', justifyContent: 'flex-start', marginBottom: '16px' }}>
       <div
         style={{
-          maxWidth:     '90%',
-          background:   '#f9fafb',
-          border:       '1px solid #e5e7eb',
+          maxWidth:     '92%',
+          background:   isNoInfo ? '#fffbeb' : '#f9fafb',
+          border:       `1px solid ${isNoInfo ? '#fde68a' : '#e5e7eb'}`,
+          borderLeft:   isNoInfo ? '3px solid #d97706' : undefined,
           borderRadius: '2px 14px 14px 14px',
-          padding:      '10px 13px',
+          padding:      '11px 14px',
           fontSize:     '13px',
-          lineHeight:   1.5,
+          lineHeight:   1.55,
           color:        '#111827',
         }}
       >
         {/* Mode badge */}
-        {modeInfo && (
+        {modeInfo && !message.loading && (
           <span
             style={{
               display:      'inline-block',
-              padding:      '1px 7px',
-              borderRadius: '9px',
+              padding:      '2px 8px',
+              borderRadius: '10px',
               fontSize:     '10px',
               fontWeight:   600,
+              letterSpacing:'0.03em',
               background:   modeInfo.bg,
               color:        modeInfo.color,
-              marginBottom: '7px',
+              marginBottom: '8px',
             }}
           >
             {modeInfo.label}
           </span>
         )}
 
-        {/* Loading state */}
+        {/* Loading dots */}
         {message.loading ? (
           <div style={{ display: 'flex', gap: '4px', alignItems: 'center', padding: '4px 0' }}>
             {[0, 1, 2].map(i => (
@@ -178,9 +309,11 @@ export default function ChatMessage({ message }) {
           <div>{renderMarkdown(message.content)}</div>
         )}
 
-        {/* Sources */}
+        {/* Sources accordion */}
         {!message.loading && message.sources?.length > 0 && (
-          <SourcesAccordion sources={message.sources} />
+          <div style={{ marginTop: '8px' }}>
+            <SourcesAccordion sources={message.sources} />
+          </div>
         )}
       </div>
     </div>

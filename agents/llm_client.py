@@ -83,6 +83,35 @@ async def llm_generate(
     )
 
 
+async def llm_chat(
+    messages: list[dict],
+    max_tokens: int = 500,
+    temperature: float = 0.25,
+) -> str:
+    """
+    Multi-turn chat completion using a pre-built messages list.
+    [{role: "system"|"user"|"assistant", content: "..."}]
+    Gateway (preferred): POSTs messages directly — full conversation context.
+    Ollama/RunPod fallback: concatenates into a single prompt string.
+    """
+    if settings.chat_api_url:
+        return await _gateway_chat(messages, max_tokens=max_tokens, temperature=temperature)
+
+    # Non-gateway fallback: flatten messages into a prompt
+    parts = []
+    for m in messages:
+        role    = m.get("role", "")
+        content = m.get("content", "")
+        if role == "system":
+            parts.append(f"[System]\n{content}")
+        elif role == "user":
+            parts.append(f"User: {content}")
+        elif role == "assistant":
+            parts.append(f"Assistant: {content}")
+    parts.append("Assistant:")
+    return await llm_generate("\n\n".join(parts), max_tokens=max_tokens, temperature=temperature)
+
+
 async def check_llm_connectivity() -> dict:
     """Health check — delegates to the active provider."""
     if settings.chat_api_url:
@@ -142,6 +171,37 @@ async def _gateway_generate(
 
     except Exception as exc:
         logger.warning(f"Gateway generate failed: {exc}")
+        return ""
+
+
+async def _gateway_chat(
+    messages: list[dict],
+    *,
+    max_tokens: int,
+    temperature: float,
+) -> str:
+    """POST a pre-built messages list to the gateway (multi-turn)."""
+    headers = {
+        "Authorization": f"Bearer {settings.inference_api_key}",
+        "Content-Type":  "application/json",
+    }
+    payload = {
+        "messages":    messages,
+        "max_tokens":  max_tokens,
+        "temperature": temperature,
+    }
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0)) as client:
+            resp = await client.post(settings.chat_api_url, headers=headers, json=payload)
+            resp.raise_for_status()
+            data = resp.json()
+        choices = data.get("choices") or []
+        if choices:
+            msg = choices[0].get("message") or {}
+            return str(msg.get("content", "")).strip()
+        return str(data.get("content") or data.get("text") or "").strip()
+    except Exception as exc:
+        logger.warning(f"Gateway chat failed: {exc}")
         return ""
 
 

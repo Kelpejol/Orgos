@@ -10,7 +10,7 @@ import asyncio
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from typing import Optional
 
 from auth.validator import CurrentUser, get_current_user, require_compliance_lead
@@ -22,6 +22,7 @@ from agents.nl_search.response_formatter import (
     format_procedural_response,
     format_combined_response,
 )
+from agents.nl_search.response_generator import generate_chat_response
 from agents.nl_search.embedder import check_embed_connectivity
 from agents.nl_search.vector_store import get_collection_stats, embed_and_store_control
 
@@ -37,6 +38,18 @@ router = APIRouter(prefix="/api/v1/nl-search", tags=["NL Search"])
 class NLSearchRequest(BaseModel):
     question: str = Field(min_length=2, max_length=1000)
     session_id: Optional[str] = None  # Informational — stored by frontend in IndexedDB
+    conversation_history: list[dict] = Field(default_factory=list)
+
+    @field_validator("conversation_history")
+    @classmethod
+    def _clean_history(cls, v: list[dict]) -> list[dict]:
+        # Strip to role+content only, keep last 10 messages, reject unknown roles
+        clean = [
+            {"role": m.get("role", ""), "content": (m.get("content") or "")[:500]}
+            for m in v
+            if m.get("role") in ("user", "assistant")
+        ]
+        return clean[-10:]
 
 
 class NLSearchResponse(BaseModel):
@@ -74,16 +87,21 @@ async def nl_search_query(
     intent = await classify_intent(question)
     logger.info(f"NL Search | user={user.oid} | intent={intent} | q='{question[:80]}'")
 
-    # 2. Route to search pipelines
+    # 2. Route to search pipelines + generate RAG answer
     try:
         if intent == "compliance":
-            result = search_compliance(question, user_oid=user.oid)
-            result = await result
+            result    = await search_compliance(question, user_oid=user.oid)
             formatted = format_compliance_response(result)
+            llm_ans   = await generate_chat_response(
+                question, "compliance", result, request.conversation_history
+            )
 
         elif intent == "procedural":
-            result = await search_procedural(question)
+            result    = await search_procedural(question)
             formatted = format_procedural_response(result)
+            llm_ans   = await generate_chat_response(
+                question, "procedural", result, request.conversation_history
+            )
 
         else:  # "both"
             comp_result, proc_result = await asyncio.gather(
@@ -91,6 +109,12 @@ async def nl_search_query(
                 search_procedural(question),
             )
             formatted = format_combined_response(comp_result, proc_result)
+            llm_ans   = await generate_chat_response(
+                question, "both", {},
+                request.conversation_history,
+                compliance_result=comp_result,
+                procedural_result=proc_result,
+            )
 
     except Exception as exc:
         logger.error(f"NL Search pipeline error: {exc}", exc_info=True)
@@ -99,9 +123,12 @@ async def nl_search_query(
             detail="Search pipeline error. Please try again.",
         )
 
+    # LLM answer is primary; fall back to structured formatter if LLM failed
+    answer = llm_ans if llm_ans else formatted["answer"]
+
     return NLSearchResponse(
         mode=formatted["mode"],
-        answer=formatted["answer"],
+        answer=answer,
         sources=formatted.get("sources", []),
         compliance_data=formatted.get("compliance_data"),
         procedural_data=formatted.get("procedural_data"),

@@ -136,7 +136,14 @@ export default function ChatPanel({ isOpen, onClose }) {
     await saveMessage(sessionId, userMsg);
 
     try {
-      const response = await nlSearchApi.query(question, sessionId);
+      // Send the last 6 messages as conversation context (3 user+assistant pairs)
+      // Filter out the greeting, loading indicator, and current question just pushed
+      const conversationHistory = messages
+        .filter(m => !m.loading && m.id !== 'greeting' && (m.role === 'user' || m.role === 'assistant'))
+        .slice(-6)
+        .map(m => ({ role: m.role, content: m.content }));
+
+      const response = await nlSearchApi.query(question, sessionId, conversationHistory);
       const assistantMsg = {
         id:        `msg_${Date.now() + 1}`,
         role:      'assistant',

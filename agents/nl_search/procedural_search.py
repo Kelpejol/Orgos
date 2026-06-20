@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 
 # Similarity distance threshold — ChromaDB cosine distance, lower = more similar.
 # Results above this threshold are considered poor matches and excluded.
-_DISTANCE_THRESHOLD = 0.55
+_DISTANCE_THRESHOLD = 0.42
 
 
 async def search_procedural(question: str) -> dict:

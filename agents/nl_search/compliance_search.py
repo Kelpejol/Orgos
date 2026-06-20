@@ -231,7 +231,7 @@ async def _resolve_owners(oids: list[str]) -> dict[str, dict]:
 #  ChromaDB vector search fallback
 # =============================================================================
 
-_VECTOR_DISTANCE_THRESHOLD = 0.6  # cosine distance — lower = more similar
+_VECTOR_DISTANCE_THRESHOLD = 0.42  # cosine distance — lower = more similar
 
 
 async def _vector_search_controls(question: str) -> list[dict]:

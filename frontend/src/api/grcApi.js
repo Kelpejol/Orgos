@@ -274,9 +274,13 @@ export const nlSearchApi = {
    * @param {string|null} sessionId  — informational, stored by frontend in IndexedDB
    * @returns {Promise<{mode, answer, sources, compliance_data, procedural_data, intent}>}
    */
-  query: (question, sessionId = null) =>
+  query: (question, sessionId = null, conversationHistory = []) =>
     apiClient
-      .post('/api/v1/nl-search/query', { question, session_id: sessionId })
+      .post('/api/v1/nl-search/query', {
+        question,
+        session_id:           sessionId,
+        conversation_history: conversationHistory,
+      })
       .then(r => r.data),
 
   /**
