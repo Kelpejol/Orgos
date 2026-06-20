@@ -15,7 +15,7 @@ from typing import Optional
 
 from auth.validator import CurrentUser, get_current_user, require_compliance_lead
 from agents.nl_search.intent_classifier import classify_intent
-from agents.nl_search.compliance_search import search_compliance
+from agents.nl_search.compliance_search import search_compliance, debug_compliance_pipeline
 from agents.nl_search.procedural_search import search_procedural
 from agents.nl_search.response_formatter import (
     format_compliance_response,
@@ -440,6 +440,27 @@ async def seed_index(
         "procedures_seeded": procedures_ok,
         "errors":            errors,
     }
+
+
+# =============================================================================
+#  Debug — expose every pipeline stage for a given question
+# =============================================================================
+
+@router.get("/debug")
+async def debug_search(
+    question: str,
+    user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    """
+    Run the compliance search pipeline for a question and return every intermediate
+    result: entity extraction output, OData filter string, raw SharePoint rows,
+    ChromaDB hits, and compliance calendar results.
+
+    Use this to pinpoint exactly which stage is failing.
+
+    Example: GET /api/v1/nl-search/debug?question=who+owns+the+access+control+policy
+    """
+    return await debug_compliance_pipeline(question)
 
 
 # =============================================================================

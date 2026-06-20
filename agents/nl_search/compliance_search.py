@@ -149,9 +149,11 @@ async def _search_controls(keywords: list[str], iso_clause: Optional[str]) -> li
     if iso_clause:
         filters.append(f"fields/ISOClause eq '{iso_clause}'")
     elif keywords:
-        # Build an OR clause across all keywords so multi-topic queries hit all relevant controls
+        # Filter only on ControlStatement — risk/owner columns are not reliable
+        # as OData filter targets (may not be indexed, may not support contains()).
+        # They are fetched in select_fields for display, not used for matching.
         kw_parts = [
-            f"(contains(fields/ControlStatement, '{kw}') or contains(fields/RiskImplication, '{kw}'))"
+            f"contains(fields/ControlStatement, '{kw}')"
             for kw in keywords[:5]
         ]
         filters.append("(" + " or ".join(kw_parts) + ")")
@@ -419,3 +421,112 @@ async def search_compliance(
         "standards_hint": standards_hint,
         "found":          bool(enriched_controls or obligations),
     }
+
+
+# =============================================================================
+#  Debug pipeline — exposes every intermediate step for a given question.
+#  Used by GET /api/v1/nl-search/debug?question=... to isolate failures.
+# =============================================================================
+
+async def debug_compliance_pipeline(question: str) -> dict:
+    """
+    Run the full compliance search pipeline and return every intermediate result.
+    Shows: extracted entities, OData filter string, raw SharePoint items (before
+    mapping), mapped controls, ChromaDB hits, and any errors. Use this to pinpoint
+    exactly which stage is failing for a given question.
+    """
+    result: dict = {"question": question, "stages": {}}
+
+    # Stage 1: Entity extraction
+    try:
+        entities = await _extract_entities(question)
+        result["stages"]["1_entity_extraction"] = {
+            "status": "ok",
+            "entities": entities,
+        }
+    except Exception as exc:
+        result["stages"]["1_entity_extraction"] = {"status": "error", "error": str(exc)}
+        return result
+
+    keywords  = entities.get("keywords") or []
+    iso_clause = entities.get("iso_clause")
+
+    # Stage 2: Build and show OData filter
+    filters = []
+    if iso_clause:
+        filters.append(f"fields/ISOClause eq '{iso_clause}'")
+    elif keywords:
+        kw_parts = [f"contains(fields/ControlStatement, '{kw}')" for kw in keywords[:5]]
+        filters.append("(" + " or ".join(kw_parts) + ")")
+    odata_filter = " and ".join(filters) if filters else None
+    result["stages"]["2_odata_filter"] = {"filter": odata_filter}
+
+    # Stage 3: Raw SharePoint query
+    list_id = settings.control_register_list_id
+    if not settings.is_list_configured(list_id):
+        result["stages"]["3_sharepoint_query"] = {"status": "skipped", "reason": "list not configured"}
+    else:
+        try:
+            raw_items = await get_list_items(
+                list_id=list_id,
+                list_name="Control Register",
+                odata_filter=odata_filter,
+                select_fields=(
+                    "id,fields/Title,fields/ControlStatement,fields/ControlType,"
+                    "fields/ISOClause,fields/OwnerRole,fields/OwnerEntraId,"
+                    "fields/SourceDocumentCode,fields/RiskImplication,fields/Status"
+                ),
+                top=_CONTROLS_FETCH_TOP,
+            )
+            active = [i for i in raw_items if i.get("fields", {}).get("Status") == "Active"]
+            result["stages"]["3_sharepoint_query"] = {
+                "status": "ok",
+                "total_returned": len(raw_items),
+                "active_count": len(active),
+                # Show first 3 raw items (control statement + status only, for readability)
+                "sample": [
+                    {
+                        "id": str(i.get("id", "")),
+                        "ControlStatement": (i.get("fields", {}).get("ControlStatement") or "")[:120],
+                        "Status": i.get("fields", {}).get("Status", ""),
+                        "OwnerRole": i.get("fields", {}).get("OwnerRole", ""),
+                        "RiskImplication": (i.get("fields", {}).get("RiskImplication") or "")[:100],
+                    }
+                    for i in active[:3]
+                ],
+            }
+        except Exception as exc:
+            result["stages"]["3_sharepoint_query"] = {"status": "error", "error": str(exc)}
+
+    # Stage 4: ChromaDB vector search
+    try:
+        hits = await search_controls(question, n_results=_VECTOR_RESULTS)
+        good_hits = [h for h in hits if h.get("distance", 1.0) <= _VECTOR_DISTANCE_THRESHOLD]
+        result["stages"]["4_chromadb_search"] = {
+            "status": "ok",
+            "total_hits": len(hits),
+            "good_hits": len(good_hits),
+            "sample": [
+                {
+                    "id": h.get("id", ""),
+                    "distance": round(h.get("distance", 1.0), 4),
+                    "text": (h.get("document") or "")[:100],
+                }
+                for h in good_hits[:3]
+            ],
+        }
+    except Exception as exc:
+        result["stages"]["4_chromadb_search"] = {"status": "error", "error": str(exc)}
+
+    # Stage 5: Compliance calendar
+    try:
+        obligations = await _search_compliance_calendar(keywords)
+        result["stages"]["5_compliance_calendar"] = {
+            "status": "ok",
+            "count": len(obligations),
+            "sample": [{"name": o.get("name", ""), "due_date": o.get("due_date", "")} for o in obligations[:3]],
+        }
+    except Exception as exc:
+        result["stages"]["5_compliance_calendar"] = {"status": "error", "error": str(exc)}
+
+    return result
