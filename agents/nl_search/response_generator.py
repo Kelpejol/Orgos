@@ -95,14 +95,27 @@ def _context_from_compliance(result: dict) -> str:
     lines: list[str] = []
 
     for ctrl in controls[:3]:
-        stmt  = (ctrl.get("control_statement") or "")[:280]
-        risk  = (ctrl.get("risk_statement") or "")[:200]
-        iso   = ctrl.get("iso_clause", "")
-        src   = ctrl.get("source_document", "")
-        ctype = ctrl.get("control_type", "")
-        owner = (ctrl.get("owner") or {})
-        name  = owner.get("display_name") or "Unassigned"
-        ev    = ctrl.get("evidence", [])
+        stmt       = (ctrl.get("control_statement") or "")[:280]
+        risk       = (ctrl.get("risk_statement") or "")[:200]
+        iso        = ctrl.get("iso_clause", "")
+        src        = ctrl.get("source_document", "")
+        ctype      = ctrl.get("control_type", "")
+        role_title = (ctrl.get("owner_role_title") or "").strip()
+        owner      = (ctrl.get("owner") or {})
+        person     = (owner.get("display_name") or "").strip()
+        ev         = ctrl.get("evidence", [])
+
+        # Build a clear ownership string — the LLM needs to be able to answer
+        # "who owns this", "which role is responsible", and "who is the owner"
+        # from the same line regardless of how the question is phrased.
+        if role_title and person and person != role_title:
+            owner_str = f"{role_title} (held by {person})"
+        elif role_title:
+            owner_str = role_title
+        elif person:
+            owner_str = person
+        else:
+            owner_str = "Unassigned"
 
         header = "[CONTROL"
         if src:
@@ -114,7 +127,7 @@ def _context_from_compliance(result: dict) -> str:
         lines.append(f"Rule: {stmt}")
         if risk:
             lines.append(f"Risk if fails: {risk}")
-        lines.append(f"Type: {ctype or 'N/A'} | Owner: {name} | {_evidence_status(ev)}")
+        lines.append(f"Type: {ctype or 'N/A'} | Owner role: {owner_str} | {_evidence_status(ev)}")
         lines.append("")
 
     if obligations:

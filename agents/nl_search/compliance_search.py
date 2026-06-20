@@ -39,23 +39,60 @@ _VECTOR_RESULTS        = 8    # ChromaDB hits before distance filtering
 # =============================================================================
 
 _ENTITY_PROMPT = """\
-Extract search entities from a compliance question. Return JSON only.
+Extract search entities from a GRC compliance question. Return JSON only.
 
-If the question covers multiple topics, extract keywords that cover ALL of them.
+Rules:
+- If the question covers multiple topics, extract keywords covering ALL of them.
+- If the question is short, vague, or uses references like "this control", "the above",
+  "the same", "it", or asks about a property (owner, risk, evidence, status) without
+  naming the subject — use the recent conversation context to derive the actual topic.
+- Combine keywords from the current question AND the context when the question alone
+  is not self-contained.
+
+{context_block}Question: {question}
 
 Fields:
-  "keywords": list of up to 5 topic keywords covering all topics in the question
+  "keywords": up to 5 topic keywords that identify the subject (control, policy, obligation)
   "iso_clause": ISO 27001/9001 clause if explicitly mentioned (e.g. "A.5.17") or null
   "standard": "ISO 27001" | "ISO 9001" | "NDPA" or null
   "is_personal_query": true if asking about "my" items, "my overdue", "assigned to me"
 
-Question: {question}
-
 JSON:"""
 
 
-async def _extract_entities(question: str) -> dict:
-    prompt = _ENTITY_PROMPT.format(question=question)
+def _build_entity_context(question: str, recent_history: list[dict] | None) -> str:
+    """
+    Build a context block for entity extraction from recent user messages.
+    Only uses user messages (not assistant answers) — assistant text is long and noisy.
+    Excludes the current question itself to avoid repetition.
+    """
+    if not recent_history:
+        return ""
+    prior_user = [
+        m for m in recent_history
+        if m.get("role") == "user"
+        and (m.get("content") or "").strip() != question.strip()
+    ]
+    if not prior_user:
+        return ""
+    lines = [
+        f"- {(m.get('content') or '').strip()[:200]}"
+        for m in prior_user[-2:]  # at most 2 prior user messages
+    ]
+    return "Recent conversation context:\n" + "\n".join(lines) + "\n\n"
+
+
+async def _extract_entities(question: str, recent_history: list[dict] | None = None) -> dict:
+    """
+    Extract search keywords, ISO clause, standard, and query type from a question.
+
+    When the question is short or referential (e.g. "who is the owner", "what is the risk",
+    "show me more"), recent_history supplies the prior user messages so the LLM can
+    derive the actual topic. This works for any follow-up question about any subject —
+    not just ownership — because the extraction is principle-based, not hardcoded.
+    """
+    context_block = _build_entity_context(question, recent_history)
+    prompt = _ENTITY_PROMPT.format(question=question, context_block=context_block)
     raw = await llm_generate(prompt, tier="light", max_tokens=200, temperature=0.0, json_mode=True)
     raw = raw.strip()
 
@@ -73,11 +110,18 @@ async def _extract_entities(question: str) -> dict:
         except Exception:
             pass
 
-    # Fallback: derive keywords from question text when JSON parse fails entirely
-    words = re.findall(r'\b[a-zA-Z]{4,}\b', question.lower())
+    # Fallback: derive keywords from question + recent context when JSON parse fails entirely.
+    # Include prior user messages so short follow-ups still get meaningful keywords.
+    all_text = question
+    if recent_history:
+        for m in recent_history[-4:]:
+            if m.get("role") == "user":
+                all_text += " " + (m.get("content") or "")
+    words = re.findall(r'\b[a-zA-Z]{4,}\b', all_text.lower())
     stop = {"what", "when", "where", "which", "that", "this", "with", "from",
             "have", "does", "your", "their", "show", "give", "tell", "about",
-            "many", "much", "long", "often", "must", "should", "would", "could"}
+            "many", "much", "long", "often", "must", "should", "would", "could",
+            "role", "owner", "risk", "type", "more", "same", "above", "control"}
     return {
         "keywords":          [w for w in words if w not in stop][:5],
         "iso_clause":        None,
@@ -121,8 +165,8 @@ async def _search_controls(keywords: list[str], iso_clause: Optional[str]) -> li
             odata_filter=odata_filter,
             select_fields=(
                 "id,fields/Title,fields/ControlStatement,fields/ControlType,"
-                "fields/ISOClause,fields/OwnerRoleEntraId,fields/SourceDocumentCode,"
-                "fields/RiskImplication,fields/Status"
+                "fields/ISOClause,fields/OwnerRole,fields/OwnerEntraId,"
+                "fields/SourceDocumentCode,fields/RiskImplication,fields/Status"
             ),
             top=_CONTROLS_FETCH_TOP,
         )
@@ -139,7 +183,8 @@ def _map_control(item: dict) -> dict:
         "control_statement":f.get("ControlStatement") or f.get("Title", ""),
         "control_type":     f.get("ControlType", ""),
         "iso_clause":       f.get("ISOClause", ""),
-        "owner_oid":        f.get("OwnerRoleEntraId", ""),
+        "owner_role_title": f.get("OwnerRole", ""),     # role title string (always present)
+        "owner_oid":        f.get("OwnerEntraId", ""),  # Entra OID → resolved to person name
         "source_document":  f.get("SourceDocumentCode", ""),
         "risk_statement":   f.get("RiskImplication", ""),
         "status":           f.get("Status", ""),
@@ -289,24 +334,32 @@ async def _vector_search_controls(question: str) -> list[dict]:
 #  Public interface
 # =============================================================================
 
-async def search_compliance(question: str, user_oid: Optional[str] = None) -> dict:
+async def search_compliance(
+    question: str,
+    user_oid: Optional[str] = None,
+    conversation_history: list[dict] | None = None,
+) -> dict:
     """
     Run a compliance search for the given question.
     Returns a structured dict consumed by response_formatter.format_compliance_response().
+
+    conversation_history: passed through to entity extraction so short or referential
+    follow-up questions ("who is the owner", "what is the evidence status", "show more")
+    are resolved to the actual topic from recent user messages — not just the 2-word query.
 
     Shape:
     {
       "question": str,
       "entities": { keywords, iso_clause, standard, is_personal_query },
       "controls": [ { id, control_statement, control_type, iso_clause,
-                       owner, source_document, risk_statement,
+                       owner_role_title, owner, source_document, risk_statement,
                        evidence: [...] } ],
       "obligations": [ ... ],
       "standards_hint": { clause, note } | None,
       "found": bool,
     }
     """
-    entities = await _extract_entities(question)
+    entities = await _extract_entities(question, recent_history=conversation_history)
     keywords     = entities.get("keywords") or []
     iso_clause   = entities.get("iso_clause")
 
@@ -316,11 +369,12 @@ async def search_compliance(question: str, user_oid: Optional[str] = None) -> di
         _search_compliance_calendar(keywords),
     )
 
-    # If SharePoint returned nothing, fall back to ChromaDB vector search
+    # If SharePoint returned nothing, fall back to ChromaDB vector search.
+    # Pass the original question (not keywords) so semantic similarity works.
     if not controls_raw:
         controls_raw = await _vector_search_controls(question)
 
-    # Enrich controls with evidence items (parallel per control, capped at 5)
+    # Enrich controls with evidence items (parallel per control, capped at limit)
     async def _enrich(ctrl: dict) -> dict:
         evidence = await _get_evidence_for_control(ctrl["id"])
         ctrl["evidence"] = evidence
@@ -331,22 +385,29 @@ async def search_compliance(question: str, user_oid: Optional[str] = None) -> di
         enriched_controls = await asyncio.gather(*[_enrich(c) for c in controls_raw[:_CONTROLS_ENRICH_LIMIT]])
         enriched_controls = list(enriched_controls)
 
-    # Resolve all owner OIDs in one batch
+    # Resolve all owner OIDs in one batch (parallel Graph API calls)
     all_oids = (
         [c["owner_oid"] for c in enriched_controls if c.get("owner_oid")] +
         [o["owner_oid"] for o in obligations if o.get("owner_oid")]
     )
     owners = await _resolve_owners(all_oids)
 
-    # Attach resolved owner to controls
+    # Attach owner to controls.
+    # Resolution order: OID → person name (if OID present and resolves).
+    # Fallback: role title string from OwnerRole column (always populated).
+    # Never show a raw OID to the LLM — it's meaningless and confuses the model.
     for ctrl in enriched_controls:
-        oid = ctrl.get("owner_oid", "")
-        ctrl["owner"] = owners.get(oid, {"display_name": ctrl.get("owner_oid", ""), "email": ""})
+        oid        = ctrl.get("owner_oid", "")
+        role_title = ctrl.get("owner_role_title", "")
+        if oid and oid in owners:
+            ctrl["owner"] = owners[oid]
+        else:
+            ctrl["owner"] = {"display_name": role_title or "Unassigned", "email": ""}
 
-    # Attach resolved owner to obligations
+    # Attach owner to obligations
     for ob in obligations:
         oid = ob.get("owner_oid", "")
-        ob["owner"] = owners.get(oid, {"display_name": ob.get("owner_oid", ""), "email": ""})
+        ob["owner"] = owners.get(oid, {"display_name": "Unassigned", "email": ""})
 
     standards_hint = await _get_standards_status(iso_clause)
 

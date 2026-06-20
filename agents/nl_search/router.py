@@ -153,9 +153,11 @@ async def nl_search_query(
             )
 
         elif intent == "compliance":
-            # Multi-topic handling is done inside search_compliance via all-keyword
-            # OData OR filters — no question splitting needed at the router level.
-            result    = await search_compliance(question, user_oid=user.oid)
+            result    = await search_compliance(
+                question,
+                user_oid=user.oid,
+                conversation_history=request.conversation_history,
+            )
             formatted = format_compliance_response(result)
             llm_ans   = await generate_chat_response(
                 question, "compliance", result, request.conversation_history,
@@ -172,7 +174,11 @@ async def nl_search_query(
 
         else:  # "both"
             comp_result, proc_result = await asyncio.gather(
-                search_compliance(question, user_oid=user.oid),
+                search_compliance(
+                    question,
+                    user_oid=user.oid,
+                    conversation_history=request.conversation_history,
+                ),
                 search_procedural(question),
             )
             formatted = format_combined_response(comp_result, proc_result)
@@ -269,7 +275,7 @@ async def rebuild_index(
                 odata_filter="fields/Status eq 'Active'",
                 select_fields=(
                     "id,fields/ControlStatement,fields/ControlType,"
-                    "fields/ISOClause,fields/OwnerRoleEntraId,fields/SourceDocumentCode"
+                    "fields/ISOClause,fields/OwnerRole,fields/OwnerEntraId,fields/SourceDocumentCode"
                 ),
                 top=500,
             )
@@ -282,7 +288,7 @@ async def rebuild_index(
                     "document_code": f.get("SourceDocumentCode", ""),
                     "iso_clause":    f.get("ISOClause", ""),
                     "control_type":  f.get("ControlType", ""),
-                    "owner_oid":     f.get("OwnerRoleEntraId", ""),
+                    "owner_oid":     f.get("OwnerEntraId", ""),
                 }
                 ok = await embed_and_store_control(str(item.get("id", "")), stmt, meta)
                 if ok:
