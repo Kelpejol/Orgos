@@ -222,8 +222,16 @@ def _map_control(item: dict) -> dict:
     }
 
 
-async def _get_evidence_for_control(control_id: str) -> list[dict]:
-    """Fetch evidence items linked to a specific control."""
+async def _get_all_evidence() -> list[dict]:
+    """
+    Fetch all Evidence Tracker items in one batch and filter per control in Python.
+
+    OData filtering on LinkedControlId is unreliable — SharePoint may store the
+    value as a Number or Text column depending on how the cascade wrote it, and
+    a type-mismatch causes a silent 404 that returns [] even when evidence exists.
+    One batch fetch + Python comparison avoids this entirely and also reduces
+    round-trips when enriching multiple controls in the same request.
+    """
     list_id = settings.evidence_tracker_list_id
     if not settings.is_list_configured(list_id):
         return []
@@ -231,24 +239,29 @@ async def _get_evidence_for_control(control_id: str) -> list[dict]:
         items = await get_list_items(
             list_id=list_id,
             list_name="Evidence Tracker",
-            odata_filter=f"fields/LinkedControlId eq '{control_id}'",
-            top=5,
+            top=500,
         )
         return [_map_evidence(i) for i in items]
     except Exception as exc:
-        logger.warning(f"compliance_search: evidence query failed for {control_id}: {exc}")
+        logger.warning(f"compliance_search: evidence batch fetch failed: {exc}")
         return []
 
 
 def _map_evidence(item: dict) -> dict:
     f = item.get("fields", item)
     return {
-        "id":          str(item.get("id", "")),
-        "description": f.get("EvidenceDescription", ""),
-        "type":        f.get("EvidenceType", ""),
-        "status":      f.get("Status", "Pending"),
-        "due_date":    f.get("DueDate", ""),
-        "link":        f.get("EvidenceLink", ""),
+        "id":                 str(item.get("id", "")),
+        "linked_control_id":  str(f.get("LinkedControlId") or ""),
+        "description":        f.get("EvidenceDescription", ""),
+        "type":               f.get("EvidenceType", ""),
+        "status":             f.get("Status", "Pending"),
+        "due_date":           f.get("DueDate", ""),
+        "link":               f.get("EvidenceLink", ""),
+        "source_system":      f.get("SourceSystem", ""),
+        "collection_method":  f.get("CollectionMethod", ""),
+        "frequency":          f.get("Frequency", ""),
+        "owner_role":         f.get("OwnerRole", ""),
+        "validation_criteria":f.get("ValidationCriteria", ""),
     }
 
 
@@ -265,23 +278,36 @@ async def _get_standards_status(iso_clause: Optional[str]) -> Optional[dict]:
 
 
 async def _search_compliance_calendar(keywords: list[str]) -> list[dict]:
-    """Search compliance calendar for relevant obligations."""
+    """Search compliance calendar for relevant obligations.
+
+    Fetches all obligations and filters in Python across multiple fields
+    (Title, Authority, ObligationType) — Authority and Type are not indexed
+    in SharePoint so contains() OData filters would fail on them.
+    """
     list_id = settings.compliance_calendar_list_id
     if not settings.is_list_configured(list_id):
         return []
     try:
-        if keywords:
-            kw_parts = [f"contains(fields/Title, '{kw}')" for kw in keywords[:5]]
-            odata_filter = "(" + " or ".join(kw_parts) + ")"
-        else:
-            odata_filter = None
         items = await get_list_items(
             list_id=list_id,
             list_name="Compliance Calendar",
-            odata_filter=odata_filter,
-            top=5,
+            top=200,
         )
-        return [_map_obligation(i) for i in items]
+        if not keywords:
+            return [_map_obligation(i) for i in items[:5]]
+        kw_lower = [k.lower() for k in keywords]
+        matched = []
+        for i in items:
+            f = i.get("fields", {})
+            haystack = " ".join([
+                (f.get("Title") or ""),
+                (f.get("ObligationName") or ""),
+                (f.get("Authority") or ""),
+                (f.get("ObligationType") or ""),
+            ]).lower()
+            if any(kw in haystack for kw in kw_lower):
+                matched.append(i)
+        return [_map_obligation(i) for i in matched[:5]]
     except Exception as exc:
         logger.warning(f"compliance_search: calendar query failed: {exc}")
         return []
@@ -397,16 +423,20 @@ async def search_compliance(
     if not controls_raw:
         controls_raw = await _vector_search_controls(question)
 
-    # Enrich controls with evidence items (parallel per control, capped at limit)
-    async def _enrich(ctrl: dict) -> dict:
-        evidence = await _get_evidence_for_control(ctrl["id"])
-        ctrl["evidence"] = evidence
-        return ctrl
-
-    enriched_controls = []
-    if controls_raw:
-        enriched_controls = await asyncio.gather(*[_enrich(c) for c in controls_raw[:_CONTROLS_ENRICH_LIMIT]])
-        enriched_controls = list(enriched_controls)
+    # Fetch all evidence items once and match per control in Python.
+    # One batch is cheaper than N per-control OData queries and avoids the
+    # LinkedControlId type-mismatch bug (Text vs Number column) that silently
+    # returns [] even when evidence items exist for the control.
+    enriched_controls = list(controls_raw[:_CONTROLS_ENRICH_LIMIT])
+    if enriched_controls:
+        all_evidence = await _get_all_evidence()
+        ev_by_control: dict[str, list[dict]] = {}
+        for ev in all_evidence:
+            cid = ev.get("linked_control_id", "")
+            if cid:
+                ev_by_control.setdefault(cid, []).append(ev)
+        for ctrl in enriched_controls:
+            ctrl["evidence"] = ev_by_control.get(ctrl["id"], [])[:_EVIDENCE_PER_CONTROL]
 
     # Resolve all owner OIDs in one batch (parallel Graph API calls)
     all_oids = (

@@ -38,6 +38,11 @@ CRITICAL RULES:
    ISO clause numbers in the OrgOS context are Dragnet's official registered mapping —
    if the context says "ISO clause: A.5.25", report A.5.25, not any other clause you
    know about that topic. The same applies to source document codes and control types.
+   Evidence details (type, description, source system, frequency, collection method,
+   validation criteria): answer ONLY from the "Evidence type" lines in the OrgOS context.
+   If the evidence status says "No evidence on file" and no "Evidence type" lines follow,
+   say "The evidence requirements for this control haven't been configured in OrgOS yet"
+   — never invent evidence types, source systems, or collection steps from general knowledge.
    For general GRC/IT terminology, acronyms, and industry concepts (e.g. what an acronym
    stands for, what a governance role or body does, what a standard covers, definitions of
    industry terms): answer from your domain knowledge — these are industry fundamentals,
@@ -131,7 +136,36 @@ def _context_from_compliance(result: dict) -> str:
             lines.append(f"ISO clause: {iso}")
         if risk:
             lines.append(f"Risk if fails: {risk}")
-        lines.append(f"Type: {ctype or 'N/A'} | Owner role: {owner_str} | {_evidence_status(ev)}")
+        lines.append(f"Type: {ctype or 'N/A'} | Owner role: {owner_str}")
+        ev_status = _evidence_status(ev)
+        lines.append(f"Evidence status: {ev_status}")
+        if ev:
+            for e in ev[:2]:
+                etype  = e.get("type", "")
+                edesc  = (e.get("description") or "")[:250]
+                esrc   = e.get("source_system", "")
+                efreq  = e.get("frequency", "")
+                ecoll  = e.get("collection_method", "")
+                elink  = e.get("link", "")
+                estat  = e.get("status", "Pending")
+                evalid = (e.get("validation_criteria") or "")[:150]
+                eline  = f"  Evidence type: {etype or 'N/A'}"
+                if edesc:
+                    eline += f" — {edesc}"
+                extras: list[str] = []
+                if esrc:
+                    extras.append(f"Source system: {esrc}")
+                if efreq:
+                    extras.append(f"Frequency: {efreq}")
+                if ecoll:
+                    extras.append(f"Collection: {ecoll}")
+                extras.append(f"Status: {estat}")
+                if elink:
+                    extras.append(f"Link on file: yes")
+                if evalid:
+                    extras.append(f"Validation: {evalid}")
+                eline += " [" + " | ".join(extras) + "]"
+                lines.append(eline)
         lines.append("")
 
     if obligations:
