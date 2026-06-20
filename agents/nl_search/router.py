@@ -447,10 +447,7 @@ async def seed_index(
 # =============================================================================
 
 @router.get("/debug")
-async def debug_search(
-    question: str,
-    user: CurrentUser = Depends(get_current_user),
-) -> dict:
+async def debug_search(question: str) -> dict:
     """
     Run the compliance search pipeline for a question and return every intermediate
     result: entity extraction output, OData filter string, raw SharePoint rows,
