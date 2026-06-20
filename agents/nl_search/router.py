@@ -8,7 +8,6 @@
 
 import asyncio
 import logging
-import re
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field, field_validator
@@ -30,34 +29,6 @@ from agents.nl_search.vector_store import get_collection_stats, embed_and_store_
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/nl-search", tags=["NL Search"])
-
-# ---------------------------------------------------------------------------
-# Conversational query detection — skip ChromaDB for greetings and follow-ups
-# ---------------------------------------------------------------------------
-
-_GREETING_RE = re.compile(
-    r'^(hi|hello|hey|good\s+(morning|afternoon|evening)|howdy|yo|sup)[!.,\s]*$',
-    re.IGNORECASE,
-)
-
-# Short phrases that reference a prior turn rather than introducing a new topic.
-_FOLLOWUP_PHRASES: frozenset[str] = frozenset({
-    "can you explain", "can you explain that", "can you explain it", "can you clarify",
-    "can you elaborate", "tell me more", "tell me more about that", "explain more",
-    "elaborate", "go on", "continue", "and then", "what else", "what next",
-    "what do you mean", "what does that mean", "more details", "more info",
-    "ok", "okay", "thanks", "thank you", "got it", "i see", "makes sense", "sure",
-    "explain", "clarify",
-})
-
-
-def _is_conversational(question: str, has_history: bool) -> bool:
-    q = question.strip().lower().rstrip("?!. ")
-    if _GREETING_RE.match(q):
-        return True
-    if has_history and q in _FOLLOWUP_PHRASES:
-        return True
-    return False
 
 
 # =============================================================================
@@ -112,27 +83,25 @@ async def nl_search_query(
     """
     question = request.question.strip()
 
-    # Fast path — greetings and follow-up phrases skip ChromaDB entirely.
-    # The LLM uses conversation history to respond naturally.
-    if _is_conversational(question, bool(request.conversation_history)):
-        logger.info(f"NL Search | user={user.oid} | intent=conversational | q='{question[:80]}'")
-        llm_ans = await generate_chat_response(
-            question, "conversational", {}, request.conversation_history
-        )
-        return NLSearchResponse(
-            mode="general",
-            answer=llm_ans or "Hi! I'm the OrgOS assistant. Ask me about Dragnet's GRC policies or procedures.",
-            sources=[],
-            intent="conversational",
-        )
-
-    # 1. Classify intent
+    # Classify intent — returns "compliance" | "procedural" | "both" | "conversational"
     intent = await classify_intent(question)
     logger.info(f"NL Search | user={user.oid} | intent={intent} | q='{question[:80]}'")
 
     # 2. Route to search pipelines + generate RAG answer
     try:
-        if intent == "compliance":
+        if intent == "conversational":
+            # No ChromaDB search — LLM responds from conversation history alone.
+            llm_ans = await generate_chat_response(
+                question, "conversational", {}, request.conversation_history
+            )
+            return NLSearchResponse(
+                mode="general",
+                answer=llm_ans or "Hi! I'm the OrgOS assistant. Ask me about Dragnet's GRC policies or procedures.",
+                sources=[],
+                intent="conversational",
+            )
+
+        elif intent == "compliance":
             result    = await search_compliance(question, user_oid=user.oid)
             formatted = format_compliance_response(result)
             llm_ans   = await generate_chat_response(

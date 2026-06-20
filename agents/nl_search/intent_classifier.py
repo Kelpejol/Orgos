@@ -22,12 +22,19 @@ from agents.llm_client import llm_generate
 
 logger = logging.getLogger(__name__)
 
-IntentType = Literal["compliance", "procedural", "both"]
+IntentType = Literal["compliance", "procedural", "both", "conversational"]
 
 
 # =============================================================================
 #  Keyword heuristic (layer 1 — fast, no LLM)
 # =============================================================================
+
+# Greeting detection — anchored at start so "hi, good evening" and "hello there" match.
+# Length cap < 50 prevents "hi, what is the MFA policy?" from being eaten as a greeting.
+_GREETING_RE = re.compile(
+    r'^(hi|hello|hey|howdy|yo|sup|good\s+(morning|afternoon|evening|day|night))',
+    re.IGNORECASE,
+)
 
 _COMPLIANCE_PATTERNS = [
     r"\bwhat (are|is) the .*(requirement|control|policy|rule|standard|clause|obligation)\b",
@@ -89,16 +96,23 @@ _PROCEDURAL_RE  = [re.compile(p, re.IGNORECASE) for p in _PROCEDURAL_PATTERNS]
 def _keyword_classify(question: str) -> IntentType | None:
     """
     Returns intent if the keyword heuristic is confident, None if ambiguous.
+    Conversational is caught here for obvious greetings; follow-ups and
+    subtle conversational phrases are delegated to the LLM.
     """
     q = question.strip()
-    compliance_hits  = sum(1 for p in _COMPLIANCE_RE  if p.search(q))
-    procedural_hits  = sum(1 for p in _PROCEDURAL_RE  if p.search(q))
+
+    # Fast path — obvious greetings need no LLM call
+    if _GREETING_RE.match(q) and len(q) < 50:
+        return "conversational"
+
+    compliance_hits = sum(1 for p in _COMPLIANCE_RE if p.search(q))
+    procedural_hits = sum(1 for p in _PROCEDURAL_RE if p.search(q))
 
     if compliance_hits > 0 and procedural_hits > 0:
         return "both"
-    if compliance_hits >= 1 and procedural_hits == 0:
+    if compliance_hits >= 1:
         return "compliance"
-    if procedural_hits >= 1 and compliance_hits == 0:
+    if procedural_hits >= 1:
         return "procedural"
     return None  # ambiguous — delegate to LLM
 
@@ -110,22 +124,26 @@ def _keyword_classify(question: str) -> IntentType | None:
 _INTENT_PROMPT = """\
 You are the NL Search router for Dragnet OrgOS. Classify the user's question.
 
-COMPLIANCE — the user asks about: rules/controls, who is responsible, evidence needed,
-compliance status, what is due, gaps, risks, ISO/NDPA clauses, standards.
+COMPLIANCE — asking about rules, controls, policies, who is responsible, evidence needed,
+compliance status, deadlines, gaps, risks, ISO/NDPA clauses, or standards.
 
-PROCEDURAL — the user asks: how to do something, what steps to follow, what form to use,
-who to contact, what system, what the process is, what happens next.
+PROCEDURAL — asking how to do something, what steps to follow, what form to use,
+who to contact, which system to use, or what the process is.
 
-BOTH — the question contains clear signals from both categories.
+BOTH — clear signals from both compliance and procedural categories.
 
-Return exactly one word: compliance, procedural, or both. No explanation."""
+CONVERSATIONAL — the user is greeting you (hi, hello, good evening), following up on a
+previous answer (can you explain, tell me more, can you elaborate, what do you mean,
+explain it better), or the message has no specific GRC topic (ok, thanks, got it, sure).
+
+Return exactly one word: compliance, procedural, both, or conversational. No explanation."""
 
 
 async def _llm_classify(question: str) -> IntentType:
     prompt = f"{_INTENT_PROMPT}\n\nQuestion: {question}\n\nAnswer:"
     raw = await llm_generate(prompt, tier="light", max_tokens=5, temperature=0.0)
     word = raw.strip().lower().split()[0] if raw.strip() else ""
-    if word in ("compliance", "procedural", "both"):
+    if word in ("compliance", "procedural", "both", "conversational"):
         return word  # type: ignore[return-value]
     logger.debug(f"Intent LLM returned unexpected: '{raw}' — defaulting to procedural")
     return "procedural"
