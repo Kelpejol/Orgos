@@ -44,7 +44,7 @@ Extract search entities from a GRC compliance question. Return JSON only.
 Rules:
 - If the question covers multiple topics, extract keywords covering ALL of them.
 - If the question is short, vague, or uses references like "this control", "the above",
-  "the same", "it", or asks about a property (owner, risk, evidence, status) without
+  "the same", "it", or asks about a property (owner, risk, evidence, status, gap) without
   naming the subject — use the recent conversation context to derive the actual topic.
 - Combine keywords from the current question AND the context when the question alone
   is not self-contained.
@@ -52,10 +52,11 @@ Rules:
 {context_block}Question: {question}
 
 Fields:
-  "keywords": up to 5 topic keywords that identify the subject (control, policy, obligation)
+  "keywords": up to 6 topic keywords identifying the subject (control, policy, obligation, gap, document, risk)
   "iso_clause": ISO 27001/9001 clause if explicitly mentioned (e.g. "A.5.17") or null
   "standard": "ISO 27001" | "ISO 9001" | "NDPA" or null
   "is_personal_query": true if asking about "my" items, "my overdue", "assigned to me"
+  "document_code": exact Dragnet document code if present in the question (e.g. "DRG-HR-POL-01-26") or null
 
 JSON:"""
 
@@ -111,6 +112,7 @@ async def _extract_entities(question: str, recent_history: list[dict] | None = N
                 "iso_clause":        data.get("iso_clause"),
                 "standard":          data.get("standard"),
                 "is_personal_query": bool(data.get("is_personal_query", False)),
+                "document_code":     data.get("document_code"),
             }
         except Exception:
             pass
@@ -128,10 +130,11 @@ async def _extract_entities(question: str, recent_history: list[dict] | None = N
             "many", "much", "long", "often", "must", "should", "would", "could",
             "role", "owner", "risk", "type", "more", "same", "above", "control"}
     return {
-        "keywords":          [w for w in words if w not in stop][:5],
+        "keywords":          [w for w in words if w not in stop][:6],
         "iso_clause":        None,
         "standard":          None,
         "is_personal_query": False,
+        "document_code":     None,
     }
 
 
@@ -249,19 +252,35 @@ async def _get_all_evidence() -> list[dict]:
 
 def _map_evidence(item: dict) -> dict:
     f = item.get("fields", item)
+    # "Last collected" may live in different columns depending on how the router wrote it.
+    # Try all candidates; the first non-empty value wins.
+    last_collected = (
+        f.get("LastCollected") or f.get("CollectionDate") or
+        f.get("SubmissionDate") or f.get("DateCollected") or
+        # Fall back to the SharePoint item modification time — updated on every verify/submit.
+        (item.get("lastModifiedDateTime") or "")[:10]  # trim to date only
+    )
     return {
         "id":                 str(item.get("id", "")),
         "linked_control_id":  str(f.get("LinkedControlId") or ""),
         "description":        f.get("EvidenceDescription", ""),
         "type":               f.get("EvidenceType", ""),
+        "format":             f.get("EvidenceFormat", ""),
         "status":             f.get("Status", "Pending"),
         "due_date":           f.get("DueDate", ""),
-        "link":               f.get("EvidenceLink", ""),
+        "last_collected":     last_collected,
+        "link":               (f.get("EvidenceLink") or "").strip(),
         "source_system":      f.get("SourceSystem", ""),
         "collection_method":  f.get("CollectionMethod", ""),
         "frequency":          f.get("Frequency", ""),
         "owner_role":         f.get("OwnerRole", ""),
+        "owner_oid":          f.get("OwnerEntraId", ""),
+        "reviewer_oid":       f.get("ReviewerEntraId", ""),
+        "reviewer_notes":     f.get("ReviewerNotes", ""),
+        "submission_notes":   f.get("SubmissionNotes", ""),
         "validation_criteria":f.get("ValidationCriteria", ""),
+        # reviewer_name populated later after OID resolution in search_compliance()
+        "reviewer_name":      "",
     }
 
 
@@ -322,8 +341,201 @@ def _map_obligation(item: dict) -> dict:
         "authority":  f.get("Authority", ""),
         "due_date":   f.get("DueDate", ""),
         "recurrence": f.get("Recurrence", ""),
+        "notes":      f.get("Notes", ""),
         "owner_oid":  f.get("OwnerEntraId", ""),
     }
+
+
+# =============================================================================
+#  Gap Analysis search
+# =============================================================================
+
+def _map_gap(item: dict) -> dict:
+    f = item.get("fields", item)
+    return {
+        "id":                   str(item.get("id", "")),
+        "gap_id":               f.get("GapId", "") or f.get("Title", ""),
+        "finding":              f.get("Finding", "") or f.get("GapFinding", "") or f.get("Title", ""),
+        "standard":             f.get("Standard", ""),
+        "clause":               (f.get("ClauseReference") or f.get("ISOClause") or
+                                 f.get("StandardClause") or ""),
+        "severity":             f.get("Severity", ""),
+        "status":               f.get("Status", ""),
+        "proposed_remediation": (f.get("ProposedRemediation") or "")[:400],
+        "target_date":          f.get("TargetDate", ""),
+        "source":               f.get("Source", ""),
+        "owner_oid":            f.get("OwnerEntraId", ""),
+    }
+
+
+def _py_match(items: list, keywords: list[str], question: str,
+              *field_getters) -> list:
+    """
+    Filter a list of SharePoint item dicts in Python using keyword OR verbatim matching.
+    field_getters: callables (item -> str) for each field to search in.
+    Returns matched items preserving order.
+    """
+    kw_lower = [k.lower() for k in keywords]
+    q_lower  = question.lower() if question else ""
+    matched  = []
+    for item in items:
+        texts = [g(item) for g in field_getters]
+        haystack = " ".join(t.lower() for t in texts if t)
+        if kw_lower and any(kw in haystack for kw in kw_lower):
+            matched.append(item)
+            continue
+        if q_lower:
+            for text in texts:
+                t = text.lower()
+                if t and len(t) > 15 and t[:40] in q_lower:
+                    matched.append(item)
+                    break
+    return matched
+
+
+async def _search_gap_analysis(keywords: list[str], question: str = "") -> list[dict]:
+    """Search Gap Analysis list. Python-side filtering across all text fields."""
+    list_id = settings.gap_analysis_list_id
+    if not settings.is_list_configured(list_id):
+        return []
+    try:
+        items = await get_list_items(list_id=list_id, list_name="Gap Analysis", top=200)
+        if not keywords and not question:
+            return [_map_gap(i) for i in items[:5]]
+        matched = _py_match(
+            items, keywords, question,
+            lambda i: i.get("fields", {}).get("Finding", "") or i.get("fields", {}).get("Title", ""),
+            lambda i: i.get("fields", {}).get("Standard", ""),
+            lambda i: i.get("fields", {}).get("ClauseReference", "") or i.get("fields", {}).get("ISOClause", ""),
+            lambda i: i.get("fields", {}).get("Severity", ""),
+            lambda i: i.get("fields", {}).get("Status", ""),
+        )
+        return [_map_gap(i) for i in matched[:5]]
+    except Exception as exc:
+        logger.warning(f"compliance_search: gap analysis query failed: {exc}")
+        return []
+
+
+# =============================================================================
+#  Document Register search
+# =============================================================================
+
+def _map_document(item: dict) -> dict:
+    f = item.get("fields", item)
+    return {
+        "id":                  str(item.get("id", "")),
+        "document_code":       f.get("DocumentCode", ""),
+        "title":               f.get("Title", ""),
+        "type":                f.get("DocumentType", ""),
+        "department":          f.get("Department", ""),
+        "status":              f.get("DocumentStatus", ""),
+        "current_version":     f.get("CurrentVersion", ""),
+        "effective_date":      f.get("EffectiveDate", ""),
+        "next_review_date":    f.get("NextReviewDate", ""),
+        "applicable_standards":f.get("ApplicableStandards", ""),
+        "owner_oid":           f.get("OwnerEntraId", ""),
+    }
+
+
+async def _search_document_register(
+    keywords: list[str],
+    question: str = "",
+    document_code: Optional[str] = None,
+) -> list[dict]:
+    """
+    Search Document Register. Python-side filtering across title, code, department,
+    standards. If a specific document_code was extracted, tries exact match first.
+    """
+    list_id = settings.document_register_list_id
+    if not settings.is_list_configured(list_id):
+        return []
+    try:
+        items = await get_list_items(list_id=list_id, list_name="Document Register", top=200)
+        # Exclude withdrawn documents
+        active = [i for i in items if i.get("fields", {}).get("DocumentStatus") != "Withdrawn"]
+
+        # Exact document code match takes precedence
+        if document_code:
+            dc_upper = document_code.upper()
+            exact = [i for i in active
+                     if (i.get("fields", {}).get("DocumentCode") or "").upper() == dc_upper]
+            if exact:
+                return [_map_document(i) for i in exact[:3]]
+
+        if not keywords and not question:
+            return [_map_document(i) for i in active[:5]]
+
+        matched = _py_match(
+            active, keywords, question,
+            lambda i: i.get("fields", {}).get("Title", ""),
+            lambda i: i.get("fields", {}).get("DocumentCode", ""),
+            lambda i: i.get("fields", {}).get("Department", ""),
+            lambda i: i.get("fields", {}).get("DocumentType", ""),
+            lambda i: i.get("fields", {}).get("ApplicableStandards", ""),
+        )
+        return [_map_document(i) for i in matched[:5]]
+    except Exception as exc:
+        logger.warning(f"compliance_search: document register query failed: {exc}")
+        return []
+
+
+# =============================================================================
+#  Strategic Risk Register search
+# =============================================================================
+
+def _map_risk(item: dict) -> dict:
+    f = item.get("fields", item)
+    likelihood = f.get("Likelihood") or 0
+    impact     = f.get("Impact") or 0
+    try:
+        score = int(likelihood) * int(impact)
+    except (ValueError, TypeError):
+        score = 0
+    if score <= 3:
+        level = "Low"
+    elif score <= 6:
+        level = "Medium"
+    elif score <= 9:
+        level = "High"
+    else:
+        level = "Critical"
+    return {
+        "id":             str(item.get("id", "")),
+        "description":    f.get("Description", "") or f.get("Title", ""),
+        "category":       f.get("Category", ""),
+        "likelihood":     str(likelihood),
+        "impact":         str(impact),
+        "risk_score":     str(score),
+        "risk_level":     level,
+        "treatment":      (f.get("Treatment") or "")[:300],
+        "status":         f.get("Status", ""),
+        "related_gap_id": f.get("RelatedGapId", ""),
+        "owner_oid":      f.get("OwnerEntraId", ""),
+    }
+
+
+async def _search_strategic_risks(keywords: list[str], question: str = "") -> list[dict]:
+    """Search Strategic Risk Register. Python-side filtering across description, category."""
+    list_id = settings.strategic_risk_register_list_id
+    if not settings.is_list_configured(list_id):
+        return []
+    try:
+        items = await get_list_items(
+            list_id=list_id, list_name="Strategic Risk Register", top=200
+        )
+        if not keywords and not question:
+            return [_map_risk(i) for i in items[:5]]
+        matched = _py_match(
+            items, keywords, question,
+            lambda i: i.get("fields", {}).get("Description", "") or i.get("fields", {}).get("Title", ""),
+            lambda i: i.get("fields", {}).get("Category", ""),
+            lambda i: i.get("fields", {}).get("Treatment", ""),
+            lambda i: i.get("fields", {}).get("Status", ""),
+        )
+        return [_map_risk(i) for i in matched[:5]]
+    except Exception as exc:
+        logger.warning(f"compliance_search: strategic risks query failed: {exc}")
+        return []
 
 
 # =============================================================================
@@ -389,44 +601,44 @@ async def search_compliance(
     conversation_history: list[dict] | None = None,
 ) -> dict:
     """
-    Run a compliance search for the given question.
-    Returns a structured dict consumed by response_formatter.format_compliance_response().
+    Run a compliance search across ALL GRC registers for the given question.
 
-    conversation_history: passed through to entity extraction so short or referential
-    follow-up questions ("who is the owner", "what is the evidence status", "show more")
-    are resolved to the actual topic from recent user messages — not just the 2-word query.
+    Searches in parallel: Control Register, Compliance Calendar, Gap Analysis,
+    Document Register, and Strategic Risk Register. Every register uses Python-side
+    filtering (keyword + verbatim match) — no OData contains() anywhere.
+    Evidence is fetched in a single batch and matched per control in Python.
+    All person OIDs across every register are resolved in one Graph API batch.
 
-    Shape:
-    {
-      "question": str,
-      "entities": { keywords, iso_clause, standard, is_personal_query },
-      "controls": [ { id, control_statement, control_type, iso_clause,
-                       owner_role_title, owner, source_document, risk_statement,
-                       evidence: [...] } ],
-      "obligations": [ ... ],
-      "standards_hint": { clause, note } | None,
-      "found": bool,
-    }
+    Returns a structured dict with keys:
+      controls, obligations, gaps, documents, risks — each a list of enriched dicts.
+      found: True if any register returned results.
     """
     entities = await _extract_entities(question, recent_history=conversation_history)
-    keywords     = entities.get("keywords") or []
-    iso_clause   = entities.get("iso_clause")
+    keywords      = entities.get("keywords") or []
+    iso_clause    = entities.get("iso_clause")
+    document_code = entities.get("document_code")
 
-    # Run control search and calendar search in parallel
-    controls_raw, obligations = await asyncio.gather(
+    # Run all five register searches in parallel.
+    (
+        controls_raw,
+        obligations,
+        gaps,
+        documents,
+        risks,
+    ) = await asyncio.gather(
         _search_controls(keywords, iso_clause, question=question),
         _search_compliance_calendar(keywords),
+        _search_gap_analysis(keywords, question=question),
+        _search_document_register(keywords, question=question, document_code=document_code),
+        _search_strategic_risks(keywords, question=question),
     )
 
-    # If SharePoint returned nothing, fall back to ChromaDB vector search.
-    # Pass the original question (not keywords) so semantic similarity works.
+    # ChromaDB vector fallback — only if SharePoint controls returned nothing.
     if not controls_raw:
         controls_raw = await _vector_search_controls(question)
 
-    # Fetch all evidence items once and match per control in Python.
-    # One batch is cheaper than N per-control OData queries and avoids the
-    # LinkedControlId type-mismatch bug (Text vs Number column) that silently
-    # returns [] even when evidence items exist for the control.
+    # Enrich controls with evidence — one batch fetch, Python-side matching.
+    # Avoids per-control OData queries and the LinkedControlId column-type bug.
     enriched_controls = list(controls_raw[:_CONTROLS_ENRICH_LIMIT])
     if enriched_controls:
         all_evidence = await _get_all_evidence()
@@ -438,29 +650,48 @@ async def search_compliance(
         for ctrl in enriched_controls:
             ctrl["evidence"] = ev_by_control.get(ctrl["id"], [])[:_EVIDENCE_PER_CONTROL]
 
-    # Resolve all owner OIDs in one batch (parallel Graph API calls)
+    # Resolve ALL person OIDs across every register in a single Graph API batch.
     all_oids = (
         [c["owner_oid"] for c in enriched_controls if c.get("owner_oid")] +
-        [o["owner_oid"] for o in obligations if o.get("owner_oid")]
+        [ev.get("owner_oid", "") for ctrl in enriched_controls
+         for ev in ctrl.get("evidence", []) if ev.get("owner_oid")] +
+        [ev.get("reviewer_oid", "") for ctrl in enriched_controls
+         for ev in ctrl.get("evidence", []) if ev.get("reviewer_oid")] +
+        [o["owner_oid"] for o in obligations if o.get("owner_oid")] +
+        [g["owner_oid"] for g in gaps if g.get("owner_oid")] +
+        [d["owner_oid"] for d in documents if d.get("owner_oid")] +
+        [r["owner_oid"] for r in risks if r.get("owner_oid")]
     )
     owners = await _resolve_owners(all_oids)
 
-    # Attach owner to controls.
-    # Resolution order: OID → person name (if OID present and resolves).
-    # Fallback: role title string from OwnerRole column (always populated).
-    # Never show a raw OID to the LLM — it's meaningless and confuses the model.
-    for ctrl in enriched_controls:
-        oid        = ctrl.get("owner_oid", "")
-        role_title = ctrl.get("owner_role_title", "")
+    def _person(oid: str, fallback: str = "Unassigned") -> dict:
         if oid and oid in owners:
-            ctrl["owner"] = owners[oid]
-        else:
-            ctrl["owner"] = {"display_name": role_title or "Unassigned", "email": ""}
+            return owners[oid]
+        return {"display_name": fallback or "Unassigned", "email": ""}
 
-    # Attach owner to obligations
+    # Stamp reviewer_name onto each evidence item.
+    for ctrl in enriched_controls:
+        for ev in ctrl.get("evidence", []):
+            roid = ev.get("reviewer_oid", "")
+            if roid and roid in owners:
+                ev["reviewer_name"] = owners[roid].get("display_name", "")
+
+    # Attach owner objects to every entity across every register.
+    for ctrl in enriched_controls:
+        role_title = ctrl.get("owner_role_title", "")
+        ctrl["owner"] = _person(ctrl.get("owner_oid", ""), fallback=role_title)
+
     for ob in obligations:
-        oid = ob.get("owner_oid", "")
-        ob["owner"] = owners.get(oid, {"display_name": "Unassigned", "email": ""})
+        ob["owner"] = _person(ob.get("owner_oid", ""))
+
+    for gap in gaps:
+        gap["owner"] = _person(gap.get("owner_oid", ""))
+
+    for doc in documents:
+        doc["owner"] = _person(doc.get("owner_oid", ""))
+
+    for risk in risks:
+        risk["owner"] = _person(risk.get("owner_oid", ""))
 
     standards_hint = await _get_standards_status(iso_clause)
 
@@ -469,8 +700,11 @@ async def search_compliance(
         "entities":       entities,
         "controls":       enriched_controls,
         "obligations":    obligations,
+        "gaps":           gaps,
+        "documents":      documents,
+        "risks":          risks,
         "standards_hint": standards_hint,
-        "found":          bool(enriched_controls or obligations),
+        "found":          bool(enriched_controls or obligations or gaps or documents or risks),
     }
 
 

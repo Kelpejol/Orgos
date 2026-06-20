@@ -23,6 +23,27 @@ from agents.llm_client import llm_chat
 
 logger = logging.getLogger(__name__)
 
+# Full human-readable labels for the 16 DRG evidence type codes (DRG-QI-REF-EVTX-01-26).
+# Included in context so the LLM can explain the type without hallucinating.
+_EVIDENCE_TYPE_LABELS: dict[str, str] = {
+    "LOG": "System log export",
+    "CFG": "Configuration evidence",
+    "APR": "Signed approval record",
+    "FRM": "Completed form/record",
+    "TRN": "Training record",
+    "ACK": "Policy acknowledgement",
+    "TST": "Test/drill/verification",
+    "CRT": "Certificate/external attestation",
+    "MTG": "Meeting/governance record",
+    "REV": "Review record",
+    "CHK": "Checklist completion",
+    "CNT": "Contract/agreement",
+    "INV": "Inventory/register extract",
+    "CHG": "Change record",
+    "INC": "Incident record",
+    "RPT": "Report/assessment",
+}
+
 # =============================================================================
 #  System prompt — OrgOS AI persona
 # =============================================================================
@@ -61,6 +82,17 @@ GRC or HR question. Example: "Hi! Ask me about Dragnet's policies, controls, or 
 "I didn't quite catch that — try rephrasing with a specific policy, procedure, or compliance topic."
 7. Scope: only answer GRC, HR, and directly related questions about Dragnet. For anything \
 completely outside that scope say you can only help with Dragnet GRC matters.
+
+REGISTERS IN CONTEXT:
+- [CONTROL] — active GRC control with evidence, ownership, ISO clause.
+- [OBLIGATIONS] — statutory/regulatory/licensing deadlines from the Compliance Calendar.
+- [GAP FINDINGS] — compliance gaps found by audit or AI gap analysis.
+- [DOCUMENT REGISTER] — policy/procedure documents with version, review dates, owner.
+- [STRATEGIC RISKS] — ExCo-level risk register entries with scoring and treatment.
+- [PROCEDURE] — step-by-step how-to processes with roles, forms, and systems.
+Answer from whichever register(s) contain relevant data for the question. A question may
+touch multiple registers — e.g. "what is the risk and when is the next review?" needs
+both [CONTROL] and [DOCUMENT REGISTER] data.
 
 STYLE:
 - Conversational and clear — explain the rule or process, not just state it.
@@ -141,29 +173,46 @@ def _context_from_compliance(result: dict) -> str:
         lines.append(f"Evidence status: {ev_status}")
         if ev:
             for e in ev[:2]:
-                etype  = e.get("type", "")
-                edesc  = (e.get("description") or "")[:250]
-                esrc   = e.get("source_system", "")
-                efreq  = e.get("frequency", "")
-                ecoll  = e.get("collection_method", "")
-                elink  = e.get("link", "")
-                estat  = e.get("status", "Pending")
-                evalid = (e.get("validation_criteria") or "")[:150]
-                eline  = f"  Evidence type: {etype or 'N/A'}"
+                etype         = e.get("type", "")
+                elabel        = _EVIDENCE_TYPE_LABELS.get(etype, etype)
+                edesc         = (e.get("description") or "")[:250]
+                esrc          = e.get("source_system", "")
+                efmt          = e.get("format", "")
+                efreq         = e.get("frequency", "")
+                ecoll         = e.get("collection_method", "")
+                elink         = (e.get("link") or "").strip()
+                estat         = e.get("status", "Pending")
+                evalid        = (e.get("validation_criteria") or "")[:150]
+                elast         = e.get("last_collected", "")
+                ereviewer     = e.get("reviewer_name", "")
+                erev_notes    = (e.get("reviewer_notes") or "")[:150]
+                esub_notes    = (e.get("submission_notes") or "")[:150]
+                # Show code + full label so LLM can explain both
+                eline = f"  Evidence type: {etype} ({elabel})"
                 if edesc:
                     eline += f" — {edesc}"
                 extras: list[str] = []
                 if esrc:
                     extras.append(f"Source system: {esrc}")
+                if efmt:
+                    extras.append(f"Format: {efmt}")
                 if efreq:
                     extras.append(f"Frequency: {efreq}")
                 if ecoll:
-                    extras.append(f"Collection: {ecoll}")
+                    extras.append(f"Collection method: {ecoll}")
                 extras.append(f"Status: {estat}")
+                if elast:
+                    extras.append(f"Last collected: {elast}")
+                if ereviewer:
+                    extras.append(f"Verified by: {ereviewer}")
+                if erev_notes:
+                    extras.append(f"Reviewer notes: {erev_notes}")
+                if esub_notes:
+                    extras.append(f"Submission notes: {esub_notes}")
                 if elink:
-                    extras.append(f"Link on file: yes")
+                    extras.append(f"Evidence link: {elink}")
                 if evalid:
-                    extras.append(f"Validation: {evalid}")
+                    extras.append(f"Validation criteria: {evalid}")
                 eline += " [" + " | ".join(extras) + "]"
                 lines.append(eline)
         lines.append("")
@@ -171,12 +220,128 @@ def _context_from_compliance(result: dict) -> str:
     if obligations:
         lines.append("[OBLIGATIONS]")
         for ob in obligations[:3]:
-            ob_name = ob.get("name", "")
-            due     = ob.get("due_date", "")
-            auth    = ob.get("authority", "")
-            own     = (ob.get("owner") or {}).get("display_name") or "Unassigned"
-            lines.append(f"- {ob_name} | Due: {due} | Authority: {auth} | Owner: {own}")
+            ob_name  = ob.get("name", "")
+            due      = ob.get("due_date", "")
+            auth     = ob.get("authority", "")
+            recur    = ob.get("recurrence", "")
+            notes    = (ob.get("notes") or "")[:150]
+            own      = (ob.get("owner") or {}).get("display_name") or "Unassigned"
+            parts    = [f"- {ob_name}", f"Due: {due}", f"Authority: {auth}"]
+            if recur:
+                parts.append(f"Recurrence: {recur}")
+            parts.append(f"Owner: {own}")
+            if notes:
+                parts.append(f"Notes: {notes}")
+            lines.append(" | ".join(parts))
         lines.append("")
+
+    # Gap Analysis findings
+    gaps = result.get("gaps", [])
+    if gaps:
+        lines.append("[GAP FINDINGS]")
+        for gap in gaps[:3]:
+            gid      = gap.get("gap_id", "")
+            finding  = (gap.get("finding") or "")[:300]
+            std      = gap.get("standard", "")
+            clause   = gap.get("clause", "")
+            severity = gap.get("severity", "")
+            status   = gap.get("status", "")
+            target   = gap.get("target_date", "")
+            remedy   = (gap.get("proposed_remediation") or "")[:300]
+            own      = (gap.get("owner") or {}).get("display_name") or "Unassigned"
+            header   = f"[GAP: {gid}]" if gid else "[GAP]"
+            lines.append(header)
+            if finding:
+                lines.append(f"Finding: {finding}")
+            parts = []
+            if std:
+                parts.append(f"Standard: {std}")
+            if clause:
+                parts.append(f"Clause: {clause}")
+            if severity:
+                parts.append(f"Severity: {severity}")
+            if status:
+                parts.append(f"Status: {status}")
+            if target:
+                parts.append(f"Target date: {target}")
+            parts.append(f"Owner: {own}")
+            if parts:
+                lines.append(" | ".join(parts))
+            if remedy:
+                lines.append(f"Proposed remediation: {remedy}")
+            lines.append("")
+
+    # Document Register
+    documents = result.get("documents", [])
+    if documents:
+        lines.append("[DOCUMENT REGISTER]")
+        for doc in documents[:3]:
+            code     = doc.get("document_code", "")
+            title    = doc.get("title", "")
+            dtype    = doc.get("type", "")
+            dept     = doc.get("department", "")
+            status   = doc.get("status", "")
+            version  = doc.get("current_version", "")
+            eff      = doc.get("effective_date", "")
+            review   = doc.get("next_review_date", "")
+            stds     = doc.get("applicable_standards", "")
+            own      = (doc.get("owner") or {}).get("display_name") or "Unassigned"
+            header   = f"[DOC: {code}]" if code else "[DOC]"
+            lines.append(header)
+            if title:
+                lines.append(f"Title: {title}")
+            parts = []
+            if dtype:
+                parts.append(f"Type: {dtype}")
+            if dept:
+                parts.append(f"Department: {dept}")
+            if status:
+                parts.append(f"Status: {status}")
+            if version:
+                parts.append(f"Version: {version}")
+            if eff:
+                parts.append(f"Effective: {eff}")
+            if review:
+                parts.append(f"Next review: {review}")
+            if stds:
+                parts.append(f"Standards: {stds}")
+            parts.append(f"Owner: {own}")
+            if parts:
+                lines.append(" | ".join(parts))
+            lines.append("")
+
+    # Strategic Risks
+    risks = result.get("risks", [])
+    if risks:
+        lines.append("[STRATEGIC RISKS]")
+        for risk in risks[:3]:
+            desc      = (risk.get("description") or "")[:300]
+            cat       = risk.get("category", "")
+            score     = risk.get("risk_score", "")
+            level     = risk.get("risk_level", "")
+            likelihood= risk.get("likelihood", "")
+            impact    = risk.get("impact", "")
+            treatment = (risk.get("treatment") or "")[:250]
+            status    = risk.get("status", "")
+            gap_ref   = risk.get("related_gap_id", "")
+            own       = (risk.get("owner") or {}).get("display_name") or "Unassigned"
+            lines.append("[RISK]")
+            if desc:
+                lines.append(f"Description: {desc}")
+            parts = []
+            if cat:
+                parts.append(f"Category: {cat}")
+            parts.append(f"Score: {score} ({level}) — Likelihood: {likelihood} × Impact: {impact}")
+            if status:
+                parts.append(f"Status: {status}")
+            if gap_ref:
+                parts.append(f"Related gap: {gap_ref}")
+            parts.append(f"Owner: {own}")
+            if parts:
+                lines.append(" | ".join(parts))
+            if treatment:
+                lines.append(f"Treatment: {treatment}")
+            lines.append("")
 
     return "\n".join(lines).rstrip()
 
@@ -189,30 +354,39 @@ def _context_from_procedural(result: dict) -> str:
     lines: list[str] = []
 
     for proc in processes[:2]:
-        proc_name = proc.get("process_name") or proc.get("document_code", "")
-        doc_code  = proc.get("document_code", "")
-        section   = proc.get("section_ref", "")
-        steps     = sorted(proc.get("steps", []), key=lambda s: s.get("step_number") or 0)
+        proc_name  = proc.get("process_name") or proc.get("document_code", "")
+        doc_code   = proc.get("document_code", "")
+        doc_title  = proc.get("document_title", "")
+        section    = proc.get("section_ref", "")
+        doc_link   = proc.get("document_link", "")
+        steps      = sorted(proc.get("steps", []), key=lambda s: s.get("step_number") or 0)
 
         header = f"[PROCEDURE: {proc_name}"
         if doc_code and doc_code != proc_name:
             header += f" — {doc_code}"
+        if doc_title and doc_title not in (proc_name, doc_code):
+            header += f" | {doc_title}"
         if section:
             header += f", §{section}"
         header += "]"
         lines.append(header)
+        if doc_link:
+            lines.append(f"Document link: {doc_link}")
 
         for step in steps[:8]:
-            n     = step.get("step_number", "")
-            text  = (step.get("step_text") or "")[:250]
-            roles = step.get("roles_involved", "")
-            forms = step.get("forms_referenced", "")
+            n       = step.get("step_number", "")
+            text    = (step.get("step_text") or "")[:300]
+            roles   = step.get("roles_involved", "")
+            forms   = step.get("forms_referenced", "")
+            systems = step.get("systems_referenced", "")
             step_line = f"Step {n}: {text}"
             extras: list[str] = []
             if roles:
                 extras.append(f"Roles: {roles}")
             if forms:
                 extras.append(f"Forms: {forms}")
+            if systems:
+                extras.append(f"Systems: {systems}")
             if extras:
                 step_line += f" [{'; '.join(extras)}]"
             lines.append(step_line)
