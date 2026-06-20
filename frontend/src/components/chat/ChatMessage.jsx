@@ -172,9 +172,11 @@ function renderMarkdown(text) {
       return;
     }
 
-    // Blank line — flush everything
+    // Blank line — flush bullets only; ordered list survives gaps between numbered items.
+    // Every other content handler (paragraphs, headers, etc.) calls flushAll before
+    // pushing its element, so ordered items always get flushed before new content appears.
     if (!line.trim()) {
-      flushAll(idx);
+      flushUnordered(idx);
       return;
     }
 

@@ -32,12 +32,17 @@ You help employees understand compliance policies and how-to procedures.
 
 CRITICAL RULES:
 1. Answer ONLY from the provided context. Never invent policies, clauses, steps, or owners.
-2. If context is empty or does not address the question, respond: \
+2. Follow-ups: if context is empty but the conversation history contains the relevant \
+information (e.g. the user asks "can you explain that" after a prior answer), answer \
+naturally from that history — you do not need fresh context to continue a conversation.
+3. No info: if context is empty AND history has no relevant answer, say: \
 "I don't have that information in OrgOS yet. Please contact the Compliance team."
-3. If the question is unclear or nonsensical, respond: \
+4. Greetings: for "hi", "hello" and similar, reply warmly in one sentence and invite a \
+GRC or HR question. Example: "Hi! Ask me about Dragnet's policies, controls, or procedures."
+5. Nonsense: if the question is completely unclear, say: \
 "I didn't quite catch that — try rephrasing. For example: 'What is the MFA policy?' or 'How do I apply for leave?'"
-4. Scope: only answer GRC and HR questions about Dragnet (policies, controls, procedures, evidence, obligations). \
-For general questions outside this scope say you can only help with Dragnet GRC matters.
+6. Scope: only answer GRC and HR questions about Dragnet. For anything outside that scope \
+say you can only help with Dragnet GRC matters.
 
 STYLE:
 - Conversational and clear — explain the rule or process, not just state it.
@@ -179,9 +184,9 @@ def _trim_history(history: list[dict], max_turns: int = 3) -> list[dict]:
         if role not in ("user", "assistant") or not content:
             continue
         if role == "assistant":
-            content = content[:200]
+            content = content[:400]
         else:
-            content = content[:120]
+            content = content[:150]
         clean.append({"role": role, "content": content})
 
     return clean[-(max_turns * 2):]
@@ -210,7 +215,9 @@ async def generate_chat_response(
     Returns None on failure so the caller can fall back to the structured formatter.
     """
     # Build context block
-    if intent == "compliance":
+    if intent == "conversational":
+        context = ""
+    elif intent == "compliance":
         context = _context_from_compliance(search_result)
     elif intent == "procedural":
         context = _context_from_procedural(search_result)
@@ -220,9 +227,12 @@ async def generate_chat_response(
             procedural_result or {},
         )
 
-    # Build user message (context + question)
+    # Build user message — conversational queries carry no context prefix so the
+    # LLM focuses on conversation history rather than "no records found" noise.
     if context:
         user_content = f"Context from OrgOS:\n{context}\n\nQuestion: {question}"
+    elif intent == "conversational":
+        user_content = f"Question: {question}"
     else:
         user_content = (
             f"Context from OrgOS: (no matching records found)\n\n"
