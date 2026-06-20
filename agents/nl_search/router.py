@@ -225,6 +225,118 @@ async def rebuild_index(
 
 
 # =============================================================================
+#  Seed endpoint — insert test data for development/demo without SharePoint
+# =============================================================================
+
+_SEED_CONTROLS = [
+    {
+        "id":        "seed-ctrl-001",
+        "statement": "All staff must complete information security awareness training within 30 days of joining and annually thereafter.",
+        "meta":      {"document_code": "DRG-ISMS-POL-SEC-01-26", "iso_clause": "A.6.3", "control_type": "Directive", "owner_oid": ""},
+    },
+    {
+        "id":        "seed-ctrl-002",
+        "statement": "Access to production systems must be reviewed and re-approved by the system owner every 90 days.",
+        "meta":      {"document_code": "DRG-ISMS-POL-ACP-01-26", "iso_clause": "A.5.18", "control_type": "Detective", "owner_oid": ""},
+    },
+    {
+        "id":        "seed-ctrl-003",
+        "statement": "All vendor contracts must include a data processing agreement (DPA) before any personal data is shared.",
+        "meta":      {"document_code": "DRG-LEGAL-POL-VND-01-26", "iso_clause": "A.5.19", "control_type": "Preventive", "owner_oid": ""},
+    },
+    {
+        "id":        "seed-ctrl-004",
+        "statement": "Incident response team must be notified within 1 hour of detecting a potential data breach.",
+        "meta":      {"document_code": "DRG-ISMS-POL-INC-01-26", "iso_clause": "A.5.24", "control_type": "Corrective", "owner_oid": ""},
+    },
+    {
+        "id":        "seed-ctrl-005",
+        "statement": "Privileged accounts must use multi-factor authentication (MFA) and must not be used for day-to-day activities.",
+        "meta":      {"document_code": "DRG-ISMS-POL-ACP-01-26", "iso_clause": "A.5.17", "control_type": "Preventive", "owner_oid": ""},
+    },
+    {
+        "id":        "seed-ctrl-006",
+        "statement": "All personal data processed under NDPA must be documented in the data register maintained by the DPO.",
+        "meta":      {"document_code": "DRG-LEGAL-POL-DPO-01-26", "iso_clause": "S.26", "control_type": "Directive", "owner_oid": ""},
+    },
+    {
+        "id":        "seed-ctrl-007",
+        "statement": "Business continuity plans must be tested at least once per year through a tabletop exercise or full simulation.",
+        "meta":      {"document_code": "DRG-OPS-POL-BCP-01-26", "iso_clause": "A.5.30", "control_type": "Detective", "owner_oid": ""},
+    },
+]
+
+_SEED_PROCEDURES = [
+    {
+        "id":   "seed-proc-001",
+        "text": "Step 1 — Submit a new joiner request via the AAMP portal at least 3 days before the start date.",
+        "meta": {"document_code": "DRG-HR-PRO-JNR-01-26", "document_title": "New Joiner Onboarding Procedure", "process_name": "New Employee Onboarding", "step_number": "1", "roles_involved": "HR Officer, IT Admin", "forms_referenced": "FM-HR-001", "section_ref": "4.1"},
+    },
+    {
+        "id":   "seed-proc-002",
+        "text": "Step 2 — IT Admin provisions accounts in Entra ID and assigns the correct licence and role group based on the approved JD.",
+        "meta": {"document_code": "DRG-HR-PRO-JNR-01-26", "document_title": "New Joiner Onboarding Procedure", "process_name": "New Employee Onboarding", "step_number": "2", "roles_involved": "IT Admin", "forms_referenced": "", "section_ref": "4.2"},
+    },
+    {
+        "id":   "seed-proc-003",
+        "text": "Step 1 — Staff member completes Leave Request Form (FM-HR-003) and submits to line manager via SeamlessHR.",
+        "meta": {"document_code": "DRG-HR-PRO-LVE-01-26", "document_title": "Leave Application Procedure", "process_name": "Leave Application", "step_number": "1", "roles_involved": "Staff, Line Manager", "forms_referenced": "FM-HR-003", "section_ref": "3.1"},
+    },
+    {
+        "id":   "seed-proc-004",
+        "text": "Step 2 — Line manager approves or rejects within 3 working days. Rejections must include a written reason.",
+        "meta": {"document_code": "DRG-HR-PRO-LVE-01-26", "document_title": "Leave Application Procedure", "process_name": "Leave Application", "step_number": "2", "roles_involved": "Line Manager", "forms_referenced": "", "section_ref": "3.2"},
+    },
+    {
+        "id":   "seed-proc-005",
+        "text": "Step 1 — Raise a change request in the ITSM portal with business justification, risk assessment, and rollback plan at least 5 days before the planned change.",
+        "meta": {"document_code": "DRG-ISMS-PRO-CHG-01-26", "document_title": "Change Management Procedure", "process_name": "IT Change Request", "step_number": "1", "roles_involved": "Change Requestor, IT Manager", "forms_referenced": "FM-IT-005", "section_ref": "5.1"},
+    },
+    {
+        "id":   "seed-proc-006",
+        "text": "Step 2 — Change Advisory Board (CAB) reviews the request every Thursday. Standard changes are approved within 24 hours; significant changes require CISO sign-off.",
+        "meta": {"document_code": "DRG-ISMS-PRO-CHG-01-26", "document_title": "Change Management Procedure", "process_name": "IT Change Request", "step_number": "2", "roles_involved": "CAB, CISO", "forms_referenced": "", "section_ref": "5.2"},
+    },
+]
+
+
+@router.post("/index/seed", status_code=200)
+async def seed_index(
+    user: CurrentUser = Depends(require_compliance_lead),
+) -> dict:
+    """
+    Insert hardcoded test controls and procedural steps into ChromaDB.
+    Use for development and demos when SharePoint lists are not yet populated.
+    Safe to call multiple times — upserts, so no duplicates.
+    """
+    from agents.nl_search.vector_store import embed_and_store_control, embed_and_store_procedural_step
+
+    controls_ok = 0
+    procedures_ok = 0
+    errors = []
+
+    for ctrl in _SEED_CONTROLS:
+        ok = await embed_and_store_control(ctrl["id"], ctrl["statement"], ctrl["meta"])
+        if ok:
+            controls_ok += 1
+        else:
+            errors.append(f"Failed to embed control {ctrl['id']}")
+
+    for step in _SEED_PROCEDURES:
+        ok = await embed_and_store_procedural_step(step["id"], step["text"], step["meta"])
+        if ok:
+            procedures_ok += 1
+        else:
+            errors.append(f"Failed to embed step {step['id']}")
+
+    return {
+        "controls_seeded":   controls_ok,
+        "procedures_seeded": procedures_ok,
+        "errors":            errors,
+    }
+
+
+# =============================================================================
 #  Health
 # =============================================================================
 
