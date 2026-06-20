@@ -465,13 +465,26 @@ async def _search_document_register(
         # Exclude withdrawn documents
         active = [i for i in items if i.get("fields", {}).get("DocumentStatus") != "Withdrawn"]
 
-        # Exact document code match takes precedence
+        # Document code matching — normalized contains-check so spaces, hyphens,
+        # underscores, and missing year suffixes all resolve to the right document.
+        # "DRG HR FM Competency Map" and "DRG-HR-FM-COMPETENCY-MAP-01-26" both match.
         if document_code:
-            dc_upper = document_code.upper()
-            exact = [i for i in active
-                     if (i.get("fields", {}).get("DocumentCode") or "").upper() == dc_upper]
-            if exact:
-                return [_map_document(i) for i in exact[:3]]
+            dc_norm = document_code.lower().replace(" ", "-").replace("_", "-")
+            code_matched = [
+                i for i in active
+                if dc_norm in (i.get("fields", {}).get("DocumentCode") or "").lower().replace(" ", "-")
+                or (i.get("fields", {}).get("DocumentCode") or "").lower().replace(" ", "-") in dc_norm
+            ]
+            if code_matched:
+                return [_map_document(i) for i in code_matched[:3]]
+            # Code not found — enrich keywords with tokens from the code so keyword
+            # matching below can still catch the document.
+            dc_tokens = [
+                t for t in re.split(r'[-_\s]+', dc_norm)
+                if len(t) > 2 and t not in {"drg", "the", "and", "for", "01", "02", "03",
+                                              "04", "05", "06", "24", "25", "26", "27"}
+            ]
+            keywords = list(dict.fromkeys(list(keywords) + dc_tokens))
 
         if not keywords and not question:
             return [_map_document(i) for i in active[:5]]

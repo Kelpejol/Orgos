@@ -51,7 +51,11 @@ Classify the question into exactly one of these four categories:
 compliance   — the user is asking about: policies, rules, controls, who is
                responsible, evidence required, compliance status, ISO or NDPA
                clauses, gaps, risks, deadlines, standards, what is due, how long
-               something must take, or the status of a specific obligation.
+               something must take, the status of a specific obligation, OR any
+               document register query such as: next review date, effective date,
+               document status, document version, document owner, applicable
+               standards — including when a specific document code (e.g.
+               DRG-HR-SOP-COMTEN-01-26) is mentioned in the question.
 
 procedural   — the user is asking: how to do something, what steps to follow,
                what form to use, who to contact, which system to use, what the

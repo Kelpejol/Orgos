@@ -471,7 +471,12 @@ async def debug_search(question: str) -> dict:
         compliance_result = await search_compliance(question, conversation_history=[])
         ctx = _context_from_compliance(compliance_result)
         result["stages"]["6_llm_context"] = {
-            "controls_found": len(compliance_result.get("controls", [])),
+            "controls_found":    len(compliance_result.get("controls", [])),
+            "documents_found":   len(compliance_result.get("documents", [])),
+            "gaps_found":        len(compliance_result.get("gaps", [])),
+            "risks_found":       len(compliance_result.get("risks", [])),
+            "obligations_found": len(compliance_result.get("obligations", [])),
+            "entities":          compliance_result.get("entities", {}),
             "context_sent_to_llm": ctx if ctx else "(empty — LLM will say no info)",
         }
     except Exception as exc:

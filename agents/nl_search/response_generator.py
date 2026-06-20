@@ -17,6 +17,7 @@
 # =============================================================================
 
 import logging
+import re
 from typing import Optional
 
 from agents.llm_client import llm_chat
@@ -108,6 +109,46 @@ STYLE:
 
 
 # =============================================================================
+#  Link label helpers
+# =============================================================================
+
+def _clean_link_label(fname: str) -> str:
+    """
+    Turn a raw SharePoint filename into a human-readable link label.
+
+    Transforms:
+      "EVID-10-AI_Engineer_Vacancy_Zenith_Bank.docx"
+      → "AI Engineer Vacancy Zenith Bank.docx"
+
+    Rules applied in order:
+      1. Strip leading EVID-NN- / EVID_NN_ style prefixes (evidence ID artefact).
+      2. Replace underscores with spaces.
+      3. URL-decode %20 as spaces (already done before calling, but guard here too).
+    Does NOT remove the file extension — the user needs to know if it's a .docx or .pdf.
+    """
+    if not fname:
+        return fname
+    cleaned = re.sub(r'^EVID[-_]\d+[-_]', '', fname, flags=re.IGNORECASE)
+    cleaned = cleaned.replace('_', ' ').replace('%20', ' ')
+    return cleaned.strip() or fname
+
+
+def _extract_link_label(raw_url: str, fallback: str = "View document") -> str:
+    """
+    Extract and clean the filename from a SharePoint ?file=... URL parameter.
+    Falls back to the given fallback string if no file param found.
+    """
+    if "file=" in raw_url:
+        try:
+            fname = raw_url.split("file=")[1].split("&")[0].replace("%20", " ")
+            if fname:
+                return _clean_link_label(fname)
+        except Exception:
+            pass
+    return fallback
+
+
+# =============================================================================
 #  Evidence helper
 # =============================================================================
 
@@ -131,8 +172,11 @@ def _evidence_status(evidence_items: list[dict]) -> str:
 def _context_from_compliance(result: dict) -> str:
     controls    = result.get("controls", [])
     obligations = result.get("obligations", [])
+    gaps        = result.get("gaps", [])
+    documents   = result.get("documents", [])
+    risks       = result.get("risks", [])
 
-    if not controls and not obligations:
+    if not controls and not obligations and not gaps and not documents and not risks:
         return ""
 
     lines: list[str] = []
@@ -212,15 +256,7 @@ def _context_from_compliance(result: dict) -> str:
                 if esub_notes:
                     extras.append(f"Submission notes: {esub_notes}")
                 if elink:
-                    # Extract filename from SharePoint URL (?file=name.docx&...) for the label.
-                    # Falls back to "View submitted evidence" if no filename param found.
-                    fname = ""
-                    if "file=" in elink:
-                        try:
-                            fname = elink.split("file=")[1].split("&")[0].replace("%20", " ")
-                        except Exception:
-                            pass
-                    link_label = fname if fname else "View submitted evidence"
+                    link_label = _extract_link_label(elink, fallback="View submitted evidence")
                     extras.append(f"Evidence link: [{link_label}]({elink})")
                 if evalid:
                     extras.append(f"Validation criteria: {evalid}")
@@ -247,7 +283,6 @@ def _context_from_compliance(result: dict) -> str:
         lines.append("")
 
     # Gap Analysis findings
-    gaps = result.get("gaps", [])
     if gaps:
         lines.append("[GAP FINDINGS]")
         for gap in gaps[:3]:
@@ -283,7 +318,6 @@ def _context_from_compliance(result: dict) -> str:
             lines.append("")
 
     # Document Register
-    documents = result.get("documents", [])
     if documents:
         lines.append("[DOCUMENT REGISTER]")
         for doc in documents[:3]:
@@ -322,7 +356,6 @@ def _context_from_compliance(result: dict) -> str:
             lines.append("")
 
     # Strategic Risks
-    risks = result.get("risks", [])
     if risks:
         lines.append("[STRATEGIC RISKS]")
         for risk in risks[:3]:
@@ -382,13 +415,7 @@ def _context_from_procedural(result: dict) -> str:
         header += "]"
         lines.append(header)
         if doc_link:
-            fname = ""
-            if "file=" in doc_link:
-                try:
-                    fname = doc_link.split("file=")[1].split("&")[0].replace("%20", " ")
-                except Exception:
-                    pass
-            dl_label = fname if fname else "View document"
+            dl_label = _extract_link_label(doc_link, fallback="View document")
             lines.append(f"Document link: [{dl_label}]({doc_link})")
 
         for step in steps[:8]:

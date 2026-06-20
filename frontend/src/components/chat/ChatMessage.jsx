@@ -195,30 +195,79 @@ function renderMarkdown(text) {
 
 
 // =============================================================================
-//  Inline parser — handles **bold** and *italic* within a line
+//  Inline parser — handles **bold**, *italic*, and [label](url) links
 // =============================================================================
+
+// Matches [label](url) — label may contain hyphens/dots, URL must start with http(s)
+const LINK_RE = /\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g;
 
 function parseLine(text) {
   if (!text) return text;
 
-  // First split on **bold** markers
-  const boldParts = text.split(/(\*\*[^*]+\*\*)/g);
-
-  return boldParts.flatMap((part, i) => {
-    if (part.startsWith('**') && part.endsWith('**') && part.length > 4) {
-      return [<strong key={`b-${i}`}>{part.slice(2, -2)}</strong>];
+  // ── Step 1: split on [label](url) links first ───────────────────────────────
+  const segments = [];
+  let lastIdx = 0;
+  let m;
+  LINK_RE.lastIndex = 0;  // reset global regex state
+  while ((m = LINK_RE.exec(text)) !== null) {
+    if (m.index > lastIdx) {
+      segments.push({ kind: 'text', content: text.slice(lastIdx, m.index) });
     }
-    // Within a non-bold segment, handle *italic*
-    const italicParts = part.split(/(\*[^*]+\*)/g);
-    return italicParts.map((ip, j) => {
-      if (ip.startsWith('*') && ip.endsWith('*') && ip.length > 2) {
-        return (
-          <em key={`i-${i}-${j}`} style={{ color: '#6b7280', fontStyle: 'italic' }}>
-            {ip.slice(1, -1)}
-          </em>
-        );
+    segments.push({ kind: 'link', label: m[1], url: m[2] });
+    lastIdx = m.index + m[0].length;
+  }
+  if (lastIdx < text.length) {
+    segments.push({ kind: 'text', content: text.slice(lastIdx) });
+  }
+  if (segments.length === 0) {
+    segments.push({ kind: 'text', content: text });
+  }
+
+  // ── Step 2: render each segment ─────────────────────────────────────────────
+  return segments.flatMap((seg, si) => {
+    if (seg.kind === 'link') {
+      return [
+        <a
+          key={`lnk-${si}`}
+          href={seg.url}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{
+            display:        'inline-flex',
+            alignItems:     'center',
+            gap:            '4px',
+            color:          '#1d4ed8',
+            fontWeight:     500,
+            textDecoration: 'underline',
+            textUnderlineOffset: '2px',
+            borderRadius:   '3px',
+            padding:        '0 1px',
+            wordBreak:      'break-all',
+          }}
+        >
+          <span style={{ fontSize: '12px', flexShrink: 0 }}>📎</span>
+          {seg.label}
+        </a>,
+      ];
+    }
+
+    // Text segment — apply bold then italic
+    const boldParts = seg.content.split(/(\*\*[^*]+\*\*)/g);
+    return boldParts.flatMap((part, i) => {
+      if (part.startsWith('**') && part.endsWith('**') && part.length > 4) {
+        return [<strong key={`b-${si}-${i}`}>{part.slice(2, -2)}</strong>];
       }
-      return ip;
+      const italicParts = part.split(/(\*[^*]+\*)/g);
+      return italicParts.map((ip, j) => {
+        if (ip.startsWith('*') && ip.endsWith('*') && ip.length > 2) {
+          return (
+            <em key={`it-${si}-${i}-${j}`} style={{ color: '#6b7280', fontStyle: 'italic' }}>
+              {ip.slice(1, -1)}
+            </em>
+          );
+        }
+        return ip;
+      });
     });
   });
 }
