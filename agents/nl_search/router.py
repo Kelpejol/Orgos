@@ -35,7 +35,7 @@ router = APIRouter(prefix="/api/v1/nl-search", tags=["NL Search"])
 # =============================================================================
 
 class NLSearchRequest(BaseModel):
-    question: str = Field(min_length=3, max_length=1000)
+    question: str = Field(min_length=2, max_length=1000)
     session_id: Optional[str] = None  # Informational — stored by frontend in IndexedDB
 
 

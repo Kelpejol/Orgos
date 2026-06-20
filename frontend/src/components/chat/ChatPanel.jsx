@@ -153,10 +153,19 @@ export default function ChatPanel({ isOpen, onClose }) {
       setSessions(all);
 
     } catch (err) {
+      const raw = err?.message || '';
+      // Pydantic validation errors come back as a JSON array — show a clean message instead
+      let friendly = raw;
+      try {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed[0]?.msg) {
+          friendly = parsed[0].msg;
+        }
+      } catch { /* not JSON — use raw */ }
       const errorMsg = {
         id:        `msg_err_${Date.now()}`,
         role:      'assistant',
-        content:   `Sorry, I couldn't process that request. ${err?.message || 'Please try again.'}`,
+        content:   `Sorry, I couldn't process that. ${friendly || 'Please try again.'}`,
         timestamp: new Date().toISOString(),
         mode:      null,
         sources:   [],
