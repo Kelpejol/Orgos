@@ -31,6 +31,38 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/nl-search", tags=["NL Search"])
 
 
+def _conversational_fallback(question: str) -> str:
+    """
+    Generates a natural conversational reply when the LLM gateway is unavailable.
+    Picks up time-of-day greetings, acknowledgements, and follow-up requests so
+    the user always gets a coherent response rather than a robotic one-liner.
+    """
+    q = question.lower().strip()
+
+    # Time-of-day greetings
+    if any(w in q for w in ("good evening", "evening")):
+        return "Good evening! I'm your OrgOS compliance assistant. Ask me anything about Dragnet's policies, controls, or HR procedures."
+    if any(w in q for w in ("good morning", "morning")):
+        return "Good morning! I'm your OrgOS compliance assistant. What can I help you with today — policies, controls, or procedures?"
+    if any(w in q for w in ("good afternoon", "afternoon")):
+        return "Good afternoon! I'm your OrgOS compliance assistant. Ask me about Dragnet's GRC policies or how-to procedures."
+
+    # "how are you"
+    if "how are you" in q or "how are u" in q:
+        return "I'm doing great, thanks for asking! What can I help you with — a policy question, evidence requirement, or a how-to procedure?"
+
+    # Thank-you acknowledgement
+    if any(w in q for w in ("thank", "thanks")):
+        return "You're welcome! Feel free to ask any other questions about Dragnet's policies, controls, or procedures."
+
+    # Follow-up / elaboration request with no prior LLM context
+    if any(w in q for w in ("explain", "elaborate", "clarify", "more detail", "tell me more")):
+        return "I'd be happy to elaborate — could you ask a specific question? For example: 'What is the MFA policy?' or 'How do I apply for leave?'"
+
+    # Generic greeting or short social phrase
+    return "Hi! I'm your OrgOS GRC assistant. Ask me about Dragnet's compliance policies, controls, evidence requirements, or how-to procedures."
+
+
 # =============================================================================
 #  Schemas
 # =============================================================================
@@ -96,7 +128,7 @@ async def nl_search_query(
             )
             return NLSearchResponse(
                 mode="general",
-                answer=llm_ans or "Hi! I'm the OrgOS assistant. Ask me about Dragnet's GRC policies or procedures.",
+                answer=llm_ans or _conversational_fallback(question),
                 sources=[],
                 intent="conversational",
             )

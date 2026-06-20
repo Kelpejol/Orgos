@@ -166,8 +166,8 @@ async def _gateway_generate(
             msg = choices[0].get("message") or {}
             return str(msg.get("content", "")).strip()
 
-        # Fallback — some proxies return {"content": "..."}
-        return str(data.get("content") or data.get("text") or "").strip()
+        # Fallback — proxy may return {"content": "..."} or {"output": "..."}
+        return str(data.get("content") or data.get("text") or data.get("output") or "").strip()
 
     except Exception as exc:
         logger.warning(f"Gateway generate failed: {exc}")
@@ -199,7 +199,7 @@ async def _gateway_chat(
         if choices:
             msg = choices[0].get("message") or {}
             return str(msg.get("content", "")).strip()
-        return str(data.get("content") or data.get("text") or "").strip()
+        return str(data.get("content") or data.get("text") or data.get("output") or "").strip()
     except Exception as exc:
         logger.warning(f"Gateway chat failed: {exc}")
         return ""
