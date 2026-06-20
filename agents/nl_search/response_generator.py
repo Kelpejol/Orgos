@@ -95,8 +95,8 @@ def _context_from_compliance(result: dict) -> str:
     lines: list[str] = []
 
     for ctrl in controls[:3]:
-        stmt       = (ctrl.get("control_statement") or "")[:280]
-        risk       = (ctrl.get("risk_statement") or "")[:200]
+        stmt       = (ctrl.get("control_statement") or "")[:500]
+        risk       = (ctrl.get("risk_statement") or "")[:500]
         iso        = ctrl.get("iso_clause", "")
         src        = ctrl.get("source_document", "")
         ctype      = ctrl.get("control_type", "")

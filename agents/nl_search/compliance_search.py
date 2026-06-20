@@ -65,8 +65,13 @@ def _build_entity_context(question: str, recent_history: list[dict] | None) -> s
     Build a context block for entity extraction from recent user messages.
     Only uses user messages (not assistant answers) — assistant text is long and noisy.
     Excludes the current question itself to avoid repetition.
+
+    History is skipped for long questions (> 20 words): a question that long is
+    self-contained and contains its own topic signal. Injecting prior history for
+    a long question causes the LLM to mix keywords from different topics, breaking
+    the match against the correct control.
     """
-    if not recent_history:
+    if not recent_history or len(question.split()) > 20:
         return ""
     prior_user = [
         m for m in recent_history
@@ -134,21 +139,29 @@ async def _extract_entities(question: str, recent_history: list[dict] | None = N
 #  Register queries
 # =============================================================================
 
-async def _search_controls(keywords: list[str], iso_clause: Optional[str]) -> list[dict]:
+async def _search_controls(
+    keywords: list[str],
+    iso_clause: Optional[str],
+    question: str = "",
+) -> list[dict]:
     """Query Control Register for controls matching keywords or ISO clause.
 
     Fetches all controls from SharePoint and filters in Python.
     OData contains() is not used for text matching because ControlStatement is
     not indexed in SharePoint — unindexed columns cause contains() to return 404.
     ISO clause exact-match still uses OData since ISOClause is a short fixed value.
-    Python substring matching handles both single and multi-word keywords correctly.
+
+    Matching strategy (OR logic — any hit returns the control):
+      1. Keyword substring match in ControlStatement or RiskImplication
+      2. Verbatim match — control statement or risk text appears in the user's question
+         (handles the common pattern where users paste the control statement into
+         their question, e.g. "what is the risk for 'All staff SHALL engage...'")
     """
     list_id = settings.control_register_list_id
     if not settings.is_list_configured(list_id):
         return []
 
     # Use OData only for exact ISO clause match (short value, reliable).
-    # All other filtering is done in Python after fetching.
     odata_filter = f"fields/ISOClause eq '{iso_clause}'" if iso_clause else None
 
     try:
@@ -163,17 +176,32 @@ async def _search_controls(keywords: list[str], iso_clause: Optional[str]) -> li
         return []
 
     active = [i for i in items if i.get("fields", {}).get("Status") == "Active"]
-
     if not active:
         return []
 
-    # Keyword matching in Python — handles multi-word phrases, case-insensitive.
-    if keywords and not iso_clause:
-        def _matches(item: dict) -> bool:
-            stmt = (item.get("fields", {}).get("ControlStatement", "") or "").lower()
-            risk = (item.get("fields", {}).get("RiskImplication", "") or "").lower()
+    q_lower = question.lower() if question else ""
+
+    def _matches(item: dict) -> bool:
+        stmt = (item.get("fields", {}).get("ControlStatement", "") or "").lower()
+        risk = (item.get("fields", {}).get("RiskImplication", "") or "").lower()
+
+        # 1. Keyword match in control statement or risk (handles extracted keywords)
+        if keywords:
             haystack = stmt + " " + risk
-            return any(kw.lower() in haystack for kw in keywords)
+            if any(kw.lower() in haystack for kw in keywords):
+                return True
+
+        # 2. Verbatim match — first 40 chars of control statement appear in question.
+        #    Handles users who paste the control/risk text directly into their question.
+        if q_lower:
+            if stmt and len(stmt) > 15 and stmt[:40] in q_lower:
+                return True
+            if risk and len(risk) > 15 and risk[:40] in q_lower:
+                return True
+
+        return False
+
+    if keywords or q_lower:
         active = [i for i in active if _matches(i)]
 
     return [_map_control(i) for i in active[:_CONTROLS_FETCH_TOP]]
@@ -360,7 +388,7 @@ async def search_compliance(
 
     # Run control search and calendar search in parallel
     controls_raw, obligations = await asyncio.gather(
-        _search_controls(keywords, iso_clause),
+        _search_controls(keywords, iso_clause, question=question),
         _search_compliance_calendar(keywords),
     )
 
@@ -469,15 +497,24 @@ async def debug_compliance_pipeline(question: str) -> dict:
             )
             active = [i for i in raw_items if i.get("fields", {}).get("Status") == "Active"]
 
-            # Apply Python keyword filter (same logic as _search_controls)
-            if keywords and not iso_clause:
-                def _kw_match(item: dict) -> bool:
-                    stmt = (item.get("fields", {}).get("ControlStatement", "") or "").lower()
-                    risk = (item.get("fields", {}).get("RiskImplication", "") or "").lower()
-                    return any(kw.lower() in (stmt + " " + risk) for kw in keywords)
-                matched = [i for i in active if _kw_match(i)]
-            else:
-                matched = active
+            # Apply same matching logic as _search_controls (keyword + verbatim)
+            q_lower = question.lower()
+
+            def _debug_match(item: dict) -> bool:
+                stmt = (item.get("fields", {}).get("ControlStatement", "") or "").lower()
+                risk = (item.get("fields", {}).get("RiskImplication", "") or "").lower()
+                if keywords:
+                    haystack = stmt + " " + risk
+                    if any(kw.lower() in haystack for kw in keywords):
+                        return True
+                if q_lower:
+                    if stmt and len(stmt) > 15 and stmt[:40] in q_lower:
+                        return True
+                    if risk and len(risk) > 15 and risk[:40] in q_lower:
+                        return True
+                return False
+
+            matched = [i for i in active if _debug_match(i)] if (keywords or q_lower) else active
 
             result["stages"]["3_sharepoint_query"] = {
                 "status": "ok",
@@ -487,10 +524,10 @@ async def debug_compliance_pipeline(question: str) -> dict:
                 "sample": [
                     {
                         "id": str(i.get("id", "")),
-                        "ControlStatement": (i.get("fields", {}).get("ControlStatement") or "")[:120],
+                        "ControlStatement": (i.get("fields", {}).get("ControlStatement") or "")[:200],
                         "Status": i.get("fields", {}).get("Status", ""),
                         "OwnerRole": i.get("fields", {}).get("OwnerRole", ""),
-                        "RiskImplication": (i.get("fields", {}).get("RiskImplication") or "")[:100],
+                        "RiskImplication": (i.get("fields", {}).get("RiskImplication") or "")[:300],
                     }
                     for i in matched[:3]
                 ],
