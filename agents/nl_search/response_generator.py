@@ -171,7 +171,43 @@ def _evidence_status(evidence_items: list[dict]) -> str:
 #  Context builders — compact text blocks sent to the LLM
 # =============================================================================
 
+def _count_by(items: list[dict], key: str) -> dict[str, int]:
+    """Return a {value: count} dict for the given key across items."""
+    counts: dict[str, int] = {}
+    for item in items:
+        v = (item.get(key) or "Unknown").strip() or "Unknown"
+        counts[v] = counts.get(v, 0) + 1
+    return counts
+
+
+def _count_summary(counts: dict[str, int]) -> str:
+    """Format a count dict as 'N Label, M Label2, ...' sorted by count descending."""
+    return ", ".join(
+        f"{v} {k}" for k, v in sorted(counts.items(), key=lambda x: -x[1])
+    )
+
+
 def _context_from_compliance(result: dict) -> str:
+    """
+    Build the OrgOS context block sent to the LLM.
+
+    Design contract — the LLM must ALWAYS know:
+      1. The TOTAL count of each register that returned results, broken down by
+         key status/severity field. This lets it correctly answer "how many X are Y?"
+         even when not all items fit in the context window.
+      2. The MOST IMPORTANT items in detail (sorted by severity/urgency/score).
+      3. A NOTE when more items exist beyond what's shown, directing the user to
+         the dashboard for the complete list. The LLM must never claim to have shown
+         everything when it hasn't.
+
+    Items are never silently dropped. If N items exist and only M fit in context, the
+    header says "N total" and the footer says "+N-M more", so the LLM can answer
+    quantity questions correctly and advise the user to check the dashboard for the rest.
+
+    Controls are a special case: they have rich evidence data and are capped at 8
+    enriched items (per _CONTROLS_ENRICH_LIMIT in compliance_search.py), which fit
+    fine in full detail — no count summary needed for controls.
+    """
     controls    = result.get("controls", [])
     obligations = result.get("obligations", [])
     gaps        = result.get("gaps", [])
@@ -183,7 +219,8 @@ def _context_from_compliance(result: dict) -> str:
 
     lines: list[str] = []
 
-    for ctrl in controls[:20]:
+    # ── Controls (rich format, up to 8 enriched items) ───────────────────────
+    for ctrl in controls:
         stmt       = (ctrl.get("control_statement") or "")[:500]
         risk       = (ctrl.get("risk_statement") or "")[:500]
         iso        = ctrl.get("iso_clause", "")
@@ -194,9 +231,6 @@ def _context_from_compliance(result: dict) -> str:
         person     = (owner.get("display_name") or "").strip()
         ev         = ctrl.get("evidence", [])
 
-        # Build a clear ownership string — the LLM needs to be able to answer
-        # "who owns this", "which role is responsible", and "who is the owner"
-        # from the same line regardless of how the question is phrased.
         if role_title and person and person != role_title:
             owner_str = f"{role_title} (held by {person})"
         elif role_title:
@@ -221,21 +255,20 @@ def _context_from_compliance(result: dict) -> str:
         lines.append(f"Evidence status: {ev_status}")
         if ev:
             for e in ev[:2]:
-                etype         = e.get("type", "")
-                elabel        = _EVIDENCE_TYPE_LABELS.get(etype, etype)
-                edesc         = (e.get("description") or "")[:250]
-                esrc          = e.get("source_system", "")
-                efmt          = e.get("format", "")
-                efreq         = e.get("frequency", "")
-                ecoll         = e.get("collection_method", "")
-                elink         = (e.get("link") or "").strip()
-                estat         = e.get("status", "Pending")
-                evalid        = (e.get("validation_criteria") or "")[:150]
-                elast         = e.get("last_collected", "")
-                ereviewer     = e.get("reviewer_name", "")
-                erev_notes    = (e.get("reviewer_notes") or "")[:150]
-                esub_notes    = (e.get("submission_notes") or "")[:150]
-                # Show code + full label so LLM can explain both
+                etype      = e.get("type", "")
+                elabel     = _EVIDENCE_TYPE_LABELS.get(etype, etype)
+                edesc      = (e.get("description") or "")[:250]
+                esrc       = e.get("source_system", "")
+                efmt       = e.get("format", "")
+                efreq      = e.get("frequency", "")
+                ecoll      = e.get("collection_method", "")
+                elink      = (e.get("link") or "").strip()
+                estat      = e.get("status", "Pending")
+                evalid     = (e.get("validation_criteria") or "")[:150]
+                elast      = e.get("last_collected", "")
+                ereviewer  = e.get("reviewer_name", "")
+                erev_notes = (e.get("reviewer_notes") or "")[:150]
+                esub_notes = (e.get("submission_notes") or "")[:150]
                 eline = f"  Evidence type: {etype} ({elabel})"
                 if edesc:
                     eline += f" — {edesc}"
@@ -266,110 +299,221 @@ def _context_from_compliance(result: dict) -> str:
                 lines.append(eline)
         lines.append("")
 
+    # ── Compliance Calendar obligations ──────────────────────────────────────
     if obligations:
-        lines.append("[OBLIGATIONS]")
-        compact_ob = len(obligations) > 5
-        for ob in obligations[:15]:
-            ob_name  = ob.get("name", "")
-            due      = ob.get("due_date", "")
-            auth     = ob.get("authority", "")
-            recur    = ob.get("recurrence", "")
-            own      = (ob.get("owner") or {}).get("display_name") or "Unassigned"
-            if compact_ob:
-                parts = [f"- {ob_name}"]
+        total_ob = len(obligations)
+        # Sort by urgency: Overdue first, then Due Soon, then Upcoming, then Completed
+        urgency = {"Overdue": 0, "Due Soon": 1, "Upcoming": 2, "Completed": 3}
+        sorted_ob = sorted(
+            obligations,
+            key=lambda o: (urgency.get(o.get("status_label") or o.get("status") or "", 99),
+                           o.get("due_date") or "9999-99-99")
+        )
+        status_counts = _count_by(obligations, "status_label") or _count_by(obligations, "status")
+        if total_ob == 1:
+            summary = "1 obligation"
+        else:
+            summary = f"{total_ob} total ({_count_summary(status_counts)})"
+        lines.append(f"[OBLIGATIONS — {summary}]")
+
+        # Full format for up to 5, compact after that
+        detail_n  = min(5, total_ob)
+        compact_n = min(20, total_ob - detail_n)
+        overflow  = total_ob - detail_n - compact_n
+
+        for ob in sorted_ob[:detail_n]:
+            ob_name = ob.get("name", "")
+            due     = ob.get("due_date", "")
+            auth    = ob.get("authority", "")
+            recur   = ob.get("recurrence", "")
+            notes   = (ob.get("notes") or "")[:150]
+            own     = (ob.get("owner") or {}).get("display_name") or "Unassigned"
+            parts   = [f"- {ob_name}", f"Due: {due}", f"Authority: {auth}"]
+            if recur:
+                parts.append(f"Recurrence: {recur}")
+            parts.append(f"Owner: {own}")
+            if notes:
+                parts.append(f"Notes: {notes}")
+            lines.append(" | ".join(parts))
+
+        if compact_n > 0:
+            for ob in sorted_ob[detail_n:detail_n + compact_n]:
+                ob_name = ob.get("name", "")
+                due     = ob.get("due_date", "")
+                auth    = ob.get("authority", "")
+                own     = (ob.get("owner") or {}).get("display_name") or "Unassigned"
+                parts   = [f"- {ob_name}"]
                 if due:
                     parts.append(f"Due: {due}")
                 if auth:
                     parts.append(f"Authority: {auth}")
                 parts.append(f"Owner: {own}")
                 lines.append(" | ".join(parts))
-            else:
-                notes = (ob.get("notes") or "")[:150]
-                parts = [f"- {ob_name}", f"Due: {due}", f"Authority: {auth}"]
-                if recur:
-                    parts.append(f"Recurrence: {recur}")
-                parts.append(f"Owner: {own}")
-                if notes:
-                    parts.append(f"Notes: {notes}")
-                lines.append(" | ".join(parts))
+
+        if overflow > 0:
+            lines.append(
+                f"(+{overflow} more obligations — full list in the Compliance Calendar)"
+            )
         lines.append("")
 
-    # Gap Analysis findings
+    # ── Gap Analysis findings ────────────────────────────────────────────────
     if gaps:
-        lines.append("[GAP FINDINGS]")
-        # Compact format when many gaps — keeps token budget manageable while
-        # ensuring ALL gaps are visible to the LLM (not silently truncated).
-        compact_gap = len(gaps) > 5
-        for gap in gaps[:30]:
-            gid      = gap.get("gap_id", "")
-            finding  = (gap.get("finding") or "")[:200]
-            std      = gap.get("standard", "")
-            clause   = gap.get("clause", "")
-            severity = gap.get("severity", "")
-            status   = gap.get("status", "")
-            target   = gap.get("target_date", "")
-            own      = (gap.get("owner") or {}).get("display_name") or "Unassigned"
-            if compact_gap:
-                # One line per gap: ID | clause | standard | severity | status | target | owner
-                label = gid or (f"{std} {clause}".strip()) or "GAP"
-                parts = [f"- {label}"]
+        total_gap = len(gaps)
+        # Sort by severity (most severe first), then by status (Open > In progress > ...)
+        sev_order = {"Critical": 0, "Major": 1, "Minor": 2}
+        sta_order = {"Open": 0, "In progress": 1, "Accepted risk": 2, "Closed": 3}
+        sorted_gaps = sorted(
+            gaps,
+            key=lambda g: (
+                sev_order.get(g.get("severity", ""), 9),
+                sta_order.get(g.get("status", ""), 9),
+            )
+        )
+        sev_counts    = _count_by(gaps, "severity")
+        status_counts = _count_by(gaps, "status")
+        if total_gap == 1:
+            summary = "1 finding"
+        else:
+            sev_str = _count_summary(sev_counts)
+            sta_str = _count_summary(status_counts)
+            summary = f"{total_gap} total | by severity: {sev_str} | by status: {sta_str}"
+        lines.append(f"[GAP FINDINGS — {summary}]")
+
+        # Full format for top 5 (by severity), compact for next 25, overflow note
+        detail_n  = min(5, total_gap)
+        compact_n = min(25, total_gap - detail_n)
+        overflow  = total_gap - detail_n - compact_n
+
+        for gap in sorted_gaps[:detail_n]:
+            gid     = gap.get("gap_id", "")
+            finding = (gap.get("finding") or "")[:200]
+            std     = gap.get("standard", "")
+            clause  = gap.get("clause", "")
+            sev     = gap.get("severity", "")
+            status  = gap.get("status", "")
+            target  = gap.get("target_date", "")
+            remedy  = (gap.get("proposed_remediation") or "")[:250]
+            own     = (gap.get("owner") or {}).get("display_name") or "Unassigned"
+            header  = f"[GAP: {gid}]" if gid else "[GAP]"
+            lines.append(header)
+            if finding:
+                lines.append(f"Finding: {finding}")
+            parts: list[str] = []
+            if std:
+                parts.append(f"Standard: {std}")
+            if clause:
+                parts.append(f"Clause: {clause}")
+            if sev:
+                parts.append(f"Severity: {sev}")
+            if status:
+                parts.append(f"Status: {status}")
+            if target:
+                parts.append(f"Target date: {target}")
+            parts.append(f"Owner: {own}")
+            if parts:
+                lines.append(" | ".join(parts))
+            if remedy:
+                lines.append(f"Proposed remediation: {remedy}")
+            lines.append("")
+
+        if compact_n > 0:
+            for gap in sorted_gaps[detail_n:detail_n + compact_n]:
+                gid    = gap.get("gap_id", "")
+                std    = gap.get("standard", "")
+                clause = gap.get("clause", "")
+                sev    = gap.get("severity", "")
+                status = gap.get("status", "")
+                target = gap.get("target_date", "")
+                own    = (gap.get("owner") or {}).get("display_name") or "Unassigned"
+                label  = gid or (f"{std} {clause}".strip()) or "GAP"
+                parts  = [f"- {label}"]
                 if clause and gid and clause not in gid:
                     parts.append(clause)
                 if std:
                     parts.append(std)
-                if severity:
-                    parts.append(severity)
+                if sev:
+                    parts.append(sev)
                 if status:
                     parts.append(f"Status: {status}")
                 if target:
                     parts.append(f"Target: {target}")
                 parts.append(f"Owner: {own}")
                 lines.append(" | ".join(parts))
-            else:
-                remedy = (gap.get("proposed_remediation") or "")[:300]
-                header = f"[GAP: {gid}]" if gid else "[GAP]"
-                lines.append(header)
-                if finding:
-                    lines.append(f"Finding: {finding}")
-                parts = []
-                if std:
-                    parts.append(f"Standard: {std}")
-                if clause:
-                    parts.append(f"Clause: {clause}")
-                if severity:
-                    parts.append(f"Severity: {severity}")
-                if status:
-                    parts.append(f"Status: {status}")
-                if target:
-                    parts.append(f"Target date: {target}")
-                parts.append(f"Owner: {own}")
-                if parts:
-                    lines.append(" | ".join(parts))
-                if remedy:
-                    lines.append(f"Proposed remediation: {remedy}")
-                lines.append("")
-        if compact_gap:
             lines.append("")
 
-    # Document Register
+        if overflow > 0:
+            lines.append(
+                f"(+{overflow} more findings — full list visible in the Gap Analysis dashboard)"
+            )
+            lines.append("")
+
+    # ── Document Register ────────────────────────────────────────────────────
     if documents:
-        lines.append("[DOCUMENT REGISTER]")
-        compact_doc = len(documents) > 5
-        for doc in documents[:15]:
-            code     = doc.get("document_code", "")
-            title    = doc.get("title", "")
-            dtype    = doc.get("type", "")
-            dept     = doc.get("department", "")
-            status   = doc.get("status", "")
-            version  = doc.get("current_version", "")
-            eff      = doc.get("effective_date", "")
-            review   = doc.get("next_review_date", "")
-            stds     = doc.get("applicable_standards", "")
-            sp_url   = (doc.get("sharepoint_url") or "").strip()
-            own      = (doc.get("owner") or {}).get("display_name") or "Unassigned"
-            if compact_doc:
-                # One line per doc when many results
-                parts = [f"- {code or title}"]
+        total_doc = len(documents)
+        # Sort: Active first, then Under Review, then others
+        sta_order = {"Active": 0, "Under Review": 1, "Superseded": 2, "Withdrawn": 3}
+        sorted_docs = sorted(
+            documents,
+            key=lambda d: sta_order.get(d.get("status", ""), 9)
+        )
+        status_counts = _count_by(documents, "status")
+        if total_doc == 1:
+            summary = "1 document"
+        else:
+            summary = f"{total_doc} total ({_count_summary(status_counts)})"
+        lines.append(f"[DOCUMENT REGISTER — {summary}]")
+
+        detail_n  = min(5, total_doc)
+        compact_n = min(20, total_doc - detail_n)
+        overflow  = total_doc - detail_n - compact_n
+
+        for doc in sorted_docs[:detail_n]:
+            code   = doc.get("document_code", "")
+            title  = doc.get("title", "")
+            dtype  = doc.get("type", "")
+            dept   = doc.get("department", "")
+            status = doc.get("status", "")
+            version= doc.get("current_version", "")
+            eff    = doc.get("effective_date", "")
+            review = doc.get("next_review_date", "")
+            stds   = doc.get("applicable_standards", "")
+            sp_url = (doc.get("sharepoint_url") or "").strip()
+            own    = (doc.get("owner") or {}).get("display_name") or "Unassigned"
+            header = f"[DOC: {code}]" if code else "[DOC]"
+            lines.append(header)
+            if title:
+                lines.append(f"Title: {title}")
+            parts = []
+            if dtype:
+                parts.append(f"Type: {dtype}")
+            if dept:
+                parts.append(f"Department: {dept}")
+            if status:
+                parts.append(f"Status: {status}")
+            if version:
+                parts.append(f"Version: {version}")
+            if eff:
+                parts.append(f"Effective: {eff}")
+            if review:
+                parts.append(f"Next review: {review}")
+            if stds:
+                parts.append(f"Standards: {stds}")
+            parts.append(f"Owner: {own}")
+            if parts:
+                lines.append(" | ".join(parts))
+            if sp_url:
+                doc_label = _extract_link_label(sp_url, fallback=title or code or "View document")
+                lines.append(f"Document link: [{doc_label}]({sp_url})")
+            lines.append("")
+
+        if compact_n > 0:
+            for doc in sorted_docs[detail_n:detail_n + compact_n]:
+                code   = doc.get("document_code", "")
+                title  = doc.get("title", "")
+                status = doc.get("status", "")
+                review = doc.get("next_review_date", "")
+                own    = (doc.get("owner") or {}).get("display_name") or "Unassigned"
+                parts  = [f"- {code or title}"]
                 if title and code:
                     parts.append(title)
                 if status:
@@ -378,53 +522,74 @@ def _context_from_compliance(result: dict) -> str:
                     parts.append(f"Next review: {review}")
                 parts.append(f"Owner: {own}")
                 lines.append(" | ".join(parts))
-            else:
-                header = f"[DOC: {code}]" if code else "[DOC]"
-                lines.append(header)
-                if title:
-                    lines.append(f"Title: {title}")
-                parts = []
-                if dtype:
-                    parts.append(f"Type: {dtype}")
-                if dept:
-                    parts.append(f"Department: {dept}")
-                if status:
-                    parts.append(f"Status: {status}")
-                if version:
-                    parts.append(f"Version: {version}")
-                if eff:
-                    parts.append(f"Effective: {eff}")
-                if review:
-                    parts.append(f"Next review: {review}")
-                if stds:
-                    parts.append(f"Standards: {stds}")
-                parts.append(f"Owner: {own}")
-                if parts:
-                    lines.append(" | ".join(parts))
-                if sp_url:
-                    doc_label = _extract_link_label(sp_url, fallback=title or code or "View document")
-                    lines.append(f"Document link: [{doc_label}]({sp_url})")
-                lines.append("")
-        if compact_doc:
             lines.append("")
 
-    # Strategic Risks
+        if overflow > 0:
+            lines.append(
+                f"(+{overflow} more documents — full list in the Document Register)"
+            )
+            lines.append("")
+
+    # ── Strategic Risks ──────────────────────────────────────────────────────
     if risks:
-        lines.append("[STRATEGIC RISKS]")
-        compact_risk = len(risks) > 5
-        for risk in risks[:20]:
-            desc      = (risk.get("description") or "")[:300]
-            cat       = risk.get("category", "")
-            score     = risk.get("risk_score", "")
-            level     = risk.get("risk_level", "")
-            likelihood= risk.get("likelihood", "")
-            impact    = risk.get("impact", "")
-            treatment = (risk.get("treatment") or "")[:250]
-            status    = risk.get("status", "")
-            gap_ref   = risk.get("related_gap_id", "")
-            own       = (risk.get("owner") or {}).get("display_name") or "Unassigned"
-            if compact_risk:
-                parts = [f"- {(desc or 'Risk')[:120]}"]
+        total_risk = len(risks)
+        # Sort by risk_score descending (Critical first)
+        sorted_risks = sorted(
+            risks,
+            key=lambda r: -int(r.get("risk_score") or 0)
+        )
+        level_counts  = _count_by(risks, "risk_level")
+        status_counts = _count_by(risks, "status")
+        if total_risk == 1:
+            summary = "1 risk"
+        else:
+            lv_str = _count_summary(level_counts)
+            st_str = _count_summary(status_counts)
+            summary = f"{total_risk} total | by level: {lv_str} | by status: {st_str}"
+        lines.append(f"[STRATEGIC RISKS — {summary}]")
+
+        detail_n  = min(5, total_risk)
+        compact_n = min(20, total_risk - detail_n)
+        overflow  = total_risk - detail_n - compact_n
+
+        for risk in sorted_risks[:detail_n]:
+            desc       = (risk.get("description") or "")[:300]
+            cat        = risk.get("category", "")
+            score      = risk.get("risk_score", "")
+            level      = risk.get("risk_level", "")
+            likelihood = risk.get("likelihood", "")
+            impact     = risk.get("impact", "")
+            treatment  = (risk.get("treatment") or "")[:250]
+            status     = risk.get("status", "")
+            gap_ref    = risk.get("related_gap_id", "")
+            own        = (risk.get("owner") or {}).get("display_name") or "Unassigned"
+            lines.append("[RISK]")
+            if desc:
+                lines.append(f"Description: {desc}")
+            parts = []
+            if cat:
+                parts.append(f"Category: {cat}")
+            parts.append(f"Score: {score} ({level}) — Likelihood: {likelihood} × Impact: {impact}")
+            if status:
+                parts.append(f"Status: {status}")
+            if gap_ref:
+                parts.append(f"Related gap: {gap_ref}")
+            parts.append(f"Owner: {own}")
+            if parts:
+                lines.append(" | ".join(parts))
+            if treatment:
+                lines.append(f"Treatment: {treatment}")
+            lines.append("")
+
+        if compact_n > 0:
+            for risk in sorted_risks[detail_n:detail_n + compact_n]:
+                desc   = (risk.get("description") or "Risk")[:120]
+                cat    = risk.get("category", "")
+                score  = risk.get("risk_score", "")
+                level  = risk.get("risk_level", "")
+                status = risk.get("status", "")
+                own    = (risk.get("owner") or {}).get("display_name") or "Unassigned"
+                parts  = [f"- {desc}"]
                 if cat:
                     parts.append(cat)
                 parts.append(f"Score: {score} ({level})")
@@ -432,25 +597,12 @@ def _context_from_compliance(result: dict) -> str:
                     parts.append(f"Status: {status}")
                 parts.append(f"Owner: {own}")
                 lines.append(" | ".join(parts))
-            else:
-                lines.append("[RISK]")
-                if desc:
-                    lines.append(f"Description: {desc}")
-                parts = []
-                if cat:
-                    parts.append(f"Category: {cat}")
-                parts.append(f"Score: {score} ({level}) — Likelihood: {likelihood} × Impact: {impact}")
-                if status:
-                    parts.append(f"Status: {status}")
-                if gap_ref:
-                    parts.append(f"Related gap: {gap_ref}")
-                parts.append(f"Owner: {own}")
-                if parts:
-                    lines.append(" | ".join(parts))
-                if treatment:
-                    lines.append(f"Treatment: {treatment}")
-                lines.append("")
-        if compact_risk:
+            lines.append("")
+
+        if overflow > 0:
+            lines.append(
+                f"(+{overflow} more risks — full list in the Strategic Risk Register)"
+            )
             lines.append("")
 
     return "\n".join(lines).rstrip()

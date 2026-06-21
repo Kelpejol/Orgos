@@ -87,6 +87,11 @@ class Settings(BaseSettings):
 
     # ── NL Search ─────────────────────────────────────────────────────────
     procedural_steps_list_id: str = Field(default="placeholder")
+    # Graph Search API region — required for app-only (client credentials) auth.
+    # Microsoft routes search to the nearest datacenter based on this value.
+    # Common values: "NAM" (North America), "EUR" (Europe), "APC" (Asia Pacific).
+    # Nigeria tenants are typically routed to EUR. Verify in Microsoft 365 admin.
+    graph_search_region: str = Field(default="EUR")
     chroma_persist_dir: str = Field(default="./chroma_db")
     # Custom GPU gateway — takes priority over RunPod and Ollama for all LLM calls
     # POST {chat_api_url}  with {"messages": [...], "max_tokens": N}
