@@ -635,7 +635,6 @@ async def _vector_search_controls(question: str) -> list[dict]:
 
 async def search_compliance(
     question: str,
-    user_oid: Optional[str] = None,
     conversation_history: list[dict] | None = None,
 ) -> dict:
     """
