@@ -5,6 +5,7 @@
 // Items marked adminOnly are hidden from Standard Users AND Compliance users.
 // =============================================================================
 
+import { useRef, useEffect } from "react";
 import { useCurrentUserRole } from "../../hooks/useCurrentUserRole";
 
 // complianceOnly: hidden from Standard Users
@@ -47,6 +48,14 @@ const TIER_COLOURS = {
  */
 export default function Sidebar({ nav, setNav, collapsed, setCollapsed }) {
   const { isCompliance, isAdmin } = useCurrentUserRole();
+  const sidebarRef = useRef(null);
+
+  // Scroll to bottom when sidebar expands
+  useEffect(() => {
+    if (!collapsed && sidebarRef.current) {
+      sidebarRef.current.scrollTo({ top: sidebarRef.current.scrollHeight, behavior: 'smooth' });
+    }
+  }, [collapsed]);
 
   // Filter nav items based on role
   const visibleNav = NAV.filter((item) => {
@@ -63,6 +72,7 @@ export default function Sidebar({ nav, setNav, collapsed, setCollapsed }) {
 
   return (
     <div
+      ref={sidebarRef}
       style={{
         width: collapsed ? 48 : 200,
         borderRight: "0.5px solid var(--color-border-tertiary)",

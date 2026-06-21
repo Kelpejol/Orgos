@@ -405,6 +405,18 @@ export default function ChatPanel({ isOpen, onClose }) {
           <p style={{ fontSize: '10.5px', color: '#9ca3af', margin: '5px 0 0 2px' }}>
             Enter to send · Shift+Enter for new line
           </p>
+          <p style={{
+            fontSize:     '10px',
+            color:        '#92400e',
+            background:   '#fffbeb',
+            border:       '1px solid #fde68a',
+            borderRadius: '5px',
+            margin:       '6px 0 0',
+            padding:      '4px 8px',
+            lineHeight:   1.4,
+          }}>
+            ⚠ AI responses may be inaccurate. Always verify important information with the Compliance team.
+          </p>
         </div>
       </div>
     </>,

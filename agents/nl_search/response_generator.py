@@ -103,7 +103,7 @@ STYLE:
 - For compliance: 2–4 sentences covering what the rule is, its ISO/NDPA reference, who owns it, and evidence status.
 - If evidence is 🔴 Red or overdue, explicitly flag it — the user needs to know.
 - Use **bold** for key terms, policy names, and ISO clauses.
-- No markdown headers (###, ##). No bullet lists for compliance — prose only.
+- No markdown headers (###, ##). For a single item, use prose. When listing multiple items (e.g. "list all gaps"), use `- ` bullet points — never numbered lists.
 - Reference prior conversation or memory naturally when relevant.
 - Be concise. Do not pad responses."""
 
@@ -290,13 +290,13 @@ def _context_from_compliance(result: dict) -> str:
                     extras.append(f"Reviewer notes: {erev_notes}")
                 if esub_notes:
                     extras.append(f"Submission notes: {esub_notes}")
-                if elink:
-                    link_label = _extract_link_label(elink, fallback="View submitted evidence")
-                    extras.append(f"Evidence link: [{link_label}]({elink})")
                 if evalid:
                     extras.append(f"Validation criteria: {evalid}")
                 eline += " [" + " | ".join(extras) + "]"
                 lines.append(eline)
+                if elink:
+                    link_label = _extract_link_label(elink, fallback="View submitted evidence")
+                    lines.append(f"  Evidence link: [{link_label}]({elink})")
         lines.append("")
 
     # ── Compliance Calendar obligations ──────────────────────────────────────
