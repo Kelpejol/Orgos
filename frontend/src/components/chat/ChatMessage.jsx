@@ -22,9 +22,10 @@ function renderMarkdown(text) {
   const lines   = text.split('\n');
   const elements = [];
 
-  // orderedItems stores { text: string, subs: string[] }
+  // orderedItems stores { text: string, subs: string[], num: number }
   let orderedItems = [];
   let listItems    = [];
+  let globalOrdinal = 0;  // sequential counter — never resets within one render pass
 
   // ── Flush helpers ──────────────────────────────────────────────────────────
 
@@ -45,7 +46,7 @@ function renderMarkdown(text) {
               alignItems:   'flex-start',
             }}
           >
-            {/* Number badge */}
+            {/* Number badge — uses stored sequential number, not reset-per-flush index */}
             <span
               style={{
                 flexShrink:      0,
@@ -62,7 +63,7 @@ function renderMarkdown(text) {
                 marginTop:       '1px',
               }}
             >
-              {i + 1}
+              {item.num}
             </span>
             {/* Step text + optional sub-items */}
             <span style={{ flex: 1, lineHeight: 1.55 }}>
@@ -145,7 +146,8 @@ function renderMarkdown(text) {
     const ordMatch = line.match(/^(\d+)\. (.*)/);
     if (ordMatch) {
       flushUnordered(`pre-ord-${idx}`);   // switch list type — flush bullets only
-      orderedItems.push({ text: ordMatch[2], subs: [] });
+      globalOrdinal += 1;
+      orderedItems.push({ text: ordMatch[2], subs: [], num: globalOrdinal });
       return;
     }
 
