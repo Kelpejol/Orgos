@@ -324,7 +324,7 @@ async def _search_compliance_calendar(keywords: list[str]) -> list[dict]:
             top=200,
         )
         if not keywords:
-            return [_map_obligation(i) for i in items[:5]]
+            return [_map_obligation(i) for i in items[:20]]
         kw_lower = [k.lower() for k in keywords]
         matched = []
         for i in items:
@@ -339,7 +339,7 @@ async def _search_compliance_calendar(keywords: list[str]) -> list[dict]:
             ]).lower()
             if any(kw in haystack for kw in kw_lower):
                 matched.append(i)
-        return [_map_obligation(i) for i in matched[:5]]
+        return [_map_obligation(i) for i in matched[:20]]
     except Exception as exc:
         logger.warning(f"compliance_search: calendar query failed: {exc}")
         return []
@@ -416,7 +416,7 @@ async def _search_gap_analysis(keywords: list[str], question: str = "") -> list[
     try:
         items = await get_list_items(list_id=list_id, list_name="Gap Analysis", top=200)
         if not keywords and not question:
-            return [_map_gap(i) for i in items[:5]]
+            return [_map_gap(i) for i in items[:30]]
         matched = _py_match(
             items, keywords, question,
             lambda i: i.get("fields", {}).get("Finding", "") or i.get("fields", {}).get("Title", ""),
@@ -425,7 +425,8 @@ async def _search_gap_analysis(keywords: list[str], question: str = "") -> list[
             lambda i: i.get("fields", {}).get("Severity", ""),
             lambda i: i.get("fields", {}).get("Status", ""),
         )
-        return [_map_gap(i) for i in matched[:5]]
+        # When no keyword matches (broad "list all" queries), fall through to all items
+        return [_map_gap(i) for i in (matched if matched else items)[:30]]
     except Exception as exc:
         logger.warning(f"compliance_search: gap analysis query failed: {exc}")
         return []
@@ -495,7 +496,7 @@ async def _search_document_register(
             keywords = list(dict.fromkeys(list(keywords) + dc_tokens))
 
         if not keywords and not question:
-            return [_map_document(i) for i in active[:5]]
+            return [_map_document(i) for i in active[:20]]
 
         matched = _py_match(
             active, keywords, question,
@@ -505,7 +506,7 @@ async def _search_document_register(
             lambda i: i.get("fields", {}).get("DocumentType", ""),
             lambda i: i.get("fields", {}).get("ApplicableStandards", ""),
         )
-        return [_map_document(i) for i in matched[:5]]
+        return [_map_document(i) for i in (matched if matched else active)[:20]]
     except Exception as exc:
         logger.warning(f"compliance_search: document register query failed: {exc}")
         return []
@@ -560,7 +561,7 @@ async def _search_strategic_risks(keywords: list[str], question: str = "") -> li
             list_id=list_id, list_name="Strategic Risk Register", top=200
         )
         if not keywords and not question:
-            return [_map_risk(i) for i in items[:5]]
+            return [_map_risk(i) for i in items[:20]]
         matched = _py_match(
             items, keywords, question,
             lambda i: i.get("fields", {}).get("Description", "") or i.get("fields", {}).get("Title", ""),
@@ -568,7 +569,7 @@ async def _search_strategic_risks(keywords: list[str], question: str = "") -> li
             lambda i: i.get("fields", {}).get("Treatment", ""),
             lambda i: i.get("fields", {}).get("Status", ""),
         )
-        return [_map_risk(i) for i in matched[:5]]
+        return [_map_risk(i) for i in (matched if matched else items)[:20]]
     except Exception as exc:
         logger.warning(f"compliance_search: strategic risks query failed: {exc}")
         return []

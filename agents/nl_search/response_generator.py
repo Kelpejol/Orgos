@@ -183,7 +183,7 @@ def _context_from_compliance(result: dict) -> str:
 
     lines: list[str] = []
 
-    for ctrl in controls[:3]:
+    for ctrl in controls[:20]:
         stmt       = (ctrl.get("control_statement") or "")[:500]
         risk       = (ctrl.get("risk_statement") or "")[:500]
         iso        = ctrl.get("iso_clause", "")
@@ -268,61 +268,94 @@ def _context_from_compliance(result: dict) -> str:
 
     if obligations:
         lines.append("[OBLIGATIONS]")
-        for ob in obligations[:3]:
+        compact_ob = len(obligations) > 5
+        for ob in obligations[:15]:
             ob_name  = ob.get("name", "")
             due      = ob.get("due_date", "")
             auth     = ob.get("authority", "")
             recur    = ob.get("recurrence", "")
-            notes    = (ob.get("notes") or "")[:150]
             own      = (ob.get("owner") or {}).get("display_name") or "Unassigned"
-            parts    = [f"- {ob_name}", f"Due: {due}", f"Authority: {auth}"]
-            if recur:
-                parts.append(f"Recurrence: {recur}")
-            parts.append(f"Owner: {own}")
-            if notes:
-                parts.append(f"Notes: {notes}")
-            lines.append(" | ".join(parts))
+            if compact_ob:
+                parts = [f"- {ob_name}"]
+                if due:
+                    parts.append(f"Due: {due}")
+                if auth:
+                    parts.append(f"Authority: {auth}")
+                parts.append(f"Owner: {own}")
+                lines.append(" | ".join(parts))
+            else:
+                notes = (ob.get("notes") or "")[:150]
+                parts = [f"- {ob_name}", f"Due: {due}", f"Authority: {auth}"]
+                if recur:
+                    parts.append(f"Recurrence: {recur}")
+                parts.append(f"Owner: {own}")
+                if notes:
+                    parts.append(f"Notes: {notes}")
+                lines.append(" | ".join(parts))
         lines.append("")
 
     # Gap Analysis findings
     if gaps:
         lines.append("[GAP FINDINGS]")
-        for gap in gaps[:3]:
+        # Compact format when many gaps — keeps token budget manageable while
+        # ensuring ALL gaps are visible to the LLM (not silently truncated).
+        compact_gap = len(gaps) > 5
+        for gap in gaps[:30]:
             gid      = gap.get("gap_id", "")
-            finding  = (gap.get("finding") or "")[:300]
+            finding  = (gap.get("finding") or "")[:200]
             std      = gap.get("standard", "")
             clause   = gap.get("clause", "")
             severity = gap.get("severity", "")
             status   = gap.get("status", "")
             target   = gap.get("target_date", "")
-            remedy   = (gap.get("proposed_remediation") or "")[:300]
             own      = (gap.get("owner") or {}).get("display_name") or "Unassigned"
-            header   = f"[GAP: {gid}]" if gid else "[GAP]"
-            lines.append(header)
-            if finding:
-                lines.append(f"Finding: {finding}")
-            parts = []
-            if std:
-                parts.append(f"Standard: {std}")
-            if clause:
-                parts.append(f"Clause: {clause}")
-            if severity:
-                parts.append(f"Severity: {severity}")
-            if status:
-                parts.append(f"Status: {status}")
-            if target:
-                parts.append(f"Target date: {target}")
-            parts.append(f"Owner: {own}")
-            if parts:
+            if compact_gap:
+                # One line per gap: ID | clause | standard | severity | status | target | owner
+                label = gid or (f"{std} {clause}".strip()) or "GAP"
+                parts = [f"- {label}"]
+                if clause and gid and clause not in gid:
+                    parts.append(clause)
+                if std:
+                    parts.append(std)
+                if severity:
+                    parts.append(severity)
+                if status:
+                    parts.append(f"Status: {status}")
+                if target:
+                    parts.append(f"Target: {target}")
+                parts.append(f"Owner: {own}")
                 lines.append(" | ".join(parts))
-            if remedy:
-                lines.append(f"Proposed remediation: {remedy}")
+            else:
+                remedy = (gap.get("proposed_remediation") or "")[:300]
+                header = f"[GAP: {gid}]" if gid else "[GAP]"
+                lines.append(header)
+                if finding:
+                    lines.append(f"Finding: {finding}")
+                parts = []
+                if std:
+                    parts.append(f"Standard: {std}")
+                if clause:
+                    parts.append(f"Clause: {clause}")
+                if severity:
+                    parts.append(f"Severity: {severity}")
+                if status:
+                    parts.append(f"Status: {status}")
+                if target:
+                    parts.append(f"Target date: {target}")
+                parts.append(f"Owner: {own}")
+                if parts:
+                    lines.append(" | ".join(parts))
+                if remedy:
+                    lines.append(f"Proposed remediation: {remedy}")
+                lines.append("")
+        if compact_gap:
             lines.append("")
 
     # Document Register
     if documents:
         lines.append("[DOCUMENT REGISTER]")
-        for doc in documents[:3]:
+        compact_doc = len(documents) > 5
+        for doc in documents[:15]:
             code     = doc.get("document_code", "")
             title    = doc.get("title", "")
             dtype    = doc.get("type", "")
@@ -334,37 +367,52 @@ def _context_from_compliance(result: dict) -> str:
             stds     = doc.get("applicable_standards", "")
             sp_url   = (doc.get("sharepoint_url") or "").strip()
             own      = (doc.get("owner") or {}).get("display_name") or "Unassigned"
-            header   = f"[DOC: {code}]" if code else "[DOC]"
-            lines.append(header)
-            if title:
-                lines.append(f"Title: {title}")
-            parts = []
-            if dtype:
-                parts.append(f"Type: {dtype}")
-            if dept:
-                parts.append(f"Department: {dept}")
-            if status:
-                parts.append(f"Status: {status}")
-            if version:
-                parts.append(f"Version: {version}")
-            if eff:
-                parts.append(f"Effective: {eff}")
-            if review:
-                parts.append(f"Next review: {review}")
-            if stds:
-                parts.append(f"Standards: {stds}")
-            parts.append(f"Owner: {own}")
-            if parts:
+            if compact_doc:
+                # One line per doc when many results
+                parts = [f"- {code or title}"]
+                if title and code:
+                    parts.append(title)
+                if status:
+                    parts.append(f"Status: {status}")
+                if review:
+                    parts.append(f"Next review: {review}")
+                parts.append(f"Owner: {own}")
                 lines.append(" | ".join(parts))
-            if sp_url:
-                doc_label = _extract_link_label(sp_url, fallback=title or code or "View document")
-                lines.append(f"Document link: [{doc_label}]({sp_url})")
+            else:
+                header = f"[DOC: {code}]" if code else "[DOC]"
+                lines.append(header)
+                if title:
+                    lines.append(f"Title: {title}")
+                parts = []
+                if dtype:
+                    parts.append(f"Type: {dtype}")
+                if dept:
+                    parts.append(f"Department: {dept}")
+                if status:
+                    parts.append(f"Status: {status}")
+                if version:
+                    parts.append(f"Version: {version}")
+                if eff:
+                    parts.append(f"Effective: {eff}")
+                if review:
+                    parts.append(f"Next review: {review}")
+                if stds:
+                    parts.append(f"Standards: {stds}")
+                parts.append(f"Owner: {own}")
+                if parts:
+                    lines.append(" | ".join(parts))
+                if sp_url:
+                    doc_label = _extract_link_label(sp_url, fallback=title or code or "View document")
+                    lines.append(f"Document link: [{doc_label}]({sp_url})")
+                lines.append("")
+        if compact_doc:
             lines.append("")
 
     # Strategic Risks
     if risks:
         lines.append("[STRATEGIC RISKS]")
-        for risk in risks[:3]:
+        compact_risk = len(risks) > 5
+        for risk in risks[:20]:
             desc      = (risk.get("description") or "")[:300]
             cat       = risk.get("category", "")
             score     = risk.get("risk_score", "")
@@ -375,22 +423,34 @@ def _context_from_compliance(result: dict) -> str:
             status    = risk.get("status", "")
             gap_ref   = risk.get("related_gap_id", "")
             own       = (risk.get("owner") or {}).get("display_name") or "Unassigned"
-            lines.append("[RISK]")
-            if desc:
-                lines.append(f"Description: {desc}")
-            parts = []
-            if cat:
-                parts.append(f"Category: {cat}")
-            parts.append(f"Score: {score} ({level}) — Likelihood: {likelihood} × Impact: {impact}")
-            if status:
-                parts.append(f"Status: {status}")
-            if gap_ref:
-                parts.append(f"Related gap: {gap_ref}")
-            parts.append(f"Owner: {own}")
-            if parts:
+            if compact_risk:
+                parts = [f"- {(desc or 'Risk')[:120]}"]
+                if cat:
+                    parts.append(cat)
+                parts.append(f"Score: {score} ({level})")
+                if status:
+                    parts.append(f"Status: {status}")
+                parts.append(f"Owner: {own}")
                 lines.append(" | ".join(parts))
-            if treatment:
-                lines.append(f"Treatment: {treatment}")
+            else:
+                lines.append("[RISK]")
+                if desc:
+                    lines.append(f"Description: {desc}")
+                parts = []
+                if cat:
+                    parts.append(f"Category: {cat}")
+                parts.append(f"Score: {score} ({level}) — Likelihood: {likelihood} × Impact: {impact}")
+                if status:
+                    parts.append(f"Status: {status}")
+                if gap_ref:
+                    parts.append(f"Related gap: {gap_ref}")
+                parts.append(f"Owner: {own}")
+                if parts:
+                    lines.append(" | ".join(parts))
+                if treatment:
+                    lines.append(f"Treatment: {treatment}")
+                lines.append("")
+        if compact_risk:
             lines.append("")
 
     return "\n".join(lines).rstrip()
