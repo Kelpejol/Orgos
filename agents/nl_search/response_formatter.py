@@ -83,6 +83,18 @@ def format_compliance_response(search_result: dict) -> dict:
                     "clause":        iso or "",
                     "link":          "",
                 })
+            # Evidence links → sources (URLs never pass through LLM)
+            for ev in evidence:
+                ev_link = (ev.get("link") or "").strip()
+                if ev_link:
+                    ev_type  = ev.get("type", "")
+                    ev_label = f"Evidence ({ev_type})" if ev_type else "Evidence"
+                    sources.append({
+                        "title":         ev_label,
+                        "document_code": src_doc or ev_label,
+                        "clause":        iso or "",
+                        "link":          ev_link,
+                    })
 
     if obligations:
         lines.append("**Compliance obligations:**")

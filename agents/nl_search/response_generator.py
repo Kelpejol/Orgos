@@ -292,11 +292,10 @@ def _context_from_compliance(result: dict) -> str:
                     extras.append(f"Submission notes: {esub_notes}")
                 if evalid:
                     extras.append(f"Validation criteria: {evalid}")
+                if elink:
+                    extras.append("Evidence link: attached (see sources below)")
                 eline += " [" + " | ".join(extras) + "]"
                 lines.append(eline)
-                if elink:
-                    link_label = _extract_link_label(elink, fallback="View submitted evidence")
-                    lines.append(f"  Evidence link: [{link_label}]({elink})")
         lines.append("")
 
     # ── Compliance Calendar obligations ──────────────────────────────────────
