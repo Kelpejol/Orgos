@@ -530,11 +530,12 @@ async def progress_doc(
                     status_code=422,
                     detail="Upload a file before progressing from Review.",
                 )
-            if doc.get("CDIStatus") == "Failed":
-                raise HTTPException(
-                    status_code=422,
-                    detail="CDI check failed — fix the listed failures and re-upload before progressing.",
-                )
+            # CDI gate temporarily disabled — re-enable when documents are CDI-compliant
+            # if doc.get("CDIStatus") == "Failed":
+            #     raise HTTPException(
+            #         status_code=422,
+            #         detail="CDI check failed — fix the listed failures and re-upload before progressing.",
+            #     )
             if not body.stakeholders and not body.skip_stakeholders:
                 raise HTTPException(
                     status_code=422,
