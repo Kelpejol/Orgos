@@ -69,6 +69,7 @@ export default function Sidebar({ nav, setNav, collapsed, setCollapsed }) {
     if (!grouped[n.tier]) grouped[n.tier] = [];
     grouped[n.tier].push(n);
   });
+  const visibleTiers = [0, 1, 2, 3, 4].filter((tier) => grouped[tier]?.length);
 
   return (
     <div
@@ -123,7 +124,7 @@ export default function Sidebar({ nav, setNav, collapsed, setCollapsed }) {
       </div>
 
       {/* Nav groups */}
-      {[0, 1, 2, 3, 4].map((tier) => (
+      {visibleTiers.map((tier) => (
         <div key={tier} style={{ marginBottom: 2 }}>
           {/* Tier label */}
           {!collapsed && (
