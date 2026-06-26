@@ -638,15 +638,16 @@ const CATEGORIES = [
 
 const AddRiskForm = ({ onSuccess, onCancel, prePopulated = {} }) => {
   const [form, setForm] = useState({
-    description:       prePopulated.description || "",
-    category:          prePopulated.category    || "SWOT — Threat",
-    source:            prePopulated.source      || "ExCo assessment",
+    description:       prePopulated.description    || "",
+    category:          prePopulated.category       || "SWOT — Threat",
+    source:            prePopulated.source         || "ExCo assessment",
     likelihood:        "Medium",
     impact:            "Medium",
     treatment:         "Mitigate",
     treatment_actions: "",
     escalation_note:   "",
-    notes:             prePopulated.notes       || "",
+    notes:             prePopulated.notes          || "",
+    related_gap_id:    prePopulated.related_gap_id || "",
   });
   const [saving, setSaving] = useState(false);
   const [error,  setError]  = useState("");
@@ -870,6 +871,15 @@ const STATUS_BTN_LABELS = {
   Closed:            "Close — treatment complete",
 };
 
+function getTransitionLabel(currentStatus, nextStatus) {
+  if (nextStatus === "Closed") {
+    if (currentStatus === "Accepted")    return "Close — risk accepted on record";
+    if (currentStatus === "Transferred") return "Close — risk transferred";
+    if (currentStatus === "Avoided")     return "Close — risk avoided";
+  }
+  return STATUS_BTN_LABELS[nextStatus] || nextStatus;
+}
+
 const STATUS_BTN_STYLES = {
   "Under treatment": { background: "#1D9E75", color: "#fff", border: "none" },
   Accepted:          { background: "transparent", color: "var(--color-text-secondary)", border: "1.5px solid #C0C0C0" },
@@ -1009,7 +1019,7 @@ const RiskCard = ({ risk, onUpdate, isAdmin }) => {
                     fontWeight: 500, opacity: updating ? 0.6 : 1,
                     ...(STATUS_BTN_STYLES[nextStatus] || {}),
                   }}>
-                  {STATUS_BTN_LABELS[nextStatus] || nextStatus}
+                  {getTransitionLabel(risk.Status, nextStatus)}
                 </button>
               ))}
             </div>

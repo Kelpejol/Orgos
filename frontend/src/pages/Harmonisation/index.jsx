@@ -205,13 +205,13 @@ const HarmCard = ({ item, isCompliance, onDecide, isPending }) => {
       variants = JSON.parse(item.VariantTerms);
     } catch {
       variants = item.VariantTerms
-        .split(/[\n,]+/)
+        .split(/\n+/)
         .map(v => v.trim())
         .filter(Boolean);
     }
   }
 
-  const primaryText = item.Title || item.ControlStatement || item.ResponsibilityStatement || "Untitled";
+  const primaryText = item.ControlStatement || item.ResponsibilityStatement || item.Title || "Untitled";
   const isRole      = !item.ControlStatement;
 
   return (

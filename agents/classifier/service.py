@@ -580,7 +580,7 @@ async def write_harmonisation_items(
                 "ItemType":          "Harmonisation",
                 "ControlStatement":  dup["control_a"],
                 "CanonicalName":     guidance.get("canonical_suggestion", ""),
-                "VariantTerms":      f"Doc A: {dup['control_a'][:200]}\nDoc B: {dup['control_b'][:200]}",
+                "VariantTerms":      f"Doc A: {dup['control_a']}\nDoc B: {dup['control_b']}",
                 "VariantFrequency":  (
                     f"Similarity: {round(dup['similarity'] * 100)}%. "
                     f"{_guidance_text(guidance)}"
