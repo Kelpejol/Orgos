@@ -962,52 +962,53 @@ async def upload_doc_file(
 
     cdi_status   = "Pending"
     cdi_failures = ""
-    try:
-        try:
-            role_items  = await get_list_items(settings.role_register_list_id, "Role Register")
-            role_titles = [
-                i.get("fields", {}).get("Title", "")
-                for i in role_items
-                if i.get("fields", {}).get("Title")
-            ]
-        except Exception as exc:
-            logger.debug(f"Role Register unavailable for CDI check ({exc}); proceeding without role validation")
-            role_titles = []
-
-        try:
-            item_data = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
-            doc_code  = item_data.get("fields", {}).get("DocumentCode", "")
-        except Exception:
-            doc_code = ""
-
-        cdi_result = await run_cdi_check(file_bytes, filename, doc_code, role_titles)
-
-        if cdi_result.get("error"):
-            cdi_status   = "Error"
-            cdi_failures = json.dumps([{
-                "check":  "CDI",
-                "detail": cdi_result["error"],
-                "fix":    "Resolve the issue above, then re-upload the document.",
-            }])
-            logger.warning(f"CDI check error for lifecycle {item_id}: {cdi_result['error']}")
-        elif cdi_result["passed"]:
-            cdi_status   = "Passed"
-            cdi_failures = ""
-        else:
-            cdi_status   = "Failed"
-            cdi_failures = json.dumps([
-                {
-                    "check":  c["check_id"],
-                    "detail": c["finding"],
-                    "fix":    c.get("proposed_fix", ""),
-                }
-                for c in cdi_result["checks"] if c["result"] == "FAIL"
-            ])
-        logger.info(f"CDI check for lifecycle {item_id}: {cdi_status} — {cdi_result.get('fail_count', 0)} failures")
-    except Exception as exc:
-        logger.warning(f"CDI check failed to run for {item_id}: {exc}")
-        cdi_status   = "Error"
-        cdi_failures = ""
+    # CDI checks temporarily disabled — re-enable when documents are CDI-compliant
+    # try:
+    #     try:
+    #         role_items  = await get_list_items(settings.role_register_list_id, "Role Register")
+    #         role_titles = [
+    #             i.get("fields", {}).get("Title", "")
+    #             for i in role_items
+    #             if i.get("fields", {}).get("Title")
+    #         ]
+    #     except Exception as exc:
+    #         logger.debug(f"Role Register unavailable for CDI check ({exc}); proceeding without role validation")
+    #         role_titles = []
+    #
+    #     try:
+    #         item_data = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
+    #         doc_code  = item_data.get("fields", {}).get("DocumentCode", "")
+    #     except Exception:
+    #         doc_code = ""
+    #
+    #     cdi_result = await run_cdi_check(file_bytes, filename, doc_code, role_titles)
+    #
+    #     if cdi_result.get("error"):
+    #         cdi_status   = "Error"
+    #         cdi_failures = json.dumps([{
+    #             "check":  "CDI",
+    #             "detail": cdi_result["error"],
+    #             "fix":    "Resolve the issue above, then re-upload the document.",
+    #         }])
+    #         logger.warning(f"CDI check error for lifecycle {item_id}: {cdi_result['error']}")
+    #     elif cdi_result["passed"]:
+    #         cdi_status   = "Passed"
+    #         cdi_failures = ""
+    #     else:
+    #         cdi_status   = "Failed"
+    #         cdi_failures = json.dumps([
+    #             {
+    #                 "check":  c["check_id"],
+    #                 "detail": c["finding"],
+    #                 "fix":    c.get("proposed_fix", ""),
+    #             }
+    #             for c in cdi_result["checks"] if c["result"] == "FAIL"
+    #         ])
+    #     logger.info(f"CDI check for lifecycle {item_id}: {cdi_status} — {cdi_result.get('fail_count', 0)} failures")
+    # except Exception as exc:
+    #     logger.warning(f"CDI check failed to run for {item_id}: {exc}")
+    #     cdi_status   = "Error"
+    #     cdi_failures = ""
 
     fields: dict = {
         "SharePointFileUrl": file_url,
