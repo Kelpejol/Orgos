@@ -5,7 +5,7 @@
 // No AI. Human judgment only. Per Bobby's Strategic Risk Register spec.
 // =============================================================================
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import StatusBadge from "../../components/shared/StatusBadge.jsx";
 import { Field } from "../../components/shared/Forms.jsx";
@@ -83,6 +83,548 @@ const ScoreBadge = ({ score, label, color }) => (
                    letterSpacing: "0.5px" }}>{label}</span>
   </div>
 );
+
+// =============================================================================
+//  Import / Export utilities
+// =============================================================================
+
+const EXPORT_FIELDS = [
+  { header: "Risk ID",           get: r => r.RiskId           || "" },
+  { header: "Description",       get: r => r.Description      || "" },
+  { header: "Category",          get: r => r.Category         || "" },
+  { header: "Source",            get: r => r.Source           || "" },
+  { header: "Likelihood",        get: r => r.Likelihood       || "" },
+  { header: "Impact",            get: r => r.Impact           || "" },
+  { header: "Risk Score",        get: r => r.RiskScore        ?? "" },
+  { header: "Score Level",       get: r => r.RiskScoreLabel   || "" },
+  { header: "Treatment",         get: r => r.Treatment        || "" },
+  { header: "Treatment Actions", get: r => r.TreatmentActions || "" },
+  { header: "Escalation Note",   get: r => r.EscalationNote   || "" },
+  { header: "Status",            get: r => r.Status           || "" },
+  { header: "Date Identified",   get: r => r.DateIdentified   ? fmtDate(r.DateIdentified) : "" },
+  { header: "Review Date",       get: r => r.ReviewDate       ? fmtDate(r.ReviewDate)     : "" },
+  { header: "Notes",             get: r => r.Notes            || "" },
+  { header: "Related Gap ID",    get: r => r.RelatedGapId     || "" },
+];
+
+function csvEscape(v) {
+  const s = String(v == null ? "" : v);
+  return s.includes(",") || s.includes('"') || s.includes("\n")
+    ? `"${s.replace(/"/g, '""')}"`
+    : s;
+}
+
+function triggerDownload(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+}
+
+function exportCSV(risks) {
+  const rows = [
+    EXPORT_FIELDS.map(f => f.header).join(","),
+    ...risks.map(r => EXPORT_FIELDS.map(f => csvEscape(f.get(r))).join(",")),
+  ].join("\n");
+  triggerDownload(new Blob([rows], { type: "text/csv" }),
+    `strategic-risks-${new Date().toISOString().slice(0,10)}.csv`);
+}
+
+function exportJSON(risks) {
+  const data = risks.map(r =>
+    Object.fromEntries(EXPORT_FIELDS.map(f => [
+      f.header.toLowerCase().replace(/ /g, "_"), f.get(r),
+    ]))
+  );
+  triggerDownload(new Blob([JSON.stringify(data, null, 2)], { type: "application/json" }),
+    `strategic-risks-${new Date().toISOString().slice(0,10)}.json`);
+}
+
+// CSV template for admins to fill in (blank rows, just headers)
+function downloadTemplate() {
+  const required = ["Description","Category","Likelihood","Impact","Treatment"];
+  const optional = ["Source","Treatment Actions","Escalation Note","Notes","Related Gap ID"];
+  const note = `# Required: ${required.join(", ")} | Optional: ${optional.join(", ")}`;
+  const headers = [...required, ...optional].join(",");
+  const example = csvEscape("Data may not be accessible to all stakeholders") + ","
+    + csvEscape("SWOT — Threat") + ",High,Critical,Mitigate,"
+    + csvEscape("ExCo assessment") + ","
+    + csvEscape("Implement quarterly review and monitoring") + ",,," + "";
+  triggerDownload(
+    new Blob([note + "\n" + headers + "\n" + example], { type: "text/csv" }),
+    "strategic-risks-import-template.csv"
+  );
+}
+
+// ── CSV parser (handles quoted fields with embedded commas/newlines) ──────────
+
+function parseCSVText(text) {
+  const lines = text.replace(/\r\n/g, "\n").replace(/\r/g, "\n").split("\n");
+  const nonEmpty = lines.filter(l => l.trim() && !l.trim().startsWith("#"));
+  if (nonEmpty.length < 2) return { headers: [], rows: [] };
+
+  const parseRow = (line) => {
+    const cells = []; let cur = ""; let inQ = false;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (ch === '"') {
+        if (inQ && line[i + 1] === '"') { cur += '"'; i++; }
+        else inQ = !inQ;
+      } else if (ch === "," && !inQ) { cells.push(cur.trim()); cur = ""; }
+      else cur += ch;
+    }
+    cells.push(cur.trim());
+    return cells;
+  };
+
+  const headers = parseRow(nonEmpty[0]).map(h => h.toLowerCase().trim());
+  const rows = nonEmpty.slice(1).map(line => {
+    const vals = parseRow(line);
+    return Object.fromEntries(headers.map((h, i) => [h, vals[i] ?? ""]));
+  });
+  return { headers, rows };
+}
+
+// Normalise a parsed CSV row → API body + validation errors
+const COL = {
+  description:       ["description", "risk description", "risk"],
+  category:          ["category"],
+  source:            ["source"],
+  likelihood:        ["likelihood"],
+  impact:            ["impact"],
+  treatment:         ["treatment"],
+  treatment_actions: ["treatment actions", "treatmentactions", "treatment_actions"],
+  escalation_note:   ["escalation note", "escalationnote", "escalation_note"],
+  notes:             ["notes"],
+  related_gap_id:    ["related gap id", "relatedgapid", "related_gap_id"],
+};
+
+const VALID_LIKELIHOOD = ["Low", "Medium", "High"];
+const VALID_IMPACT      = ["Low", "Medium", "High", "Critical"];
+const VALID_TREATMENT   = ["Mitigate", "Accept", "Transfer", "Avoid"];
+
+function pick(row, aliases) {
+  for (const alias of aliases) {
+    const val = row[alias];
+    if (val !== undefined && val !== "") return val;
+  }
+  return "";
+}
+
+function normalise(str, valid) {
+  const s = str.trim();
+  return valid.find(v => v.toLowerCase() === s.toLowerCase()) || s;
+}
+
+function validateImportRow(rawRow, allCategories) {
+  const mapped = {};
+  for (const [field, aliases] of Object.entries(COL)) mapped[field] = pick(rawRow, aliases);
+
+  const errors = [];
+  if (!mapped.description.trim()) errors.push("Description is required");
+  if (!mapped.category.trim())    errors.push("Category is required");
+  else if (!allCategories.find(c => c.toLowerCase() === mapped.category.toLowerCase()))
+    errors.push(`Unknown category "${mapped.category}"`);
+
+  const likelihood = normalise(mapped.likelihood, VALID_LIKELIHOOD);
+  if (!VALID_LIKELIHOOD.includes(likelihood)) errors.push(`Likelihood must be Low/Medium/High`);
+
+  const impact = normalise(mapped.impact, VALID_IMPACT);
+  if (!VALID_IMPACT.includes(impact)) errors.push(`Impact must be Low/Medium/High/Critical`);
+
+  const treatment = normalise(mapped.treatment, VALID_TREATMENT);
+  if (!VALID_TREATMENT.includes(treatment)) errors.push(`Treatment must be Mitigate/Accept/Transfer/Avoid`);
+
+  if (["Mitigate","Transfer"].includes(treatment) && !mapped.treatment_actions.trim())
+    errors.push(`Treatment actions are required for ${treatment}`);
+
+  const body = {
+    description:       mapped.description.trim(),
+    category:          allCategories.find(c => c.toLowerCase() === mapped.category.toLowerCase()) || mapped.category,
+    source:            mapped.source.trim()            || "ExCo assessment",
+    likelihood,
+    impact,
+    treatment,
+    treatment_actions: mapped.treatment_actions.trim() || undefined,
+    escalation_note:   mapped.escalation_note.trim()   || undefined,
+    notes:             mapped.notes.trim()              || undefined,
+    related_gap_id:    mapped.related_gap_id.trim()    || undefined,
+  };
+
+  return { body, errors, valid: errors.length === 0 };
+}
+
+// =============================================================================
+//  ExportMenu — dropdown for CSV / JSON / template download
+// =============================================================================
+
+const ExportMenu = ({ risks }) => {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+
+  // Close on outside click
+  useState(() => {
+    const handler = e => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  });
+
+  const itemStyle = {
+    display: "flex", alignItems: "center", gap: 8,
+    padding: "9px 14px", fontSize: 12, cursor: "pointer",
+    border: "none", background: "none", width: "100%",
+    color: "var(--color-text-primary)", textAlign: "left",
+    borderRadius: 6,
+  };
+
+  return (
+    <div ref={ref} style={{ position: "relative" }}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        style={{ padding: "8px 14px", fontSize: 12, borderRadius: 8,
+                 border: "1.5px solid #C0C0C0", background: "var(--color-background-primary)",
+                 color: "var(--color-text-secondary)", cursor: "pointer",
+                 display: "flex", alignItems: "center", gap: 5, fontWeight: 500 }}
+      >
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+          <path d="M8 1v9M4 7l4 4 4-4M2 14h12" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/>
+        </svg>
+        Export
+        <svg width="9" height="9" viewBox="0 0 10 6" fill="none" style={{ marginLeft: 1 }}>
+          <path d="M1 1l4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+        </svg>
+      </button>
+
+      {open && (
+        <div style={{
+          position: "absolute", right: 0, top: "calc(100% + 6px)", zIndex: 200,
+          background: "var(--color-background-primary)", borderRadius: 10,
+          border: "1px solid var(--color-border-secondary)",
+          boxShadow: "0 8px 28px rgba(0,0,0,0.12)", minWidth: 200, padding: "4px",
+        }}>
+          <button style={itemStyle}
+            onMouseEnter={e => (e.currentTarget.style.background = "var(--color-background-secondary)")}
+            onMouseLeave={e => (e.currentTarget.style.background = "none")}
+            onClick={() => { exportCSV(risks); setOpen(false); }}>
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+              <rect x="2" y="1" width="12" height="14" rx="2" stroke="currentColor" strokeWidth="1.5"/>
+              <path d="M5 6h6M5 9h6M5 12h3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+            </svg>
+            Download CSV
+            <span style={{ marginLeft: "auto", fontSize: 10,
+                           color: "var(--color-text-tertiary)" }}>{risks.length} rows</span>
+          </button>
+
+          <button style={itemStyle}
+            onMouseEnter={e => (e.currentTarget.style.background = "var(--color-background-secondary)")}
+            onMouseLeave={e => (e.currentTarget.style.background = "none")}
+            onClick={() => { exportJSON(risks); setOpen(false); }}>
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+              <path d="M4 2H2a1 1 0 00-1 1v10a1 1 0 001 1h2M12 2h2a1 1 0 011 1v10a1 1 0 01-1 1h-2" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+              <path d="M6 5l-2 3 2 3M10 5l2 3-2 3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+            Download JSON
+            <span style={{ marginLeft: "auto", fontSize: 10,
+                           color: "var(--color-text-tertiary)" }}>{risks.length} rows</span>
+          </button>
+
+          <div style={{ height: 1, background: "var(--color-border-tertiary)", margin: "3px 8px" }} />
+
+          <button style={{ ...itemStyle, color: "var(--color-text-tertiary)" }}
+            onMouseEnter={e => (e.currentTarget.style.background = "var(--color-background-secondary)")}
+            onMouseLeave={e => (e.currentTarget.style.background = "none")}
+            onClick={() => { downloadTemplate(); setOpen(false); }}>
+            <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+              <path d="M2 8h12M8 2v12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"/>
+            </svg>
+            Download import template
+          </button>
+        </div>
+      )}
+    </div>
+  );
+};
+
+// =============================================================================
+//  ImportModal
+// =============================================================================
+
+const ImportModal = ({ onClose, onImported, allCategories }) => {
+  const [rows,      setRows]      = useState(null); // validated rows
+  const [importing, setImporting] = useState(false);
+  const [progress,  setProgress]  = useState(null); // { done, total }
+  const [done,      setDone]      = useState(null); // { imported, skipped }
+  const [dragOver,  setDragOver]  = useState(false);
+  const [fileErr,   setFileErr]   = useState("");
+  const fileRef = useRef(null);
+
+  const handleFile = (file) => {
+    if (!file) return;
+    if (!file.name.endsWith(".csv")) { setFileErr("Only .csv files are supported."); return; }
+    setFileErr("");
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const { rows: parsed } = parseCSVText(e.target.result);
+      if (!parsed.length) { setFileErr("No data rows found in the file."); return; }
+      const validated = parsed.map((r, i) => ({
+        rowNum: i + 1,
+        ...validateImportRow(r, allCategories),
+      }));
+      setRows(validated);
+    };
+    reader.readAsText(file);
+  };
+
+  const validRows   = (rows || []).filter(r => r.valid);
+  const invalidRows = (rows || []).filter(r => !r.valid);
+
+  const handleImport = async () => {
+    if (!validRows.length) return;
+    setImporting(true);
+    setProgress({ done: 0, total: validRows.length });
+    let imported = 0;
+    for (const row of validRows) {
+      try {
+        await riskApi.create(row.body);
+        imported++;
+      } catch { /* skip on individual failure */ }
+      setProgress({ done: imported, total: validRows.length });
+    }
+    setImporting(false);
+    setDone({ imported, skipped: validRows.length - imported + invalidRows.length });
+    onImported();
+  };
+
+  const inp = {
+    fontSize: 12, borderRadius: 7, border: "1.5px solid #D0D0D0",
+    background: "var(--color-background-primary)",
+    color: "var(--color-text-primary)", outline: "none",
+  };
+
+  return (
+    <div style={{
+      position: "fixed", inset: 0, zIndex: 1000,
+      background: "rgba(0,0,0,0.45)", display: "flex",
+      alignItems: "center", justifyContent: "center", padding: 16,
+    }}>
+      <div style={{
+        background: "var(--color-background-primary)", borderRadius: 16,
+        width: "100%", maxWidth: 700, maxHeight: "90vh",
+        display: "flex", flexDirection: "column",
+        boxShadow: "0 20px 60px rgba(0,0,0,0.25)",
+      }}>
+        {/* Header */}
+        <div style={{ padding: "18px 20px 14px", borderBottom: "1px solid var(--color-border-tertiary)",
+                      display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 2 }}>Import strategic risks</div>
+            <div style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>
+              Upload a CSV. Required columns: Description, Category, Likelihood, Impact, Treatment.{" "}
+              <button onClick={downloadTemplate}
+                style={{ background: "none", border: "none", color: "#378ADD",
+                         fontSize: 11, cursor: "pointer", padding: 0, textDecoration: "underline" }}>
+                Download template
+              </button>
+            </div>
+          </div>
+          <button onClick={onClose}
+            style={{ background: "none", border: "none", fontSize: 18, cursor: "pointer",
+                     color: "var(--color-text-tertiary)", lineHeight: 1, padding: "0 2px" }}>
+            ×
+          </button>
+        </div>
+
+        {/* Body */}
+        <div style={{ flex: 1, overflowY: "auto", padding: "16px 20px" }}>
+
+          {/* Done state */}
+          {done && (
+            <div style={{ textAlign: "center", padding: "24px 0" }}>
+              <div style={{ fontSize: 36, marginBottom: 10 }}>✓</div>
+              <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 4, color: "#1D9E75" }}>
+                Import complete
+              </div>
+              <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>
+                {done.imported} risk{done.imported !== 1 ? "s" : ""} imported
+                {done.skipped > 0 && ` · ${done.skipped} skipped`}
+              </div>
+              <button onClick={onClose}
+                style={{ marginTop: 18, padding: "9px 24px", fontSize: 12, fontWeight: 600,
+                         borderRadius: 8, border: "none", background: "#1D9E75",
+                         color: "#fff", cursor: "pointer" }}>
+                Done
+              </button>
+            </div>
+          )}
+
+          {/* Progress */}
+          {importing && !done && (
+            <div style={{ textAlign: "center", padding: "24px 0" }}>
+              <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 12 }}>
+                Importing {progress.done} of {progress.total}...
+              </div>
+              <div style={{ height: 6, background: "var(--color-background-secondary)",
+                            borderRadius: 4, overflow: "hidden" }}>
+                <div style={{ height: "100%", background: "#A32D2D", borderRadius: 4,
+                              width: `${(progress.done / progress.total) * 100}%`,
+                              transition: "width 0.2s" }} />
+              </div>
+            </div>
+          )}
+
+          {/* File drop zone — only when no file loaded and not in progress */}
+          {!rows && !importing && !done && (
+            <div
+              onDragOver={e => { e.preventDefault(); setDragOver(true); }}
+              onDragLeave={() => setDragOver(false)}
+              onDrop={e => { e.preventDefault(); setDragOver(false); handleFile(e.dataTransfer.files[0]); }}
+              onClick={() => fileRef.current?.click()}
+              style={{
+                border: `2px dashed ${dragOver ? "#A32D2D" : "#C0C0C0"}`,
+                borderRadius: 12, padding: "36px 24px", textAlign: "center",
+                cursor: "pointer", transition: "border-color 0.15s",
+                background: dragOver ? "#FFF8F8" : "var(--color-background-secondary)",
+              }}
+            >
+              <svg width="32" height="32" viewBox="0 0 32 32" fill="none"
+                style={{ margin: "0 auto 10px", display: "block", color: "var(--color-text-tertiary)" }}>
+                <path d="M16 20V8M10 14l6-6 6 6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                <path d="M6 26h20" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/>
+              </svg>
+              <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 4 }}>
+                Drop CSV file here or click to browse
+              </div>
+              <div style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>
+                .csv only · max 5 MB
+              </div>
+              <input ref={fileRef} type="file" accept=".csv" style={{ display: "none" }}
+                onChange={e => handleFile(e.target.files[0])} />
+            </div>
+          )}
+
+          {fileErr && (
+            <div style={{ marginTop: 10, padding: "8px 12px", background: "#FCEBEB",
+                          borderRadius: 7, fontSize: 12, color: "#791F1F" }}>
+              {fileErr}
+            </div>
+          )}
+
+          {/* Validation preview */}
+          {rows && !importing && !done && (
+            <>
+              {/* Summary bar */}
+              <div style={{ display: "flex", gap: 8, marginBottom: 12, alignItems: "center" }}>
+                <div style={{ fontSize: 12, fontWeight: 600 }}>
+                  {rows.length} row{rows.length !== 1 ? "s" : ""} read
+                </div>
+                {validRows.length > 0 && (
+                  <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 4,
+                                 background: "#E2F5EE", color: "#085041",
+                                 border: "0.5px solid #5DCAA5" }}>
+                    {validRows.length} valid
+                  </span>
+                )}
+                {invalidRows.length > 0 && (
+                  <span style={{ fontSize: 11, padding: "2px 8px", borderRadius: 4,
+                                 background: "#FCEBEB", color: "#791F1F",
+                                 border: "0.5px solid #F09595" }}>
+                    {invalidRows.length} with errors — will be skipped
+                  </span>
+                )}
+                <button onClick={() => { setRows(null); setFileErr(""); }}
+                  style={{ marginLeft: "auto", fontSize: 11, padding: "3px 9px", borderRadius: 6,
+                           border: "1.5px solid #C0C0C0", background: "none", cursor: "pointer",
+                           color: "var(--color-text-secondary)" }}>
+                  Clear file
+                </button>
+              </div>
+
+              {/* Table */}
+              <div style={{ borderRadius: 8, border: "1px solid var(--color-border-secondary)",
+                            overflow: "hidden" }}>
+                <div style={{ overflowX: "auto", maxHeight: 320, overflowY: "auto" }}>
+                  <table style={{ width: "100%", fontSize: 11, borderCollapse: "collapse" }}>
+                    <thead>
+                      <tr style={{ background: "var(--color-background-secondary)" }}>
+                        {["#","Description","Category","Likelihood","Impact","Treatment",""].map(h => (
+                          <th key={h} style={{ padding: "7px 10px", textAlign: "left",
+                                              fontWeight: 600, color: "var(--color-text-secondary)",
+                                              borderBottom: "1px solid var(--color-border-secondary)",
+                                              whiteSpace: "nowrap" }}>
+                            {h}
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows.map(row => (
+                        <tr key={row.rowNum}
+                          style={{ background: row.valid ? "transparent" : "#FFFBFB",
+                                   borderBottom: "1px solid var(--color-border-tertiary)" }}>
+                          <td style={{ padding: "6px 10px", color: "var(--color-text-tertiary)" }}>
+                            {row.rowNum}
+                          </td>
+                          <td style={{ padding: "6px 10px", maxWidth: 180,
+                                       overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                              title={row.body.description}>
+                            {row.body.description || <em style={{ color: "#A32D2D" }}>missing</em>}
+                          </td>
+                          <td style={{ padding: "6px 10px", whiteSpace: "nowrap" }}>
+                            {row.body.category || <em style={{ color: "#A32D2D" }}>missing</em>}
+                          </td>
+                          <td style={{ padding: "6px 10px" }}>{row.body.likelihood || "—"}</td>
+                          <td style={{ padding: "6px 10px" }}>{row.body.impact     || "—"}</td>
+                          <td style={{ padding: "6px 10px" }}>{row.body.treatment  || "—"}</td>
+                          <td style={{ padding: "6px 10px", whiteSpace: "nowrap" }}>
+                            {row.valid ? (
+                              <span style={{ color: "#1D9E75", fontWeight: 700 }}>✓</span>
+                            ) : (
+                              <span title={row.errors.join(" · ")}
+                                style={{ color: "#A32D2D", cursor: "help",
+                                         borderBottom: "1px dashed #A32D2D", fontSize: 10 }}>
+                                ✗ {row.errors[0]}
+                                {row.errors.length > 1 && ` +${row.errors.length - 1}`}
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+
+              {invalidRows.length > 0 && (
+                <div style={{ marginTop: 8, fontSize: 11, color: "var(--color-text-tertiary)" }}>
+                  Hover the ✗ cells to see full error details. Fix the CSV and re-upload to import those rows.
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
+        {/* Footer */}
+        {!importing && !done && rows && validRows.length > 0 && (
+          <div style={{ padding: "12px 20px", borderTop: "1px solid var(--color-border-tertiary)",
+                        display: "flex", gap: 10 }}>
+            <button onClick={handleImport}
+              style={{ flex: 1, padding: "10px", fontSize: 13, fontWeight: 600,
+                       borderRadius: 8, border: "none", cursor: "pointer",
+                       background: "#A32D2D", color: "#fff" }}>
+              Import {validRows.length} risk{validRows.length !== 1 ? "s" : ""} →
+            </button>
+            <button onClick={onClose}
+              style={{ padding: "10px 18px", fontSize: 13, borderRadius: 8, cursor: "pointer",
+                       border: "1.5px solid #D0D0D0", background: "none",
+                       color: "var(--color-text-secondary)" }}>
+              Cancel
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
 
 // =============================================================================
 //  Add risk form
@@ -486,6 +1028,7 @@ const STATUS_FILTERS = ["All", "Open", "Under treatment", "Accepted", "Transferr
 
 export default function StrategicRisks() {
   const [showForm,      setShowForm]      = useState(false);
+  const [showImport,    setShowImport]    = useState(false);
   const [statusFilter,  setStatusFilter]  = useState("All");
   const [search,        setSearch]        = useState("");
 
@@ -542,14 +1085,28 @@ export default function StrategicRisks() {
             </div>
           </div>
           {isAdmin && (
-            <button
-              onClick={() => setShowForm(!showForm)}
-              style={{ padding: "8px 16px", fontSize: 12, borderRadius: 8, border: "none",
-                       background: "#A32D2D", color: "#fff", cursor: "pointer",
-                       fontWeight: 500, flexShrink: 0 }}
-            >
-              + Add risk
-            </button>
+            <div style={{ display: "flex", gap: 8, flexShrink: 0, alignItems: "center" }}>
+              <ExportMenu risks={risks} />
+              <button
+                onClick={() => setShowImport(true)}
+                style={{ padding: "8px 14px", fontSize: 12, borderRadius: 8,
+                         border: "1.5px solid #C0C0C0", background: "var(--color-background-primary)",
+                         color: "var(--color-text-secondary)", cursor: "pointer",
+                         display: "flex", alignItems: "center", gap: 5, fontWeight: 500 }}
+              >
+                <svg width="13" height="13" viewBox="0 0 16 16" fill="none">
+                  <path d="M8 11V3M4 7l4-4 4 4M2 14h12" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round"/>
+                </svg>
+                Import
+              </button>
+              <button
+                onClick={() => setShowForm(!showForm)}
+                style={{ padding: "8px 16px", fontSize: 12, borderRadius: 8, border: "none",
+                         background: "#A32D2D", color: "#fff", cursor: "pointer", fontWeight: 500 }}
+              >
+                + Add risk
+              </button>
+            </div>
           )}
         </div>
 
@@ -620,6 +1177,14 @@ export default function StrategicRisks() {
         <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginTop: 8 }}>
           {filtered.length} of {risks.length} risks
         </div>
+      )}
+
+      {showImport && (
+        <ImportModal
+          allCategories={CATEGORIES}
+          onClose={() => setShowImport(false)}
+          onImported={() => qc.invalidateQueries({ queryKey: ["risks"] })}
+        />
       )}
     </>
   );
