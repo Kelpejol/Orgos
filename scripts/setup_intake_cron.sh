@@ -45,9 +45,13 @@ CRON_LOG="$LOG_DIR/cron.log"
 mkdir -p "$LOG_DIR"
 
 # ── Build the cron command ────────────────────────────────────────────────────
-# --no-cdi skips CDI checks (already handled in lifecycle upload).
+# --limit 50  — process 50 documents per run (50 morning + 50 evening = 100/day).
+#              With ~1000 documents in Phase 1, this clears the backlog in ~10 days.
+# CDI checks are ON — each document is checked against the 15 CDI rules using
+# the configured LLM (Azure OpenAI). Expect ~15–30s per document, so each
+# 50-doc run takes roughly 15–25 minutes.
 # stdout/stderr → cron.log (append). Each run also writes its own dated log.
-CRON_CMD="$PYTHON $INTAKE_SCRIPT --no-cdi >> $CRON_LOG 2>&1"
+CRON_CMD="$PYTHON $INTAKE_SCRIPT --limit 50 >> $CRON_LOG 2>&1"
 
 # ── Cron entries (UTC — server must be on UTC) ────────────────────────────────
 CRON_MORNING="0 5 * * * $CRON_CMD"   # 05:00 UTC = 06:00 WAT
