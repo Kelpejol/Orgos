@@ -8,14 +8,28 @@
 #
 # It does NOT write to Extraction Review / AI Review Queue.
 #
-# Usage:
-#   python scripts/intake_sharepoint_to_lifecycle.py --dry-run
-#   python scripts/intake_sharepoint_to_lifecycle.py --owner-email you@dragnet-solutions.com
-#   python scripts/intake_sharepoint_to_lifecycle.py --folder "Policies & SOPs" --limit 10
-#   python scripts/intake_sharepoint_to_lifecycle.py --no-cdi
-#   python scripts/intake_sharepoint_to_lifecycle.py --reset
+# Dedup (two layers — both must pass for a document to be created):
+#   1. Checkpoint  — processed SharePoint drive item IDs never re-queued.
+#   2. Live query  — Document Lifecycle + Document Register checked by code
+#                    and URL at the start of every run. Safe even if the
+#                    checkpoint is cleared.
 #
+# Scheduling:
+#   Designed to run twice daily via cron (6am and 8pm WAT = 5am and 7pm UTC).
+#   Use scripts/setup_intake_cron.sh to install the cron entries.
+#   Set INTAKE_OWNER_EMAIL in .env to assign a default lifecycle owner without
+#   passing --owner-email on every invocation.
+#
+# Lock file: scripts/intake_lifecycle.lock  (prevents overlapping runs)
 # Checkpoint: scripts/intake_lifecycle_checkpoint.json
+# Logs: logs/intake/intake_YYYY-MM-DD_HHMM.log
+#
+# Usage:
+#   python3 scripts/intake_sharepoint_to_lifecycle.py --dry-run
+#   python3 scripts/intake_sharepoint_to_lifecycle.py --owner-email you@dragnet-solutions.com
+#   python3 scripts/intake_sharepoint_to_lifecycle.py --folder "Policies & SOPs" --limit 10
+#   python3 scripts/intake_sharepoint_to_lifecycle.py --no-cdi
+#   python3 scripts/intake_sharepoint_to_lifecycle.py --reset
 # =============================================================================
 
 import argparse
@@ -26,6 +40,7 @@ import os
 import re
 import sys
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -40,10 +55,12 @@ from graph.client import create_list_item, get_list_items, startup, shutdown
 configure_logging()
 logger = logging.getLogger(__name__)
 
-CHECKPOINT_FILE = os.path.join(
-    os.path.dirname(os.path.abspath(__file__)),
-    "intake_lifecycle_checkpoint.json",
-)
+_SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
+_REPO_DIR    = os.path.dirname(_SCRIPTS_DIR)
+
+CHECKPOINT_FILE = os.path.join(_SCRIPTS_DIR, "intake_lifecycle_checkpoint.json")
+LOCK_FILE       = os.path.join(_SCRIPTS_DIR, "intake_lifecycle.lock")
+LOG_DIR         = os.path.join(_REPO_DIR, "logs", "intake")
 
 SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".doc"}
 LIFECYCLE_LIST_NAME = "Document Lifecycle"
@@ -92,6 +109,64 @@ def reset_checkpoint() -> None:
     if os.path.exists(CHECKPOINT_FILE):
         os.remove(CHECKPOINT_FILE)
         print("Lifecycle intake checkpoint cleared.\n")
+
+
+# =============================================================================
+#  Lock file — prevents two runs overlapping (e.g. cron fires while previous
+#  run is still downloading large documents)
+# =============================================================================
+
+def acquire_lock() -> bool:
+    """
+    Write our PID to the lock file.
+    Returns False if another instance is already running; True if we got the lock.
+    """
+    if os.path.exists(LOCK_FILE):
+        try:
+            with open(LOCK_FILE) as f:
+                old_pid = int(f.read().strip())
+            # Check if the PID is still alive
+            os.kill(old_pid, 0)
+            # If we reach here the process exists — another run is live
+            logger.warning(
+                f"Another intake run is already in progress (PID {old_pid}). "
+                "Exiting to avoid overlap."
+            )
+            return False
+        except (ValueError, OSError):
+            # PID file is stale (process gone) — safe to overwrite
+            pass
+
+    with open(LOCK_FILE, "w") as f:
+        f.write(str(os.getpid()))
+    return True
+
+
+def release_lock() -> None:
+    try:
+        os.remove(LOCK_FILE)
+    except OSError:
+        pass
+
+
+# =============================================================================
+#  Per-run log file — appended under logs/intake/
+# =============================================================================
+
+def setup_run_log() -> str:
+    """
+    Add a FileHandler to the root logger that writes to logs/intake/intake_<ts>.log.
+    Returns the log file path so it can be reported at the end of the run.
+    """
+    os.makedirs(LOG_DIR, exist_ok=True)
+    ts       = datetime.utcnow().strftime("%Y-%m-%d_%H%M")
+    log_path = os.path.join(LOG_DIR, f"intake_{ts}.log")
+
+    fh = logging.FileHandler(log_path, encoding="utf-8")
+    fh.setLevel(logging.DEBUG)
+    fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)-8s %(message)s"))
+    logging.getLogger().addHandler(fh)
+    return log_path
 
 
 # =============================================================================
@@ -465,9 +540,14 @@ async def run_intake(
     limit: Optional[int],
     owner_email: Optional[str],
     run_cdi: bool,
-) -> None:
+) -> int:
+    """Run the intake. Returns number of failures (0 = clean run)."""
     if not settings.is_list_configured(settings.document_lifecycle_list_id):
         raise RuntimeError("DOCUMENT_LIFECYCLE_LIST_ID is not configured.")
+
+    # Fall back to env var if no --owner-email flag was passed
+    if not owner_email:
+        owner_email = os.environ.get("INTAKE_OWNER_EMAIL", "")
 
     await startup()
     try:
@@ -642,6 +722,10 @@ async def run_intake(
         if dry_run:
             print("  Dry run only: no SharePoint list items were created.")
         print("=" * 72 + "\n")
+        logger.info(
+            f"Intake complete — created={created} skipped={skipped} failed={failed}"
+        )
+        return failed
     finally:
         await shutdown()
 
@@ -677,10 +761,34 @@ Examples:
         reset_checkpoint()
         raise SystemExit(0)
 
-    asyncio.run(run_intake(
-        folder_filter=args.folder,
-        dry_run=args.dry_run,
-        limit=args.limit,
-        owner_email=args.owner_email,
-        run_cdi=not args.no_cdi,
-    ))
+    if not args.dry_run:
+        if not acquire_lock():
+            raise SystemExit(1)
+
+    log_path = setup_run_log()
+    logger.info(
+        f"Intake job started — dry_run={args.dry_run} folder={args.folder} "
+        f"limit={args.limit} cdi={not args.no_cdi} log={log_path}"
+    )
+
+    exit_code = 0
+    try:
+        failures = asyncio.run(run_intake(
+            folder_filter=args.folder,
+            dry_run=args.dry_run,
+            limit=args.limit,
+            owner_email=args.owner_email,
+            run_cdi=not args.no_cdi,
+        ))
+        if failures:
+            logger.warning(f"{failures} document(s) failed during this run — check log: {log_path}")
+            exit_code = 1
+    except Exception as exc:
+        logger.exception(f"Intake job crashed: {exc}")
+        exit_code = 1
+    finally:
+        if not args.dry_run:
+            release_lock()
+        logger.info(f"Intake job finished — exit_code={exit_code} log={log_path}")
+
+    raise SystemExit(exit_code)
