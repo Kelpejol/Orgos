@@ -1,10 +1,10 @@
 # =============================================================================
 # agents/cdi_checker/service.py — CDI Checker Agent
-# Runs 16 checks from DRG-QI-REF-DOCS-01-26 Section 7 against a document.
+# Runs 15 checks from DRG-QI-REF-DOCS-01-26 Section 7 against a document.
 #
 # Architecture — hybrid deterministic + AI:
 #
-#   Stage 1  CDI-01..05, 09..15  (12 checks)
+#   Stage 1  CDI-01..05, 09..12, 14..15  (11 checks)
 #            Pure rules/regex — presence of required sections, code format,
 #            version number, dates, classification. Fast, 100% reproducible.
 #            AI adds zero benefit here; do not change these to AI.
@@ -373,18 +373,6 @@ def check_12_owner_identified(text: str) -> dict:
         )
     return _pass("CDI-12", "Document owner identified")
 
-
-def check_13_review_date(text: str) -> dict:
-    """CDI-13: Review date present."""
-    indicators = ["review date", "next review", "review due", "valid until", "expiry date"]
-    if not any(ind in text.lower() for ind in indicators):
-        return _fail(
-            "CDI-13", "Review date",
-            "No review date found. All controlled documents must have a next review date.",
-            proposed_fix="Add 'Next Review Date' to the document metadata. Maximum review period is 12 months.",
-            fix_source="Document Creation Standards §6",
-        )
-    return _pass("CDI-13", "Review date")
 
 
 def check_14_effective_date(text: str) -> dict:
@@ -813,7 +801,7 @@ async def run_cdi_check(
             "checks":       [],
             "pass_count":   0,
             "fail_count":   0,
-            "total_checks": 16,
+            "total_checks": 15,
             "used_ai":      False,
         }
 
@@ -827,8 +815,8 @@ async def run_cdi_check(
             ),
             "checks":       [],
             "pass_count":   0,
-            "fail_count":   16,
-            "total_checks": 16,
+            "fail_count":   15,
+            "total_checks": 15,
             "used_ai":      False,
         }
 
@@ -859,7 +847,6 @@ async def run_cdi_check(
     checks.append(check_10_related_documents(text))
     checks.append(check_11_classification_label(text))
     checks.append(check_12_owner_identified(text))
-    checks.append(check_13_review_date(text))
     checks.append(check_14_effective_date(text))
     checks.append(check_15_version_number(text))
 
