@@ -6,11 +6,16 @@
 # =============================================================================
 
 import logging
+import os
 from functools import lru_cache
 from typing import List
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Resolve .env relative to this file's directory so it is always found
+# regardless of the working directory (cron jobs, scripts, uvicorn, tests).
+_ENV_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
 
 
 class Settings(BaseSettings):
@@ -21,7 +26,7 @@ class Settings(BaseSettings):
     """
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=_ENV_FILE,
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",  # Ignore unknown env vars — don't crash
