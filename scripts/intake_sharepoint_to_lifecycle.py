@@ -62,7 +62,9 @@ CHECKPOINT_FILE = os.path.join(_SCRIPTS_DIR, "intake_lifecycle_checkpoint.json")
 LOCK_FILE       = os.path.join(_SCRIPTS_DIR, "intake_lifecycle.lock")
 LOG_DIR         = os.path.join(_REPO_DIR, "logs", "intake")
 
-SUPPORTED_EXTENSIONS = {".pdf", ".docx", ".doc"}
+SUPPORTED_EXTENSIONS = {".pdf", ".docx"}
+# .doc (old OLE2 binary) excluded — python cannot read these reliably.
+# Convert to .docx in Word before uploading to SharePoint.
 LIFECYCLE_LIST_NAME = "Document Lifecycle"
 REGISTER_LIST_NAME = "Document Register"
 
