@@ -716,17 +716,20 @@ async def run_intake(
 
             await asyncio.sleep(1)
 
-        print("\n" + "=" * 72)
-        print("INTAKE COMPLETE")
-        print(f"  Created lifecycle cards: {created}")
-        print(f"  Skipped duplicates:      {skipped}")
-        print(f"  Failed:                  {failed}")
-        if dry_run:
-            print("  Dry run only: no SharePoint list items were created.")
-        print("=" * 72 + "\n")
         logger.info(
             f"Intake complete — created={created} skipped={skipped} failed={failed}"
         )
+        try:
+            print("\n" + "=" * 72)
+            print("INTAKE COMPLETE")
+            print(f"  Created lifecycle cards: {created}")
+            print(f"  Skipped duplicates:      {skipped}")
+            print(f"  Failed:                  {failed}")
+            if dry_run:
+                print("  Dry run only: no SharePoint list items were created.")
+            print("=" * 72 + "\n")
+        except BrokenPipeError:
+            pass  # stdout piped to head/grep — processing completed normally
         return failed
     finally:
         await shutdown()
@@ -785,6 +788,11 @@ Examples:
         if failures:
             logger.warning(f"{failures} document(s) failed during this run — check log: {log_path}")
             exit_code = 1
+    except BrokenPipeError:
+        # stdout was piped to something that closed early (e.g. head/grep).
+        # Processing completed — not a real failure.
+        import os as _os
+        _os.dup2(_os.open(_os.devnull, _os.O_WRONLY), sys.stdout.fileno())
     except Exception as exc:
         logger.exception(f"Intake job crashed: {exc}")
         exit_code = 1
