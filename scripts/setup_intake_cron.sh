@@ -45,13 +45,16 @@ CRON_LOG="$LOG_DIR/cron.log"
 mkdir -p "$LOG_DIR"
 
 # ── Build the cron command ────────────────────────────────────────────────────
+# cd $REPO_DIR first — pydantic-settings loads .env from the working directory.
+#   Without this, cron's default HOME directory is used and .env is never found,
+#   causing the script to crash silently with missing credentials.
 # --limit 50  — process 50 documents per run (50 morning + 50 evening = 100/day).
 #              With ~1000 documents in Phase 1, this clears the backlog in ~10 days.
 # CDI checks are ON — each document is checked against the 15 CDI rules using
 # the configured LLM (Azure OpenAI). Expect ~15–30s per document, so each
 # 50-doc run takes roughly 15–25 minutes.
 # stdout/stderr → cron.log (append). Each run also writes its own dated log.
-CRON_CMD="$PYTHON $INTAKE_SCRIPT --limit 50 >> $CRON_LOG 2>&1"
+CRON_CMD="cd $REPO_DIR && $PYTHON $INTAKE_SCRIPT --limit 50 >> $CRON_LOG 2>&1"
 
 # ── Cron entries (UTC — server must be on UTC) ────────────────────────────────
 CRON_MORNING="0 5 * * * $CRON_CMD"   # 05:00 UTC = 06:00 WAT
