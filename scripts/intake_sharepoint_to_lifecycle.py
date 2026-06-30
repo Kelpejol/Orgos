@@ -689,8 +689,11 @@ async def run_intake(
                 )
                 print(f"              → CREATED lifecycle #{item_id} | CDI={cdi_status}")
                 processed_ids.add(file_info["id"])
-                if code_key:
-                    lifecycle_codes.add(code_key)
+                # Only add URL to the intra-run dedup set (prevents the exact same
+                # SharePoint file from being written twice if it appears in two folders).
+                # Do NOT add code_key — form templates share one code across many
+                # distinct instance files (e.g. CORRECTIVE ACTION RESPONSE FORM - HR/IT/FIN).
+                # Code-based dedup is only meaningful against the pre-run lifecycle state.
                 if url_key:
                     lifecycle_urls.add(url_key)
                 checkpoint.setdefault("created", []).append({
