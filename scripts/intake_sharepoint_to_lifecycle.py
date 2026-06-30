@@ -645,9 +645,9 @@ async def run_intake(
             code_key = classification.document_code.upper()
 
             duplicate_reason = ""
-            if (code_key and code_key in lifecycle_codes) or url_key in lifecycle_urls:
+            if url_key and url_key in lifecycle_urls:
                 duplicate_reason = "already in Document Lifecycle"
-            elif (code_key and code_key in register_codes) or url_key in register_urls:
+            elif url_key and url_key in register_urls:
                 duplicate_reason = "already in Document Register"
 
             print(
