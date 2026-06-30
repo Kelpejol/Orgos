@@ -547,6 +547,10 @@ async def create_lifecycle_entry(
         f"code={classification.document_code!r}"
     )
 
+    def _is_400(exc: Exception) -> bool:
+        s = str(exc)
+        return "invalidRequest" in s or "Invalid request" in s
+
     try:
         item = await create_list_item(
             settings.document_lifecycle_list_id,
@@ -554,21 +558,54 @@ async def create_lifecycle_entry(
             fields,
         )
     except Exception as exc:
-        if "invalidRequest" in str(exc) or "Invalid request" in str(exc):
-            # CDIFailures text likely contains chars SharePoint rejects.
-            # Retry without it — the reviewer will rerun CDI from the lifecycle UI.
-            logger.warning(
-                f"Full payload rejected (400) for {filename!r} — "
-                f"retrying without CDIFailures"
-            )
-            fields.pop("CDIFailures", None)
+        if not _is_400(exc):
+            raise
+
+        # --- Fallback 1: strip CDIFailures ---
+        logger.warning(f"400 on full payload for {filename!r} — retrying without CDIFailures")
+        fields.pop("CDIFailures", None)
+        try:
             item = await create_list_item(
                 settings.document_lifecycle_list_id,
                 LIFECYCLE_LIST_NAME,
                 fields,
             )
-        else:
-            raise
+        except Exception as exc2:
+            if not _is_400(exc2):
+                raise
+
+            # --- Fallback 2: bare minimum fields only ---
+            logger.warning(f"400 still on {filename!r} — trying bare fields to find culprit")
+            # Log full values so we can inspect them
+            for k, v in fields.items():
+                logger.debug(f"  FIELD {k!r} = {str(v)[:200]!r}")
+
+            bare = {
+                "Title": fields["Title"],
+                "Stage": fields["Stage"],
+                "Trigger": fields["Trigger"],
+                "AIGenerated": fields["AIGenerated"],
+                "CDIStatus": fields["CDIStatus"],
+                "StandardsMapping": fields["StandardsMapping"],
+            }
+            try:
+                item = await create_list_item(
+                    settings.document_lifecycle_list_id,
+                    LIFECYCLE_LIST_NAME,
+                    bare,
+                )
+                logger.warning(
+                    f"Bare fields succeeded for {filename!r} — "
+                    f"one of the stripped fields was causing the 400"
+                )
+            except Exception as exc3:
+                if _is_400(exc3):
+                    # Even bare fields fail — log Title to inspect it
+                    logger.error(
+                        f"Even bare fields rejected for {filename!r} — "
+                        f"Title={fields['Title']!r}"
+                    )
+                raise exc3 from None
 
     return str(item.get("id", "")), cdi_status
 
