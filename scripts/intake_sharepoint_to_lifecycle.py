@@ -524,6 +524,15 @@ async def create_lifecycle_entry(
     if cdi_failures:
         fields["CDIFailures"] = cdi_failures
 
+    logger.debug(
+        f"Creating lifecycle entry for {filename!r} | "
+        f"trigger={trigger!r} cdi_status={cdi_status!r} "
+        f"title_len={len(fields['Title'])} "
+        f"notes_len={len(notes)} "
+        f"cdi_failures_len={len(cdi_failures)} "
+        f"code={classification.document_code!r}"
+    )
+
     item = await create_list_item(
         settings.document_lifecycle_list_id,
         LIFECYCLE_LIST_NAME,
