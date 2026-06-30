@@ -442,12 +442,26 @@ async def existing_register_keys() -> tuple[set[str], set[str]]:
     return codes, urls
 
 
+def _clean_sp_text(text: str) -> str:
+    """
+    Remove characters SharePoint text fields reject.
+    Keeps printable ASCII, basic whitespace (space/tab/newline), and
+    non-ASCII printable Unicode (accented chars, etc.).
+    Strips ASCII control characters (0x00–0x1F except 0x09/0x0A/0x0D)
+    and the DEL character (0x7F).
+    """
+    return "".join(
+        c for c in str(text)
+        if (ord(c) >= 0x20 or c in "\t\n\r") and ord(c) != 0x7F
+    )
+
+
 def cdi_failures_json(checks: list[dict]) -> str:
     return json.dumps([
         {
             "check": c.get("check_id", "CDI"),
-            "detail": c.get("finding", ""),
-            "fix": c.get("proposed_fix", ""),
+            "detail": _clean_sp_text(c.get("finding", "")),
+            "fix": _clean_sp_text(c.get("proposed_fix", "")),
         }
         for c in checks
         if c.get("result") == "FAIL"
@@ -533,11 +547,29 @@ async def create_lifecycle_entry(
         f"code={classification.document_code!r}"
     )
 
-    item = await create_list_item(
-        settings.document_lifecycle_list_id,
-        LIFECYCLE_LIST_NAME,
-        fields,
-    )
+    try:
+        item = await create_list_item(
+            settings.document_lifecycle_list_id,
+            LIFECYCLE_LIST_NAME,
+            fields,
+        )
+    except Exception as exc:
+        if "invalidRequest" in str(exc) or "Invalid request" in str(exc):
+            # CDIFailures text likely contains chars SharePoint rejects.
+            # Retry without it — the reviewer will rerun CDI from the lifecycle UI.
+            logger.warning(
+                f"Full payload rejected (400) for {filename!r} — "
+                f"retrying without CDIFailures"
+            )
+            fields.pop("CDIFailures", None)
+            item = await create_list_item(
+                settings.document_lifecycle_list_id,
+                LIFECYCLE_LIST_NAME,
+                fields,
+            )
+        else:
+            raise
+
     return str(item.get("id", "")), cdi_status
 
 
