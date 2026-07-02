@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
 from auth.validator import CurrentUser, get_current_user
-from config import settings
+from config import MIN_RATIONALE_CHARS, settings
 from graph.client import (
     create_list_item,
     get_list_item,
@@ -234,6 +234,51 @@ async def _get_queue_item(item_id: str) -> dict:
     return item.get("fields", {})
 
 
+async def _mark_queue_cascade_failed(
+    item_id: str,
+    q_fields: dict,
+    decision: str,
+    rationale: str,
+    user: CurrentUser,
+    step: str,
+    error: Exception,
+    completed: list[str],
+) -> None:
+    """
+    DINT §7.5 — a failed cascade must not leave the item looking decided or
+    silently half-applied. Mark the queue item Blocked ("Cascade failed"),
+    record the failed step and partial writes, and audit-log the failure.
+    """
+    failure_note = (
+        f"CASCADE FAILED at step '{step}': {error}. "
+        f"Completed before failure: {'; '.join(completed) if completed else 'nothing'}. "
+        f"Retry the decision or escalate to the System Admin."
+    )
+    try:
+        await update_list_item(_q_list_id(), _Q_LIST_NAME, item_id, {
+            "ReviewStatus":      "Blocked",
+            "Decision":          decision,
+            "DecisionRationale": rationale,
+            "ReviewedByEntraId": user.oid,
+            "CascadeResult":     failure_note[:4000],
+        })
+    except Exception as exc:
+        logger.error(f"Could not mark queue item {item_id} as cascade-failed: {exc}")
+
+    await _write_audit_log(
+        reviewer=user,
+        item_id=item_id,
+        item_type=q_fields.get("ItemType", "Extraction"),
+        zone="1",
+        ai_confidence=float(q_fields.get("ConfidenceScore") or 0),
+        decision=f"{decision} (cascade failed)",
+        rationale=rationale,
+        cascade_result=failure_note,
+        state_from=q_fields.get("ReviewStatus") or "Pending Review",
+        state_to="Blocked",
+    )
+
+
 async def _resolve_owner_entra_id(owner_role: str) -> str:
     """
     Look up the current holder of a role in the Role Register.
@@ -285,17 +330,18 @@ async def accept_control(
             detail="Compliance Lead or OrgOS Admin role required.",
         )
 
-    if len(body.rationale.strip()) < 10:
+    if len(body.rationale.strip()) < MIN_RATIONALE_CHARS:
         raise HTTPException(
             status_code=422,
-            detail="Rationale must be at least 10 characters.",
+            detail=f"Rationale must be at least {MIN_RATIONALE_CHARS} characters.",
         )
 
     try:
         # Step 1 — fetch queue item
         q_fields = await _get_queue_item(item_id)
 
-        if q_fields.get("ReviewStatus") not in (None, "", "Pending Review"):
+        # "Blocked" = a previous cascade failed (DINT §7.5) — retry is allowed.
+        if q_fields.get("ReviewStatus") not in (None, "", "Pending Review", "Blocked"):
             raise HTTPException(
                 status_code=409,
                 detail=f"Item has already been reviewed: {q_fields.get('ReviewStatus')}",
@@ -376,27 +422,53 @@ async def accept_control(
         ])
 
         if evd_type:
-            evd_owner_oid = await _resolve_owner_entra_id(evd_owner)
-            evd_title = evd_desc[:255] if evd_desc else f"Evidence for: {control_statement[:200]}"
-            evd_fields = {
-                "Title":               evd_title,
-                "EvidenceDescription": evd_desc,
-                "EvidenceType":        evd_type,
-                "SourceSystem":        evd_sys,
-                "EvidenceFormat":      evd_format,
-                "Frequency":           evd_freq,
-                "CollectionMethod":    evd_method,
-                "OwnerRole":           evd_owner,
-                "OwnerEntraId":        evd_owner_oid,
-                "ValidationCriteria":  evd_crit,
-                "Status":              "Pending",
-                "LinkedControlId":     control_id,
-            }
-            evd_item = await create_list_item(
-                _evd_list_id(), _EVD_LIST_NAME, evd_fields
-            )
-            evd_id = str(evd_item["id"])
-            logger.info(f"Evidence Tracker entry created: {evd_id}")
+            try:
+                evd_owner_oid = await _resolve_owner_entra_id(evd_owner)
+                evd_title = evd_desc[:255] if evd_desc else f"Evidence for: {control_statement[:200]}"
+                evd_fields = {
+                    "Title":               evd_title,
+                    "EvidenceDescription": evd_desc,
+                    "EvidenceType":        evd_type,
+                    "SourceSystem":        evd_sys,
+                    "EvidenceFormat":      evd_format,
+                    "Frequency":           evd_freq,
+                    "CollectionMethod":    evd_method,
+                    "OwnerRole":           evd_owner,
+                    "OwnerEntraId":        evd_owner_oid,
+                    "ValidationCriteria":  evd_crit,
+                    "Status":              "Pending",
+                    "LinkedControlId":     control_id,
+                }
+                evd_item = await create_list_item(
+                    _evd_list_id(), _EVD_LIST_NAME, evd_fields
+                )
+                evd_id = str(evd_item["id"])
+                logger.info(f"Evidence Tracker entry created: {evd_id}")
+            except Exception as exc:
+                logger.exception(f"Evidence Tracker cascade step failed for queue item {item_id}")
+                # Compensate — withdraw the just-created control so the
+                # registers don't hold a half-created chain.
+                completed = [f"Control Register: {control_id}"]
+                try:
+                    await update_list_item(_cr_list_id(), _CR_LIST_NAME, control_id, {
+                        "Status": "Withdrawn",
+                    })
+                    completed.append(f"Control Register {control_id}: rolled back (Withdrawn)")
+                except Exception as undo_exc:
+                    logger.error(f"Rollback of control {control_id} also failed: {undo_exc}")
+                await _mark_queue_cascade_failed(
+                    item_id, q_fields,
+                    "Edit and Accept" if is_edit_accept else "Accept",
+                    body.rationale, user,
+                    step="Evidence Tracker", error=exc, completed=completed,
+                )
+                raise HTTPException(
+                    status_code=502,
+                    detail=(
+                        "Cascade failed at step 'Evidence Tracker'. The control was rolled back "
+                        "and the queue item is marked Blocked — you can retry the decision."
+                    ),
+                )
         else:
             logger.info(
                 f"No evidence type on queue item {item_id} — "
@@ -439,7 +511,32 @@ async def accept_control(
             queue_updates["DeficiencyReason"] = ""
             queue_updates["EvidenceUndefined"] = False
 
-        await update_list_item(_q_list_id(), _Q_LIST_NAME, item_id, queue_updates)
+        try:
+            await update_list_item(_q_list_id(), _Q_LIST_NAME, item_id, queue_updates)
+        except Exception as exc:
+            # Registers were written but the queue item still looks undecided —
+            # record the inconsistency so it can be repaired, then fail loudly.
+            logger.exception(f"Queue update failed after cascade for item {item_id}")
+            await _write_audit_log(
+                reviewer=user,
+                item_id=item_id,
+                item_type=q_fields.get("ItemType", "Extraction"),
+                zone="1",
+                ai_confidence=confidence,
+                decision=("Edit and Accept" if is_edit_accept else "Accept") + " (queue update failed)",
+                rationale=body.rationale,
+                cascade_result=f"{cascade_summary} | QUEUE UPDATE FAILED: {exc}",
+                state_from=q_fields.get("ReviewStatus") or "Pending Review",
+                state_to="Pending Review (stale)",
+            )
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    f"The control ({control_id}) and evidence were created, but the queue item "
+                    "could not be marked Accepted. Do NOT accept it again — refresh and check "
+                    "the Audit Log, or ask the System Admin to reconcile."
+                ),
+            )
 
         # Step 6 — write audit log
         await _write_audit_log(
@@ -486,8 +583,8 @@ async def reject_item(
     if "Compliance.Lead" not in user.roles and "OrgOS.Admin" not in user.roles:
         raise HTTPException(status_code=403, detail="Compliance Lead or OrgOS Admin required.")
 
-    if len(body.rationale.strip()) < 10:
-        raise HTTPException(status_code=422, detail="Rationale must be at least 10 characters.")
+    if len(body.rationale.strip()) < MIN_RATIONALE_CHARS:
+        raise HTTPException(status_code=422, detail=f"Rationale must be at least {MIN_RATIONALE_CHARS} characters.")
 
     valid = {"Reject", "Mark False Positive"}
     if body.reject_type not in valid:
@@ -537,6 +634,9 @@ async def request_second_review(
 ) -> dict:
     if "Compliance.Lead" not in user.roles and "OrgOS.Admin" not in user.roles:
         raise HTTPException(status_code=403, detail="Compliance Lead or OrgOS Admin required.")
+
+    if len(body.rationale.strip()) < MIN_RATIONALE_CHARS:
+        raise HTTPException(status_code=422, detail=f"Rationale must be at least {MIN_RATIONALE_CHARS} characters.")
 
     try:
         q_fields = await _get_queue_item(item_id)

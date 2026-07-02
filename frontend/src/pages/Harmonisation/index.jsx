@@ -15,6 +15,7 @@ import StatusBadge from "../../components/shared/StatusBadge.jsx";
 import { Field } from "../../components/shared/Forms.jsx";
 import { LoadingState, ErrorState, EmptyState } from "../../components/shared/LoadingState.jsx";
 import { useAlert } from "../../components/shared/AlertModal.jsx";
+import { CascadeImpactModal } from "../../components/shared/CascadeImpactModal.jsx";
 import apiClient from "../../api/grcApi.js";
 
 // =============================================================================
@@ -94,6 +95,7 @@ const HarmDecisionPanel = ({ item, onDecide, isPending }) => {
   const [rationale,     setRationale]     = useState("");
   const [canonicalName, setCanonicalName] = useState(item.CanonicalName || "");
   const [active, setActive] = useState(null);
+  const [confirmDecision, setConfirmDecision] = useState(null);
 
   const ratOk = rationale.trim().length >= 10;
 
@@ -108,10 +110,18 @@ const HarmDecisionPanel = ({ item, onDecide, isPending }) => {
       desc: "Standardise the name across all documents without merging" },
   ];
 
-  const handle = async (key) => {
+  const handle = (key) => {
     if (!ratOk) return;
-    setActive(key);
-    await onDecide(item.id, key, rationale.trim(), canonicalName.trim() || undefined);
+    // All Zone 3 decisions confirm through the cascade-impact modal.
+    setConfirmDecision(DECISIONS.find(d => d.key === key) || { key, label: key });
+  };
+
+  const handleConfirm = async (confirmedRationale) => {
+    const decision = confirmDecision;
+    setConfirmDecision(null);
+    setRationale(confirmedRationale);
+    setActive(decision.key);
+    await onDecide(item.id, decision.key, confirmedRationale, canonicalName.trim() || undefined);
     setActive(null);
   };
 
@@ -186,6 +196,24 @@ const HarmDecisionPanel = ({ item, onDecide, isPending }) => {
           </button>
         ))}
       </div>
+
+      {/* Cascade-impact confirmation — counts of controls/evidence re-pointed */}
+      <CascadeImpactModal
+        open={!!confirmDecision}
+        onClose={() => setConfirmDecision(null)}
+        title={confirmDecision ? `${confirmDecision.label} — cascade impact` : ""}
+        subtitle={confirmDecision?.desc}
+        impactUrl={confirmDecision ? `/api/v1/queue/items/${item.id}/impact` : null}
+        impactParams={{
+          zone: "3",
+          decision: confirmDecision?.key,
+          ...(canonicalName.trim() ? { canonical_name: canonicalName.trim() } : {}),
+        }}
+        initialRationale={rationale}
+        confirmLabel={confirmDecision?.label || "Confirm"}
+        isPending={isPending}
+        onConfirm={handleConfirm}
+      />
     </div>
   );
 };

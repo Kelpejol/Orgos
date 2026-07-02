@@ -14,6 +14,8 @@ import StatusBadge from "../../components/shared/StatusBadge.jsx";
 import { Field } from "../../components/shared/Forms.jsx";
 import { LoadingState, ErrorState, EmptyState } from "../../components/shared/LoadingState.jsx";
 import UserSearchField from "../../components/shared/UserSearchField.jsx";
+import { CascadeImpactPreview } from "../../components/shared/CascadeImpactModal.jsx";
+import ReviseDocumentModal from "../../components/shared/ReviseDocumentModal.jsx";
 import apiClient from "../../api/grcApi.js";
 import { useAiSuggestion } from "../../hooks/useAiSuggestion.js";
 
@@ -2238,6 +2240,7 @@ const ApproveConfirmModal = ({ doc, onClose, onDone }) => {
   const [notes,  setNotes]  = useState("");
   const [saving, setSaving] = useState(false);
   const [error,  setError]  = useState("");
+  const [impact, setImpact] = useState(null);
 
   const handleApprove = async () => {
     setSaving(true); setError("");
@@ -2270,9 +2273,12 @@ const ApproveConfirmModal = ({ doc, onClose, onDone }) => {
           </div>
           <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 20, color: "var(--color-text-tertiary)" }}>×</button>
         </div>
-        <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginBottom: 14, lineHeight: 1.5 }}>
-          This will mark the document as Approved and create an entry in the Document Register.
-          This action cannot be undone.
+        {/* Cascade impact — what approving will create/update (DINT §5.3.1) */}
+        <div style={{ marginBottom: 14 }}>
+          <CascadeImpactPreview
+            impactUrl={`/api/v1/lifecycle/documents/${doc.id}/approval-impact`}
+            onImpact={setImpact}
+          />
         </div>
         {error && (
           <div style={{ padding: "9px 12px", background: "#FCEBEB", border: "1px solid #F09595",
@@ -2300,11 +2306,12 @@ const ApproveConfirmModal = ({ doc, onClose, onDone }) => {
           />
         </div>
         <div style={{ display: "flex", gap: 10 }}>
-          <button onClick={handleApprove} disabled={saving} style={{
+          <button onClick={handleApprove} disabled={saving || impact?.blocked} style={{
             flex: 1, padding: "11px", fontSize: 13, borderRadius: 9, border: "none", fontWeight: 600,
-            background: saving ? "#E8E8E8" : "#1D9E75",
-            color: saving ? "#999" : "#fff", cursor: saving ? "not-allowed" : "pointer",
-          }}>{saving ? "Approving..." : "Confirm Approval ✓"}</button>
+            background: saving || impact?.blocked ? "#E8E8E8" : "#1D9E75",
+            color: saving || impact?.blocked ? "#999" : "#fff",
+            cursor: saving || impact?.blocked ? "not-allowed" : "pointer",
+          }}>{saving ? "Approving..." : impact?.blocked ? "Approval blocked" : "Confirm Approval ✓"}</button>
           <button onClick={onClose} style={{
             padding: "11px 16px", fontSize: 13, borderRadius: 9,
             border: "1.5px solid #D0D0D0", background: "transparent",
@@ -2323,6 +2330,7 @@ const ApproveConfirmModal = ({ doc, onClose, onDone }) => {
 
 export default function DocumentLifecycle() {
   const [showForm,          setShowForm]          = useState(false);
+  const [showRevise,        setShowRevise]        = useState(false);
   const [detailsDoc,        setDetailsDoc]        = useState(null);
   const [reassignDoc,       setReassignDoc]       = useState(null);
   const [progressingDoc,    setProgressingDoc]    = useState(null); // doc whose Progress → was clicked
@@ -2366,15 +2374,34 @@ export default function DocumentLifecycle() {
             Every new and revised document passes through Review → Sensitisation → Approval before entering the Document Register.
           </div>
         </div>
-        <button
-          onClick={() => setShowForm(!showForm)}
-          style={{ padding: "8px 16px", fontSize: 12, borderRadius: 8, border: "none",
-                   background: "#378ADD", color: "#fff", cursor: "pointer",
-                   fontWeight: 500, flexShrink: 0 }}
-        >
-          + New document
-        </button>
+        <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+          <button
+            onClick={() => setShowRevise(true)}
+            style={{ padding: "8px 16px", fontSize: 12, borderRadius: 8,
+                     border: "1.5px solid #0C447C", background: "transparent",
+                     color: "#0C447C", cursor: "pointer", fontWeight: 500 }}
+          >
+            + Revise existing
+          </button>
+          <button
+            onClick={() => setShowForm(!showForm)}
+            style={{ padding: "8px 16px", fontSize: 12, borderRadius: 8, border: "none",
+                     background: "#378ADD", color: "#fff", cursor: "pointer",
+                     fontWeight: 500 }}
+          >
+            + New document
+          </button>
+        </div>
       </div>
+
+      {/* Revise existing — pick an Active register document, DINT §5.3.2 */}
+      <ReviseDocumentModal
+        open={showRevise}
+        onClose={() => setShowRevise(false)}
+        onRevised={() => {
+          qc.invalidateQueries({ queryKey: ["lifecycle"] });
+        }}
+      />
 
       {/* New document form */}
       {showForm && (

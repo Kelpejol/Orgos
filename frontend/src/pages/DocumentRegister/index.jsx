@@ -12,6 +12,7 @@ import { useDocuments, useSoftDeleteDocument } from "../../hooks/useGrc.js";
 import { useCurrentUserRole } from "../../hooks/useCurrentUserRole.js";
 import { useAlert } from "../../components/shared/AlertModal.jsx";
 import ReadOnlyBanner from "../../components/shared/ReadOnlyBanner.jsx";
+import ReviseDocumentModal from "../../components/shared/ReviseDocumentModal.jsx";
 import DocumentForm from "./DocumentForm.jsx";
 
 const COLS = [
@@ -47,9 +48,10 @@ export default function DocumentRegister({ go }) {
   const [selected, setSelected] = useState(null);
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState(null);
+  const [revising, setRevising] = useState(false);
 
   const { isCompliance } = useCurrentUserRole();
-  const { confirm: showConfirm } = useAlert();
+  const { confirm: showConfirm, notify } = useAlert();
   const { data: documents = [], isLoading, error, refetch } = useDocuments();
   const softDelete = useSoftDeleteDocument();
 
@@ -131,6 +133,19 @@ export default function DocumentRegister({ go }) {
               Edit
             </button>
           )}
+          {isCompliance && selected.status === "Active" && (
+            <button
+              onClick={() => setRevising(true)}
+              style={{ padding: "7px 14px", fontSize: 12, borderRadius: 8, border: "none", background: "#0C447C", color: "#fff", cursor: "pointer", fontWeight: 500 }}
+            >
+              Revise
+            </button>
+          )}
+          {isCompliance && selected.status === "Under Review" && (
+            <span style={{ padding: "7px 10px", fontSize: 11, borderRadius: 8, background: "#FAEEDA", color: "#633806", border: "0.5px solid #FAC775" }}>
+              Revision in progress — see Document Lifecycle
+            </span>
+          )}
           {isCompliance && selected.status !== "Withdrawn" && (
             <button
               onClick={async () => {
@@ -151,6 +166,21 @@ export default function DocumentRegister({ go }) {
             </button>
           )}
         </div>
+
+        <ReviseDocumentModal
+          open={revising}
+          onClose={() => setRevising(false)}
+          document={selected}
+          onRevised={(lifecycleDoc) => {
+            notify({
+              tone: "success",
+              title: "Revision started",
+              message: `${selected.document_code} has re-entered the Document Lifecycle at Review (task ${lifecycleDoc?.id || ""}). The current version stays live until the revision is approved.`,
+            });
+            setSelected(null);
+            refetch();
+          }}
+        />
       </div>
     );
   }

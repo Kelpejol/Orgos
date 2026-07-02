@@ -25,7 +25,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from auth.validator import CurrentUser, get_current_user
-from config import settings
+from config import MIN_RATIONALE_CHARS, settings
 from graph.client import (
     create_list_item,
     get_list_item,
@@ -35,6 +35,30 @@ from graph.client import (
 from graph.exceptions import GraphAPIError, GraphNotFoundError
 
 logger = logging.getLogger(__name__)
+
+
+class CascadeError(Exception):
+    """
+    A required cascade step failed. Carries what completed before the failure
+    so the queue item can be marked Blocked ("Cascade failed") per DINT §7.5
+    instead of silently entering registers in a partial state.
+    """
+
+    def __init__(self, step: str, completed: list[str], original: Exception):
+        self.step = step
+        self.completed = completed
+        self.original = original
+        super().__init__(f"Cascade failed at step '{step}': {original}")
+
+
+def _require_rationale(rationale: str) -> str:
+    cleaned = (rationale or "").strip()
+    if len(cleaned) < MIN_RATIONALE_CHARS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Rationale is required (min {MIN_RATIONALE_CHARS} characters).",
+        )
+    return cleaned
 
 router = APIRouter(prefix="/api/v1/queue", tags=["AI Review Queue"])
 
@@ -63,6 +87,62 @@ def _handle(exc: Exception, ctx: str):
         raise HTTPException(status_code=exc.status_code, detail=exc.message)
     logger.exception(f"Error: {ctx}")
     raise HTTPException(status_code=500, detail=f"Error: {ctx}")
+
+
+async def _mark_cascade_failed(
+    item_id: str,
+    zone: str,
+    decision: str,
+    rationale: str,
+    user: CurrentUser,
+    err: "CascadeError",
+) -> None:
+    """
+    DINT §7.5 — a failed cascade must not leave the queue item looking decided.
+    Marks the item Blocked with a "Cascade failed" note recording the failed
+    step and any partial writes, and logs the failure to the Audit Log.
+    """
+    failure_note = (
+        f"CASCADE FAILED at step '{err.step}': {err.original}. "
+        f"Completed before failure: {'; '.join(err.completed) if err.completed else 'nothing'}. "
+        f"Retry the decision or escalate to the System Admin."
+    )
+    try:
+        await update_list_item(_q_id(), _Q_LIST, item_id, {
+            "ReviewStatus":      "Blocked",
+            "Decision":          decision,
+            "DecisionRationale": rationale,
+            "ReviewedByEntraId": user.oid,
+            "CascadeResult":     failure_note[:4000],
+        })
+    except Exception as exc:
+        logger.error(f"Could not mark queue item {item_id} as cascade-failed: {exc}")
+
+    try:
+        await create_list_item(_al_id(), _AL_LIST, {
+            "Title":              f"Zone {zone} CASCADE FAILED — {decision}",
+            "Action":             f"Zone {zone}: {decision} (cascade failed)",
+            "ReviewerEntraId":    user.oid,
+            "ReviewerName":       user.name,
+            "Decision":           decision,
+            "Rationale":          rationale,
+            "CascadeResult":      failure_note[:4000],
+            "Timestamp":          datetime.now(timezone.utc).isoformat(),
+        })
+    except Exception as exc:
+        logger.error(f"Could not audit-log cascade failure for {item_id}: {exc}")
+
+
+def _cascade_failed_http(err: "CascadeError") -> HTTPException:
+    return HTTPException(
+        status_code=502,
+        detail=(
+            f"Cascade failed at step '{err.step}'. The item has been marked Blocked "
+            f"and did not fully enter the registers. "
+            f"Completed before failure: {'; '.join(err.completed) if err.completed else 'nothing'}. "
+            f"You can retry the decision."
+        ),
+    )
 
 
 def _sp_to_item(item: dict) -> dict:
@@ -196,7 +276,7 @@ async def _zone1_accept_cascade(item: dict, user: CurrentUser, overrides: dict) 
     evidence_type= overrides.get("evidence_type")     or item.get("EvidenceType", "")
     evd_desc     = overrides.get("evidence_description") or item.get("EvidenceDescription", "")
 
-    # 1. Control Register
+    # 1. Control Register — required step; failure aborts the cascade
     try:
         cr_fields = {
             "Title":            control_stmt[:255],
@@ -218,7 +298,7 @@ async def _zone1_accept_cascade(item: dict, user: CurrentUser, overrides: dict) 
         created.append(f"Control Register: {cr_id}")
     except Exception as exc:
         logger.error(f"Control Register cascade failed: {exc}")
-        cr_id = None
+        raise CascadeError("Control Register", created, exc)
 
     # 2. Evidence Tracker — only if evidence is defined
     ev_id = None
@@ -249,6 +329,17 @@ async def _zone1_accept_cascade(item: dict, user: CurrentUser, overrides: dict) 
             created.append(f"Evidence Tracker: {ev_id}")
         except Exception as exc:
             logger.error(f"Evidence Tracker cascade failed: {exc}")
+            # Compensate — withdraw the control so registers don't hold a
+            # half-created chain (SharePoint has no transactions; soft-rollback).
+            try:
+                await update_list_item(_cr_id(), _CR_LIST, cr_id, {
+                    "Status": "Withdrawn",
+                    "DecisionRationale": "Rolled back — evidence cascade step failed.",
+                })
+                created.append(f"Control Register {cr_id}: rolled back (Withdrawn)")
+            except Exception as undo_exc:
+                logger.error(f"Rollback of control {cr_id} also failed: {undo_exc}")
+            raise CascadeError("Evidence Tracker", created, exc)
 
     # 3. Audit Log
     try:
@@ -285,7 +376,7 @@ async def _zone1_accept_cascade(item: dict, user: CurrentUser, overrides: dict) 
         except Exception as exc:
             logger.warning(f"NL Search index step failed (non-fatal): {exc}")
 
-    return " | ".join(created) if created else "Cascade failed — check logs"
+    return " | ".join(created)
 
 
 def _split_terms(value: str) -> list[str]:
@@ -624,8 +715,7 @@ async def zone1_decide(
             status_code=422,
             detail=f"Invalid decision for Zone 1. Must be one of: {', '.join(sorted(ZONE1_DECISIONS))}",
         )
-    if not body.rationale or len(body.rationale.strip()) < 5:
-        raise HTTPException(status_code=422, detail="Rationale is required (min 5 characters).")
+    rationale = _require_rationale(body.rationale)
 
     try:
         item = _sp_to_item(await get_list_item(_q_id(), _Q_LIST, item_id))
@@ -642,14 +732,14 @@ async def zone1_decide(
         updates = {
             "ReviewStatus":      status_map[body.decision],
             "Decision":          body.decision,
-            "DecisionRationale": body.rationale.strip(),
+            "DecisionRationale": rationale,
             "ReviewedByEntraId": user.oid,
         }
 
         cascade_result = ""
         if body.decision in ("Accept", "Edit and Accept"):
             overrides = {
-                "rationale":                    body.rationale,
+                "rationale":                    rationale,
                 "control_statement":            body.control_statement,
                 "control_type":                 body.control_type,
                 "proposed_owner":               body.proposed_owner,
@@ -662,7 +752,11 @@ async def zone1_decide(
                 "evidence_owner_role":          body.evidence_owner_role,
                 "evidence_validation_criteria": body.evidence_validation_criteria,
             }
-            cascade_result = await _zone1_accept_cascade(item, user, overrides)
+            try:
+                cascade_result = await _zone1_accept_cascade(item, user, overrides)
+            except CascadeError as ce:
+                await _mark_cascade_failed(item_id, "1", body.decision, rationale, user, ce)
+                raise _cascade_failed_http(ce)
             try:
                 from agents.classifier.service import run_classifier
                 await run_classifier(triggered_by=f"system: zone1 {body.decision} by {user.name or user.oid}")
@@ -746,7 +840,7 @@ async def _zone2_cascade(
             )
             created.append(f"Document Lifecycle: {lifecycle_id}")
         except Exception as exc:
-            logger.error(f"Zone 2 Document Lifecycle cascade failed: {exc}")
+            raise CascadeError("Document Lifecycle", created, exc)
 
     elif decision == "Add to existing policy":
         try:
@@ -760,7 +854,7 @@ async def _zone2_cascade(
             )
             created.append(f"Document Lifecycle: {lifecycle_id}")
         except Exception as exc:
-            logger.error(f"Zone 2 existing policy cascade failed: {exc}")
+            raise CascadeError("Document Lifecycle", created, exc)
 
     elif decision == "Add to existing JD":
         try:
@@ -775,13 +869,16 @@ async def _zone2_cascade(
             )
             created.append(f"Document Lifecycle: {lifecycle_id}")
         except Exception as exc:
-            logger.error(f"Zone 2 JD revision cascade failed: {exc}")
+            raise CascadeError("Document Lifecycle", created, exc)
 
     elif decision == "Reassign control":
         role = target_role or item.get("ProposedOwnerRole", "")
         if role:
-            created.append(await _update_matching_control_owner(item, role))
-            created.append(await _update_matching_evidence_owner(item, role))
+            try:
+                created.append(await _update_matching_control_owner(item, role))
+                created.append(await _update_matching_evidence_owner(item, role))
+            except Exception as exc:
+                raise CascadeError("Control/Evidence reassignment", created, exc)
         else:
             created.append("Control reassignment requires a target role.")
 
@@ -791,7 +888,7 @@ async def _zone2_cascade(
             try:
                 created.append(await _create_role_if_missing(role, item, rationale))
             except Exception as exc:
-                logger.error(f"Zone 2 role creation cascade failed: {exc}")
+                raise CascadeError("Role Register", created, exc)
         else:
             created.append("Role creation requires a role title.")
 
@@ -808,7 +905,7 @@ async def _zone2_cascade(
             )
             created.append(f"Document Lifecycle: {lifecycle_id}")
         except Exception as exc:
-            logger.error(f"Zone 2 remove-from-policy cascade failed: {exc}")
+            raise CascadeError("Document Lifecycle", created, exc)
 
     elif decision == "Remove from JD":
         try:
@@ -823,7 +920,7 @@ async def _zone2_cascade(
             )
             created.append(f"Document Lifecycle: {lifecycle_id}")
         except Exception as exc:
-            logger.error(f"Zone 2 remove-from-JD cascade failed: {exc}")
+            raise CascadeError("Document Lifecycle", created, exc)
 
     elif decision == "Select governing document":
         try:
@@ -837,7 +934,7 @@ async def _zone2_cascade(
             )
             created.append(f"Document Lifecycle: {lifecycle_id}")
         except Exception as exc:
-            logger.error(f"Zone 2 governing-document cascade failed: {exc}")
+            raise CascadeError("Document Lifecycle", created, exc)
 
     elif decision == "Merge":
         try:
@@ -851,14 +948,13 @@ async def _zone2_cascade(
             )
             created.append(f"Document Lifecycle: {lifecycle_id}")
         except Exception as exc:
-            logger.error(f"Zone 2 merge-conflict cascade failed: {exc}")
+            raise CascadeError("Document Lifecycle", created, exc)
 
     elif decision == "Escalate to ExCo":
         try:
             created.append(await _create_strategic_risk_from_zone2(item, rationale, user))
         except Exception as exc:
-            logger.error(f"Zone 2 ExCo escalation failed: {exc}")
-            created.append("ExCo escalation recorded, but Strategic Risk Register write failed.")
+            raise CascadeError("Strategic Risk Register", created, exc)
 
     elif decision == "Intentional":
         created.append("Intentional accountability gap accepted with rationale.")
@@ -906,8 +1002,7 @@ async def zone2_decide(
             status_code=422,
             detail=f"Invalid Zone 2 decision. Must be one of: {', '.join(sorted(ZONE2_DECISIONS))}",
         )
-    if not body.rationale or len(body.rationale.strip()) < 5:
-        raise HTTPException(status_code=422, detail="Rationale is required.")
+    rationale = _require_rationale(body.rationale)
 
     try:
         item = _sp_to_item(await get_list_item(_q_id(), _Q_LIST, item_id))
@@ -928,20 +1023,24 @@ async def zone2_decide(
             "Merge":                 "Accepted",
         }
 
-        cascade_result = await _zone2_cascade(
-            item, body.decision, body.rationale.strip(),
-            user, body.linked_doc_code, body.target_role,
-            {
-                "oid": body.reviewer_oid,
-                "name": body.reviewer_name,
-                "email": body.reviewer_email,
-            } if body.reviewer_oid or body.reviewer_name or body.reviewer_email else None,
-        )
+        try:
+            cascade_result = await _zone2_cascade(
+                item, body.decision, rationale,
+                user, body.linked_doc_code, body.target_role,
+                {
+                    "oid": body.reviewer_oid,
+                    "name": body.reviewer_name,
+                    "email": body.reviewer_email,
+                } if body.reviewer_oid or body.reviewer_name or body.reviewer_email else None,
+            )
+        except CascadeError as ce:
+            await _mark_cascade_failed(item_id, "2", body.decision, rationale, user, ce)
+            raise _cascade_failed_http(ce)
 
         updates = {
             "ReviewStatus":      status_map[body.decision],
             "Decision":          body.decision,
-            "DecisionRationale": body.rationale.strip(),
+            "DecisionRationale": rationale,
             "ReviewedByEntraId": user.oid,
             "CascadeResult":     cascade_result,
         }
@@ -1000,7 +1099,7 @@ async def _zone3_cascade(
                 created.append(await _update_control_owner_variants(canonical_name, variant_terms))
                 created.append(await _update_evidence_owner_variants(canonical_name, variant_terms))
             except Exception as exc:
-                logger.error(f"Zone 3 role harmonisation cascade failed: {exc}")
+                raise CascadeError("Role harmonisation", created, exc)
         else:
             shared_notes = (
                 f"Created from Zone 3 Harmonisation decision.\n"
@@ -1021,7 +1120,7 @@ async def _zone3_cascade(
                     )
                     created.append(f"Document Lifecycle ({doc_code}): {lifecycle_id}")
                 except Exception as exc:
-                    logger.error(f"Zone 3 Harmonisation Fix lifecycle cascade failed for {doc_code}: {exc}")
+                    raise CascadeError(f"Document Lifecycle ({doc_code})", created, exc)
 
     elif decision == "Partial merge" and canonical_name:
         created.append(f"Partial merge — canonical name '{canonical_name}' confirmed for overlapping variants.")
@@ -1032,7 +1131,7 @@ async def _zone3_cascade(
                 created.append(await _update_evidence_owner_variants(canonical_name, variant_terms))
                 created.append("Remaining variants require manual review.")
             except Exception as exc:
-                logger.error(f"Zone 3 partial role harmonisation failed: {exc}")
+                raise CascadeError("Role harmonisation", created, exc)
         else:
             shared_notes = (
                 f"Created from Zone 3 partial merge decision.\n"
@@ -1052,7 +1151,7 @@ async def _zone3_cascade(
                     )
                     created.append(f"Document Lifecycle ({doc_code}): {lifecycle_id}")
                 except Exception as exc:
-                    logger.error(f"Zone 3 partial merge lifecycle cascade failed for {doc_code}: {exc}")
+                    raise CascadeError(f"Document Lifecycle ({doc_code})", created, exc)
 
     elif decision == "Keep separate":
         created.append("Confirmed as separate items — future classifier runs should suppress this exact pair.")
@@ -1089,8 +1188,7 @@ async def zone3_decide(
             status_code=422,
             detail=f"Invalid Zone 3 decision. Must be one of: {', '.join(sorted(ZONE3_DECISIONS))}",
         )
-    if not body.rationale or len(body.rationale.strip()) < 5:
-        raise HTTPException(status_code=422, detail="Rationale is required.")
+    rationale = _require_rationale(body.rationale)
 
     try:
         item = _sp_to_item(await get_list_item(_q_id(), _Q_LIST, item_id))
@@ -1102,15 +1200,19 @@ async def zone3_decide(
             "Rename and standardise":  "Accepted",
         }
 
-        cascade_result = await _zone3_cascade(
-            item, body.decision, body.rationale.strip(),
-            body.canonical_name, user,
-        )
+        try:
+            cascade_result = await _zone3_cascade(
+                item, body.decision, rationale,
+                body.canonical_name, user,
+            )
+        except CascadeError as ce:
+            await _mark_cascade_failed(item_id, "3", body.decision, rationale, user, ce)
+            raise _cascade_failed_http(ce)
 
         updates = {
             "ReviewStatus":      status_map[body.decision],
             "Decision":          body.decision,
-            "DecisionRationale": body.rationale.strip(),
+            "DecisionRationale": rationale,
             "ReviewedByEntraId": user.oid,
             "CascadeResult":     cascade_result,
         }
@@ -1125,3 +1227,399 @@ async def zone3_decide(
         raise
     except Exception as exc:
         _handle(exc, f"zone3 decide {item_id}")
+
+
+# =============================================================================
+#  Cascade impact preview (dry-run) — DINT §2.4 "Decision cascade hints" and
+#  the pre-decision cascade impact screen. Read-only: computes what a decision
+#  WOULD create/update without writing anything.
+# =============================================================================
+
+def _impact_shell(zone: str, decision: str) -> dict:
+    return {
+        "action":   decision,
+        "zone":     zone,
+        "summary":  "",
+        "creates":  [],
+        "updates":  [],
+        "flags":    [],
+        "warnings": [],
+        "blocked":  False,
+        "blocked_reason": None,
+    }
+
+
+async def _count_owner_variant_matches(canonical_name: str, variant_terms: list[str]) -> tuple[int, int]:
+    """Read-only counts of controls/evidence whose OwnerRole is one of the variants."""
+    variants = {_normalise(v) for v in variant_terms if v}
+    variants.add(_normalise(canonical_name))
+
+    control_count = 0
+    try:
+        for control in await get_list_items(_cr_id(), _CR_LIST):
+            owner_role = control.get("fields", {}).get("OwnerRole", "")
+            if owner_role and _normalise(owner_role) in variants:
+                control_count += 1
+    except Exception as exc:
+        logger.warning(f"Impact preview could not scan Control Register: {exc}")
+
+    evidence_count = 0
+    try:
+        for evidence in await get_list_items(_ev_id(), _EV_LIST):
+            owner_role = evidence.get("fields", {}).get("OwnerRole", "")
+            if owner_role and _normalise(owner_role) in variants:
+                evidence_count += 1
+    except Exception as exc:
+        logger.warning(f"Impact preview could not scan Evidence Tracker: {exc}")
+
+    return control_count, evidence_count
+
+
+async def _count_reassign_matches(item: dict) -> tuple[int, int]:
+    """Read-only counts matching the Reassign-control cascade predicates."""
+    stmt = item.get("ControlStatement", "")
+    source_doc = item.get("SourceDocumentCode", "")
+    current_role = item.get("ProposedOwnerRole", "")
+
+    control_count = 0
+    try:
+        for control in await get_list_items(_cr_id(), _CR_LIST):
+            fields = control.get("fields", {})
+            same_statement = _normalise(fields.get("ControlStatement", "")) == _normalise(stmt)
+            same_source = not source_doc or fields.get("SourceDocument", "") == source_doc
+            if stmt and same_statement and same_source:
+                control_count += 1
+    except Exception as exc:
+        logger.warning(f"Impact preview could not scan Control Register: {exc}")
+
+    evidence_count = 0
+    try:
+        for evidence in await get_list_items(_ev_id(), _EV_LIST):
+            fields = evidence.get("fields", {})
+            same_source = not source_doc or fields.get("SourceDocument", "") == source_doc
+            same_role = not current_role or _normalise(fields.get("OwnerRole", "")) == _normalise(current_role)
+            same_control = not stmt or stmt[:180].lower() in (fields.get("Title", "") + " " + fields.get("EvidenceDescription", "")).lower()
+            if same_source and (same_role or same_control):
+                evidence_count += 1
+    except Exception as exc:
+        logger.warning(f"Impact preview could not scan Evidence Tracker: {exc}")
+
+    return control_count, evidence_count
+
+
+async def _zone1_impact(item: dict, decision: str, impact: dict) -> dict:
+    status_map = {
+        "Accept":                "Accepted",
+        "Edit and Accept":       "Accepted",
+        "Reject":                "Rejected",
+        "Mark False Positive":   "False Positive",
+        "Request Second Review": "Pending Second Review",
+        "Route to Owner":        "Routed to Owner",
+    }
+    new_status = status_map.get(decision, "Accepted")
+
+    if decision in ("Accept", "Edit and Accept"):
+        control_stmt = item.get("ControlStatement", "")
+        if not control_stmt:
+            impact["blocked"] = True
+            impact["blocked_reason"] = "Cannot accept — the queue item has no control statement."
+            return impact
+
+        owner_role = item.get("ProposedOwnerRole", "")
+        holder_oid = ""
+        if owner_role:
+            role = await _find_role_by_title(owner_role)
+            if role:
+                fields = role.get("fields", {})
+                holder_oid = fields.get("CurrentHolderEntraId", "") or fields.get("CurrentHolderId", "") or ""
+
+        control_state = "Active" if (owner_role and holder_oid) else "Blocked"
+        impact["creates"].append({
+            "register": "Control Register",
+            "detail": (
+                f"{item.get('ControlType') or 'Control'} — “{control_stmt[:140]}"
+                f"{'…' if len(control_stmt) > 140 else ''}”, owner: {owner_role or 'Unknown'}, "
+                f"status: {control_state}"
+            ),
+        })
+
+        evidence_type = item.get("EvidenceType", "")
+        if evidence_type:
+            impact["creates"].append({
+                "register": "Evidence Tracker",
+                "detail": (
+                    f"{evidence_type} evidence — {item.get('EvidenceDescription', '')[:120] or 'per Evidence Taxonomy'}, "
+                    f"frequency: {item.get('EvidenceFrequency') or 'not set'}, status: Pending"
+                ),
+            })
+        else:
+            impact["warnings"].append(
+                "No evidence type is defined — no Evidence Tracker entry will be created. "
+                "The control chain will be incomplete until evidence is designed."
+            )
+
+        impact["creates"].append({
+            "register": "Audit Log",
+            "detail": "Decision record — reviewer, rationale, cascade result.",
+        })
+        impact["updates"].append({
+            "register": "AI Review Queue",
+            "detail": f"Item → {new_status}.",
+        })
+
+        iso_clause = item.get("ISOClause", "")
+        if iso_clause:
+            impact["updates"].append({
+                "register": "Standards Map",
+                "detail": f"Clause {iso_clause} traffic light recalculates with the new control.",
+            })
+        else:
+            impact["warnings"].append("No ISO clause mapped — the control will show as Unmapped on the Standards Map.")
+
+        if not owner_role:
+            impact["warnings"].append("No owner role proposed — the control will be created as Blocked (unassigned owner).")
+        elif not holder_oid:
+            impact["warnings"].append(
+                f"Owner role “{owner_role}” has no current holder in the Role Register — "
+                "the control will be created as Blocked until the role is assigned."
+            )
+
+        impact["summary"] = (
+            f"Accepting creates {len(impact['creates'])} record(s) and updates the queue item."
+        )
+    else:
+        impact["updates"].append({
+            "register": "AI Review Queue",
+            "detail": f"Item → {new_status}. No register entries are created.",
+        })
+        impact["creates"].append({
+            "register": "Audit Log",
+            "detail": "Decision record — reviewer, rationale.",
+        })
+        if decision in ("Reject", "Mark False Positive"):
+            impact["flags"].append({
+                "register": "Extractor / Classifier",
+                "detail": "Rejection is recorded for model improvement.",
+            })
+        impact["summary"] = f"“{decision}” updates the queue item only — nothing enters the registers."
+
+    return impact
+
+
+async def _zone2_impact(item: dict, decision: str, impact: dict,
+                        target_role: Optional[str], linked_doc_code: Optional[str]) -> dict:
+    stmt = (item.get("ResponsibilityStatement") or item.get("ControlStatement") or item.get("Title", ""))[:120]
+    source_doc = item.get("SourceDocumentCode", "")
+
+    lifecycle_decisions = {
+        "Create new document":       f"New document task: “{stmt}” (trigger: Gap Remediation).",
+        "Add to existing policy":    f"Revision task for policy {linked_doc_code or '— select a policy'}.",
+        "Add to existing JD":        f"Revision task for JD {linked_doc_code or source_doc}.",
+        "Remove from policy":        f"Revision task to remove the reference from {source_doc}.",
+        "Remove from JD":            f"Revision task to remove the responsibility from JD {source_doc}.",
+        "Select governing document": f"Conflict-resolution task for {linked_doc_code or 'the selected governing document'}.",
+        "Merge":                     f"Merge-requirements task for {linked_doc_code or source_doc}.",
+    }
+
+    if decision in lifecycle_decisions:
+        impact["creates"].append({
+            "register": "Document Lifecycle",
+            "detail": lifecycle_decisions[decision] + " Enters at the Review stage.",
+        })
+
+    elif decision == "Reassign control":
+        role = target_role or item.get("ProposedOwnerRole", "")
+        if not role:
+            impact["blocked"] = True
+            impact["blocked_reason"] = "Reassign control requires a target role."
+            return impact
+        control_count, evidence_count = await _count_reassign_matches(item)
+        holder_role = await _find_role_by_title(role)
+        holder_oid = ""
+        if holder_role:
+            rf = holder_role.get("fields", {})
+            holder_oid = rf.get("CurrentHolderEntraId", "") or rf.get("CurrentHolderId", "") or ""
+        impact["updates"].append({
+            "register": "Control Register",
+            "detail": f"{control_count} matching control(s) reassigned to “{role}” ({'Active' if holder_oid else 'Blocked'}).",
+        })
+        impact["updates"].append({
+            "register": "Evidence Tracker",
+            "detail": f"{evidence_count} matching evidence item(s) reassigned to “{role}”.",
+        })
+        if not holder_oid:
+            impact["warnings"].append(
+                f"Role “{role}” has no current holder — reassigned controls will be Blocked until the role is assigned."
+            )
+
+    elif decision == "Create new role":
+        role = target_role or item.get("ProposedOwnerRole", "")
+        if not role:
+            impact["blocked"] = True
+            impact["blocked_reason"] = "Create new role requires a role title."
+            return impact
+        existing = await _find_role_by_title(role)
+        if existing:
+            impact["warnings"].append(f"Role “{role}” already exists in the Role Register — no new role will be created.")
+        else:
+            impact["creates"].append({
+                "register": "Role Register",
+                "detail": f"New role “{role}”, status: Unassigned (Blocked until a person is assigned).",
+            })
+            impact["flags"].append({
+                "register": "Work Hub",
+                "detail": "Compliance is surfaced: “New role requires person assignment.”",
+            })
+
+    elif decision == "Escalate to ExCo":
+        impact["creates"].append({
+            "register": "Strategic Risk Register",
+            "detail": f"ExCo escalation risk entry — “{stmt}”, treatment: Mitigate, review in 90 days.",
+        })
+
+    elif decision == "Intentional":
+        impact["updates"].append({
+            "register": "AI Review Queue",
+            "detail": "Gap accepted as intentional — decision and rationale logged, available for audit.",
+        })
+
+    status_map = {
+        "Create new document": "Accepted", "Add to existing policy": "Accepted",
+        "Add to existing JD": "Accepted", "Reassign control": "Accepted",
+        "Create new role": "Accepted", "Remove from policy": "Rejected",
+        "Intentional": "Accepted", "Remove from JD": "Rejected",
+        "Mark False Positive": "False Positive", "Request Second Review": "Pending Second Review",
+        "Select governing document": "Accepted", "Escalate to ExCo": "Pending Second Review",
+        "Merge": "Accepted",
+    }
+    impact["updates"].append({
+        "register": "AI Review Queue",
+        "detail": f"Item → {status_map.get(decision, 'Accepted')}.",
+    })
+    impact["creates"].append({
+        "register": "Audit Log",
+        "detail": "Decision record — reviewer, rationale, cascade result.",
+    })
+    impact["summary"] = (
+        f"“{decision}” creates {len(impact['creates'])} record(s) "
+        f"and updates {len(impact['updates'])} register(s)."
+    )
+    return impact
+
+
+async def _zone3_impact(item: dict, decision: str, impact: dict, canonical_name: Optional[str]) -> dict:
+    variant_terms = _split_terms(item.get("VariantTerms", ""))
+    canonical = canonical_name or item.get("CanonicalName", "")
+    is_role_harmonisation = not item.get("ControlStatement")
+    source_docs = [d for d in [item.get("SourceDocumentCode", ""), item.get("SourceDocumentCode2", "")] if d]
+
+    if decision == "Keep separate":
+        impact["updates"].append({
+            "register": "AI Review Queue",
+            "detail": "Items confirmed as genuinely different — all entries remain; the classifier learns to distinguish them.",
+        })
+    elif decision in ("Merge", "Partial merge", "Rename and standardise"):
+        if not canonical:
+            impact["blocked"] = True
+            impact["blocked_reason"] = "A canonical name is required for this decision."
+            return impact
+
+        if is_role_harmonisation:
+            control_count, evidence_count = await _count_owner_variant_matches(canonical, variant_terms)
+            existing_role = await _find_role_by_title(canonical)
+            holder_oid = ""
+            if existing_role:
+                rf = existing_role.get("fields", {})
+                holder_oid = rf.get("CurrentHolderEntraId", "") or rf.get("CurrentHolderId", "") or ""
+                impact["updates"].append({
+                    "register": "Role Register",
+                    "detail": f"Role “{canonical}” absorbs {len(variant_terms)} variant term(s).",
+                })
+            else:
+                impact["creates"].append({
+                    "register": "Role Register",
+                    "detail": f"New canonical role “{canonical}” (Unassigned) holding the variant terms.",
+                })
+            impact["updates"].append({
+                "register": "Control Register",
+                "detail": f"{control_count} control(s) whose owner matches a variant are re-pointed to “{canonical}”.",
+            })
+            impact["updates"].append({
+                "register": "Evidence Tracker",
+                "detail": f"{evidence_count} evidence item(s) re-pointed to “{canonical}”.",
+            })
+            if not holder_oid:
+                impact["warnings"].append(
+                    f"“{canonical}” has no current holder — re-pointed controls will be Blocked until the role is assigned."
+                )
+            if decision == "Partial merge":
+                impact["warnings"].append("Partial merge: remaining variants stay separate and require manual review.")
+        else:
+            for doc_code in source_docs:
+                impact["creates"].append({
+                    "register": "Document Lifecycle",
+                    "detail": f"Harmonisation-fix revision task for {doc_code} (standardise to “{canonical}”).",
+                })
+            if not source_docs:
+                impact["warnings"].append("No source document codes on this item — no lifecycle revision tasks will be created.")
+
+    impact["updates"].append({
+        "register": "AI Review Queue",
+        "detail": "Item → Accepted" + (f"; canonical name set to “{canonical}”." if canonical else "."),
+    })
+    impact["creates"].append({
+        "register": "Audit Log",
+        "detail": "Decision record — reviewer, rationale, cascade result.",
+    })
+    impact["summary"] = (
+        f"“{decision}” creates {len(impact['creates'])} record(s) "
+        f"and updates {len(impact['updates'])} register(s)."
+    )
+    return impact
+
+
+@router.get("/items/{item_id}/impact")
+async def decision_impact(
+    item_id: str,
+    zone: str,
+    decision: str,
+    target_role:     Optional[str] = None,
+    linked_doc_code: Optional[str] = None,
+    canonical_name:  Optional[str] = None,
+    user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    """
+    Read-only cascade impact preview for a queue decision.
+    Returns {creates, updates, flags, warnings, blocked} so the UI can show
+    the full downstream effect before the reviewer confirms.
+    """
+    if zone not in ("1", "2", "3"):
+        raise HTTPException(status_code=422, detail="zone must be '1', '2' or '3'.")
+
+    valid = {"1": ZONE1_DECISIONS, "2": ZONE2_DECISIONS, "3": ZONE3_DECISIONS}[zone]
+    if decision not in valid:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Invalid Zone {zone} decision. Must be one of: {', '.join(sorted(valid))}",
+        )
+
+    try:
+        item = _sp_to_item(await get_list_item(_q_id(), _Q_LIST, item_id))
+        impact = _impact_shell(zone, decision)
+
+        if item.get("ReviewStatus") == "Blocked":
+            impact["warnings"].append(
+                "A previous cascade for this item failed — confirming will retry the decision. "
+                f"Previous result: {item.get('CascadeResult', '')[:300]}"
+            )
+
+        if zone == "1":
+            return await _zone1_impact(item, decision, impact)
+        if zone == "2":
+            return await _zone2_impact(item, decision, impact, target_role, linked_doc_code)
+        return await _zone3_impact(item, decision, impact, canonical_name)
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _handle(exc, f"decision impact {item_id}")

@@ -187,7 +187,8 @@ LISTS: dict[str, dict] = {
             "ReviewStatus":              (CHOICE, [
                 "Pending Review", "Accepted", "Rejected",
                 "False Positive", "Routed to Owner",
-                "Second Review Requested",
+                "Second Review Requested", "Pending Second Review",
+                "Blocked",  # DINT §7.5 — cascade failed, retry allowed
             ]),
             "Decision":                  (TEXT,   None),
             "DecisionRationale":         (NOTE,   None),
@@ -233,6 +234,8 @@ LISTS: dict[str, dict] = {
             "LinkedNCId":                (TEXT,   None),
             "StandardsMapping":          (TEXT,   None),
             "LinkedDocumentRegisterItem":(TEXT,   None),
+            "RevisionOf":                (TEXT,   None),  # Document Register item id this lifecycle entry revises
+            "RevisionReason":            (TEXT,   None),  # DINT §5.3.2 reason (Scheduled review, NC corrective action, ...)
             "SensitisationFeedback":     (NOTE,   None),
             "Stakeholders":              (NOTE,   None),
         },

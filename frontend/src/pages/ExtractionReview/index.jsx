@@ -14,6 +14,7 @@ import { Field } from "../../components/shared/Forms.jsx";
 import { LoadingState, ErrorState, EmptyState } from "../../components/shared/LoadingState.jsx";
 import UserSearchField from "../../components/shared/UserSearchField.jsx";
 import { useAlert } from "../../components/shared/AlertModal.jsx";
+import { CascadeImpactModal } from "../../components/shared/CascadeImpactModal.jsx";
 import apiClient from "../../api/grcApi.js";
 
 const EVIDENCE_TYPES = [
@@ -228,6 +229,7 @@ const DecisionPanel = ({ item, onDecide, onRequestSecondReview, isPending }) => 
   const [editMode, setEditMode]       = useState(false);
   const [edits, setEdits]             = useState({});
   const [activeAction, setActiveAction] = useState(null);
+  const [confirmAction, setConfirmAction] = useState(null);   // "accept" | "reject" | "false_positive"
 
   useEffect(() => {
     if (!editMode) return;
@@ -255,8 +257,29 @@ const DecisionPanel = ({ item, onDecide, onRequestSecondReview, isPending }) => 
       setActiveAction(null);
       return;
     }
+    // Cascading decisions go through the cascade-impact confirmation modal.
+    setConfirmAction(action);
+  };
+
+  const impactDecision =
+    confirmAction === "accept"
+      ? (editMode ? "Edit and Accept" : "Accept")
+      : confirmAction === "reject"
+        ? "Reject"
+        : "Mark False Positive";
+
+  const confirmTitles = {
+    accept:         editMode ? "Edit & accept — cascade impact" : "Accept control — cascade impact",
+    reject:         "Reject item — confirm",
+    false_positive: "Mark false positive — confirm",
+  };
+
+  const handleConfirm = async (confirmedRationale) => {
+    const action = confirmAction;
+    setConfirmAction(null);
+    setRationale(confirmedRationale);
     setActiveAction(action);
-    await onDecide(action, rationale.trim(), editMode ? edits : {});
+    await onDecide(action, confirmedRationale, editMode ? edits : {});
     setActiveAction(null);
   };
 
@@ -460,6 +483,25 @@ const DecisionPanel = ({ item, onDecide, onRequestSecondReview, isPending }) => 
           Request 2nd review
         </button>
       </div>
+
+      {/* Cascade-impact confirmation (DINT — pre-decision impact screen) */}
+      <CascadeImpactModal
+        open={!!confirmAction}
+        onClose={() => setConfirmAction(null)}
+        title={confirmTitles[confirmAction] || "Confirm decision"}
+        subtitle={`${item.SourceDocumentCode || "Queue item"}${item.SourceClause ? ` · ${item.SourceClause}` : ""}`}
+        impactUrl={`/api/v1/queue/items/${item.id}/impact`}
+        impactParams={{ zone: "1", decision: impactDecision }}
+        initialRationale={rationale}
+        confirmLabel={
+          confirmAction === "accept"
+            ? (editMode ? "Edit & accept — apply cascade" : "Accept — apply cascade")
+            : confirmAction === "reject" ? "Reject item" : "Mark false positive"
+        }
+        danger={confirmAction === "reject" || confirmAction === "false_positive"}
+        isPending={isPending}
+        onConfirm={handleConfirm}
+      />
     </div>
   );
 };
@@ -607,7 +649,11 @@ const DocumentViewer = ({ url, docCode }) => {
 
 const ExtractionCard = ({ item, isCompliance, onDecide, onRequestSecondReview, isPending }) => {
   const [expanded, setExpanded] = useState(false);
-  const isDecided = item.ReviewStatus && item.ReviewStatus !== "Pending Review";
+  // "Blocked" = a previous cascade failed (DINT §7.5) — still actionable (retry).
+  const isCascadeFailed = item.ReviewStatus === "Blocked";
+  const isDecided = item.ReviewStatus
+    && item.ReviewStatus !== "Pending Review"
+    && !isCascadeFailed;
   const pct = Math.round((item.ConfidenceScore || 0) * 100);
 
   return (
@@ -679,6 +725,20 @@ const ExtractionCard = ({ item, isCompliance, onDecide, onRequestSecondReview, i
       {/* Expanded content */}
       {expanded && (
         <div style={{ borderTop: `1px solid #85B7EB`, padding: "14px 14px" }}>
+
+          {/* Cascade failure — surfaced with retry allowed (DINT §7.5) */}
+          {isCascadeFailed && (
+            <div style={{ padding: "10px 12px", background: "#FCEBEB",
+                          borderRadius: 8, marginBottom: 12,
+                          border: "1px solid #F09595" }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: "#791F1F", marginBottom: 3 }}>
+                Cascade failed — item is Blocked
+              </div>
+              <div style={{ fontSize: 11, color: "#791F1F" }}>
+                {item.CascadeResult || "A downstream register write failed. Retry the decision below."}
+              </div>
+            </div>
+          )}
 
           {/* If already decided — show outcome */}
           {isDecided ? (
@@ -775,10 +835,11 @@ export default function ExtractionReview() {
   const rejectedCount = items.filter(i => i.ReviewStatus === "Rejected").length;
   const falsePositiveCount = items.filter(i => i.ReviewStatus === "False Positive").length;
   const secondReviewCount = items.filter(i => i.ReviewStatus === "Second Review Requested").length;
+  const blockedCount = items.filter(i => i.ReviewStatus === "Blocked").length;
 
   const filtered = useMemo(() => {
     let list = filter === "pending"
-      ? items.filter(i => !i.ReviewStatus || i.ReviewStatus === "Pending Review")
+      ? items.filter(i => !i.ReviewStatus || i.ReviewStatus === "Pending Review" || i.ReviewStatus === "Blocked")
       : filter === "accepted"
         ? items.filter(i => i.ReviewStatus === "Accepted")
         : filter === "rejected"
@@ -787,7 +848,9 @@ export default function ExtractionReview() {
             ? items.filter(i => i.ReviewStatus === "False Positive")
             : filter === "second_review"
               ? items.filter(i => i.ReviewStatus === "Second Review Requested")
-              : items;
+              : filter === "blocked"
+                ? items.filter(i => i.ReviewStatus === "Blocked")
+                : items;
 
     if (search.trim()) {
       const q = search.toLowerCase();
@@ -906,6 +969,7 @@ export default function ExtractionReview() {
           { k: "rejected",      l: `Rejected (${rejectedCount})` },
           { k: "false_positive", l: `False positive (${falsePositiveCount})` },
           { k: "second_review", l: `2nd review (${secondReviewCount})` },
+          ...(blockedCount > 0 ? [{ k: "blocked", l: `Cascade failed (${blockedCount})` }] : []),
         ].map(f => (
           <button key={f.k} onClick={() => setFilter(f.k)}
             style={{ padding: "5px 12px", fontSize: 12, borderRadius: 6, cursor: "pointer",

@@ -170,6 +170,10 @@ def get_settings() -> Settings:
 # Module-level singleton — import this everywhere
 settings: Settings = get_settings()
 
+# Minimum rationale length for every queue/register decision (DINT §2.4:
+# "Decision buttons disabled until rationale ≥ 10 characters. No exceptions.")
+MIN_RATIONALE_CHARS = 10
+
 
 def configure_logging() -> None:
     """Configure root logger based on settings. Called once in main.py."""

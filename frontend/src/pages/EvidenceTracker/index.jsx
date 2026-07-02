@@ -53,6 +53,14 @@ const evidenceApi = {
     return resp.json();
   },
 
+  // Evidence that lives in another system (Intune, Entra, CPR, GitHub…) is
+  // submitted as a link to the artefact's location — no copy uploaded.
+  submitLink: (id, link, notes) =>
+    apiClient.patch(`/api/v1/evidence/${id}/submit`, {
+      evidence_link: link,
+      submission_notes: notes || undefined,
+    }).then(r => r.data),
+
   verify: (id, accepted, rejectionNote) =>
     apiClient.patch(`/api/v1/evidence/${id}/verify`, {
       accepted,
@@ -120,15 +128,26 @@ const formatDateOnly = (value) => {
 //  Submit panel
 // =============================================================================
 
-const SubmitPanel = ({ item, onSubmit, onClose, isPending }) => {
+const SubmitPanel = ({ item, onSubmit, onSubmitLink, onClose, isPending }) => {
+  const [mode,  setMode]  = useState("file");   // "file" | "link"
   const [file,  setFile]  = useState(null);
+  const [link,  setLink]  = useState("");
   const [notes, setNotes] = useState("");
   const [error, setError] = useState("");
 
+  const linkOk = /^https?:\/\/\S+/i.test(link.trim());
+  const ready  = mode === "file" ? !!file : linkOk;
+
   const handleSubmit = async () => {
-    if (!file) { setError("Evidence file is required."); return; }
-    setError("");
-    await onSubmit(item.id, file, notes.trim());
+    if (mode === "file") {
+      if (!file) { setError("Evidence file is required."); return; }
+      setError("");
+      await onSubmit(item.id, file, notes.trim());
+    } else {
+      if (!linkOk) { setError("Paste a valid link (http/https) to the artefact."); return; }
+      setError("");
+      await onSubmitLink(item.id, link.trim(), notes.trim());
+    }
   };
 
   return (
@@ -143,31 +162,76 @@ const SubmitPanel = ({ item, onSubmit, onClose, isPending }) => {
           Acceptance criteria: {item.ValidationCriteria}
         </div>
       )}
+
+      {/* Mode toggle — upload a copy, or link to where the evidence lives */}
+      <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+        {[
+          { k: "file", l: "Upload file" },
+          { k: "link", l: "Paste link" },
+        ].map(m => (
+          <button key={m.k} onClick={() => { setMode(m.k); setError(""); }}
+            style={{ padding: "5px 12px", fontSize: 11, borderRadius: 6, cursor: "pointer",
+                     fontWeight: mode === m.k ? 600 : 400,
+                     border: mode === m.k ? "1px solid #0C447C" : "1.5px solid #C0C0C0",
+                     background: mode === m.k ? "#D4E8FA" : "var(--color-background-primary)",
+                     color: mode === m.k ? "#0C447C" : "var(--color-text-secondary)" }}>
+            {m.l}
+          </button>
+        ))}
+      </div>
+
       {error && (
         <div style={{ fontSize: 11, color: "#791F1F", marginBottom: 8 }}>{error}</div>
       )}
-      <div style={{ marginBottom: 8 }}>
-        <label style={{ display: "block", fontSize: 10, fontWeight: 500,
-                        color: "var(--color-text-secondary)", marginBottom: 3,
-                        textTransform: "uppercase", letterSpacing: "0.4px" }}>
-          Evidence file <span style={{ color: "#A32D2D" }}>*</span>
-        </label>
-        <input
-          type="file"
-          onChange={e => setFile(e.target.files?.[0] || null)}
-          style={{ width: "100%", fontSize: 12, padding: "8px 10px", borderRadius: 8,
-                   border: `1.5px solid ${file ? "#5DCAA5" : "#C0C0C0"}`,
-                   background: "var(--color-background-primary)",
-                   color: "var(--color-text-primary)", outline: "none", boxSizing: "border-box" }}
-          onFocus={e => (e.target.style.borderColor = "#378ADD")}
-          onBlur={e => (e.target.style.borderColor = file ? "#5DCAA5" : "#C0C0C0")}
-        />
-        {file && (
+
+      {mode === "file" ? (
+        <div style={{ marginBottom: 8 }}>
+          <label style={{ display: "block", fontSize: 10, fontWeight: 500,
+                          color: "var(--color-text-secondary)", marginBottom: 3,
+                          textTransform: "uppercase", letterSpacing: "0.4px" }}>
+            Evidence file <span style={{ color: "#A32D2D" }}>*</span>
+          </label>
+          <input
+            type="file"
+            onChange={e => setFile(e.target.files?.[0] || null)}
+            style={{ width: "100%", fontSize: 12, padding: "8px 10px", borderRadius: 8,
+                     border: `1.5px solid ${file ? "#5DCAA5" : "#C0C0C0"}`,
+                     background: "var(--color-background-primary)",
+                     color: "var(--color-text-primary)", outline: "none", boxSizing: "border-box" }}
+            onFocus={e => (e.target.style.borderColor = "#378ADD")}
+            onBlur={e => (e.target.style.borderColor = file ? "#5DCAA5" : "#C0C0C0")}
+          />
+          {file && (
+            <div style={{ fontSize: 10, color: "#0C447C", marginTop: 4 }}>
+              {file.name} · {Math.ceil(file.size / 1024)} KB
+            </div>
+          )}
+        </div>
+      ) : (
+        <div style={{ marginBottom: 8 }}>
+          <label style={{ display: "block", fontSize: 10, fontWeight: 500,
+                          color: "var(--color-text-secondary)", marginBottom: 3,
+                          textTransform: "uppercase", letterSpacing: "0.4px" }}>
+            Link to the artefact <span style={{ color: "#A32D2D" }}>*</span>
+          </label>
+          <input
+            type="url"
+            value={link}
+            onChange={e => setLink(e.target.value)}
+            placeholder="https://… (SharePoint, Intune, Entra, GitHub, or the relevant source system)"
+            style={{ width: "100%", fontSize: 12, padding: "8px 10px", borderRadius: 8,
+                     border: `1.5px solid ${linkOk ? "#5DCAA5" : "#C0C0C0"}`,
+                     background: "var(--color-background-primary)",
+                     color: "var(--color-text-primary)", outline: "none", boxSizing: "border-box" }}
+            onFocus={e => (e.target.style.borderColor = "#378ADD")}
+            onBlur={e => (e.target.style.borderColor = linkOk ? "#5DCAA5" : "#C0C0C0")}
+          />
           <div style={{ fontSize: 10, color: "#0C447C", marginTop: 4 }}>
-            {file.name} · {Math.ceil(file.size / 1024)} KB
+            Use this when the evidence lives in another system — the reviewer follows the link to verify it.
           </div>
-        )}
-      </div>
+        </div>
+      )}
+
       <div style={{ marginBottom: 10 }}>
         <label style={{ display: "block", fontSize: 10, fontWeight: 500,
                         color: "var(--color-text-secondary)", marginBottom: 3,
@@ -183,13 +247,15 @@ const SubmitPanel = ({ item, onSubmit, onClose, isPending }) => {
                    fontFamily: "var(--font-sans)", outline: "none", boxSizing: "border-box" }} />
       </div>
       <div style={{ display: "flex", gap: 8 }}>
-        <button onClick={handleSubmit} disabled={isPending || !file}
+        <button onClick={handleSubmit} disabled={isPending || !ready}
           style={{ padding: "8px 16px", fontSize: 12, borderRadius: 8, border: "none",
                    fontWeight: 500,
-                   background: isPending || !file ? "#E8E8E8" : "#1D9E75",
-                   color: isPending || !file ? "#999" : "#fff",
-                   cursor: isPending || !file ? "not-allowed" : "pointer" }}>
-          {isPending ? "Uploading..." : "Upload for review"}
+                   background: isPending || !ready ? "#E8E8E8" : "#1D9E75",
+                   color: isPending || !ready ? "#999" : "#fff",
+                   cursor: isPending || !ready ? "not-allowed" : "pointer" }}>
+          {isPending
+            ? "Submitting..."
+            : mode === "file" ? "Upload for review" : "Submit link for review"}
         </button>
         <button onClick={onClose}
           style={{ padding: "8px 12px", fontSize: 12, borderRadius: 8,
@@ -284,7 +350,7 @@ const VerifyPanel = ({ item, onVerify, onClose, isPending }) => {
 //  Evidence card
 // =============================================================================
 
-const EvidenceCard = ({ item, currentOid, isCompliance, onSubmit, onVerify, actionItemId }) => {
+const EvidenceCard = ({ item, currentOid, isCompliance, onSubmit, onSubmitLink, onVerify, actionItemId }) => {
   const [expanded, setExpanded]     = useState(false);
   const [showSubmit, setShowSubmit] = useState(false);
   const [showVerify, setShowVerify] = useState(false);
@@ -408,6 +474,10 @@ const EvidenceCard = ({ item, currentOid, isCompliance, onSubmit, onVerify, acti
                 await onSubmit(id, selectedFile, notes);
                 setShowSubmit(false);
               }}
+              onSubmitLink={async (id, link, notes) => {
+                await onSubmitLink(id, link, notes);
+                setShowSubmit(false);
+              }}
               onClose={() => setShowSubmit(false)}
               isPending={isPending}
             />
@@ -482,6 +552,22 @@ export default function EvidenceTracker() {
     setActionItemId(id);
     try {
       await evidenceApi.submit(id, file, notes);
+      qc.invalidateQueries({ queryKey: ["evidence"] });
+    } catch (err) {
+      notify({
+        tone: "danger",
+        title: "Submit failed",
+        message: err.response?.data?.detail || err.message || "Submit failed.",
+      });
+    } finally {
+      setActionItemId(null);
+    }
+  };
+
+  const handleSubmitLink = async (id, link, notes) => {
+    setActionItemId(id);
+    try {
+      await evidenceApi.submitLink(id, link, notes);
       qc.invalidateQueries({ queryKey: ["evidence"] });
     } catch (err) {
       notify({
@@ -581,6 +667,7 @@ export default function EvidenceTracker() {
               currentOid={oid}
               isCompliance={isCompliance}
               onSubmit={handleSubmit}
+              onSubmitLink={handleSubmitLink}
               onVerify={handleVerify}
               actionItemId={actionItemId}
             />

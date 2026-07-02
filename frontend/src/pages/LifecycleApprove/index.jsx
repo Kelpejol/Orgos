@@ -11,6 +11,7 @@ import { useIsAuthenticated, useMsal, useAccount } from "@azure/msal-react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { loginRequest } from "../../authConfig.js";
 import { lifecycleApi } from "../../api/grcApi.js";
+import { CascadeImpactPreview } from "../../components/shared/CascadeImpactModal.jsx";
 import { useAiSuggestion } from "../../hooks/useAiSuggestion.js";
 
 // =============================================================================
@@ -190,6 +191,7 @@ export default function LifecycleApprove() {
   const [showRejectModal, setShowRejectModal] = useState(false);
   const [showApproveConfirm, setShowApproveConfirm] = useState(false);
   const [approveNotes, setApproveNotes] = useState("");
+  const [approvalImpact, setApprovalImpact] = useState(null);
   const aiAssessmentHook = useAiSuggestion(
     id,
     'ai_assessment',
@@ -575,6 +577,13 @@ export default function LifecycleApprove() {
                 </div>
               ) : (
                 <div>
+                  {/* Cascade impact — what approving will create/update (DINT §5.3.1) */}
+                  <div style={{ marginBottom: 12 }}>
+                    <CascadeImpactPreview
+                      impactUrl={`/api/v1/lifecycle/documents/${id}/approval-impact`}
+                      onImpact={setApprovalImpact}
+                    />
+                  </div>
                   <label style={{ display: "block", fontSize: 12, color: "#555", marginBottom: 5 }}>
                     Approval notes (optional)
                   </label>
@@ -609,14 +618,16 @@ export default function LifecycleApprove() {
                     </button>
                     <button
                       onClick={() => approveMutation.mutate(approveNotes || null)}
-                      disabled={approveMutation.isPending}
+                      disabled={approveMutation.isPending || approvalImpact?.blocked}
                       style={{
                         flex: 2, padding: "9px", fontSize: 13, fontWeight: 600,
-                        borderRadius: 8, border: "none", background: "#1D9E75",
-                        color: "#fff", cursor: "pointer",
+                        borderRadius: 8, border: "none",
+                        background: approveMutation.isPending || approvalImpact?.blocked ? "#E8E8E8" : "#1D9E75",
+                        color: approveMutation.isPending || approvalImpact?.blocked ? "#999" : "#fff",
+                        cursor: approveMutation.isPending || approvalImpact?.blocked ? "not-allowed" : "pointer",
                       }}
                     >
-                      {approveMutation.isPending ? "Approving…" : "Confirm approval"}
+                      {approveMutation.isPending ? "Approving…" : approvalImpact?.blocked ? "Approval blocked" : "Confirm approval"}
                     </button>
                   </div>
                 </div>

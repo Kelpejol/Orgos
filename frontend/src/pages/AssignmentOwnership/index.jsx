@@ -16,6 +16,7 @@ import { Field } from "../../components/shared/Forms.jsx";
 import { LoadingState, ErrorState, EmptyState } from "../../components/shared/LoadingState.jsx";
 import UserSearchField from "../../components/shared/UserSearchField.jsx";
 import { useAlert } from "../../components/shared/AlertModal.jsx";
+import { CascadeImpactModal, CascadeImpactPreview } from "../../components/shared/CascadeImpactModal.jsx";
 import apiClient from "../../api/grcApi.js";
 
 // =============================================================================
@@ -210,6 +211,21 @@ const Zone2ActionModal = ({
           </div>
         )}
 
+        {/* Cascade impact preview — what this decision will create/update */}
+        {decision.key !== "Request Second Review" && (
+          <div style={{ marginBottom: 12 }}>
+            <CascadeImpactPreview
+              impactUrl={`/api/v1/queue/items/${item.id}/impact`}
+              impactParams={{
+                zone: "2",
+                decision: decision.key,
+                ...(needsDocCode && linkedDoc.trim() ? { linked_doc_code: linkedDoc.trim() } : {}),
+                ...(needsRole && targetRole.trim() ? { target_role: targetRole.trim() } : {}),
+              }}
+            />
+          </div>
+        )}
+
         <div style={{ marginBottom: 14, padding: "9px 11px", borderRadius: 9,
                       background: "var(--color-background-secondary)",
                       color: "var(--color-text-secondary)", fontSize: 11, lineHeight: 1.5 }}>
@@ -246,14 +262,16 @@ const DecisionPanel = ({ item, decisions, onDecide, isPending }) => {
   const [rationale, setRationale] = useState("");
   const [active, setActive] = useState(null);
   const [modalDecision, setModalDecision] = useState(null);
+  const [confirmDecision, setConfirmDecision] = useState(null);   // direct decisions → impact confirm
   const [cascadeResult, setCascadeResult] = useState("");
   const ratOk = rationale.trim().length >= 10;
 
-  const submitDecision = async (key, extras = {}) => {
-    if (!ratOk) return;
+  const submitDecision = async (key, extras = {}, rationaleOverride = null) => {
+    const finalRationale = (rationaleOverride ?? rationale).trim();
+    if (finalRationale.length < 10) return;
     setActive(key);
     try {
-      const result = await onDecide(item.id, key, rationale.trim(), extras);
+      const result = await onDecide(item.id, key, finalRationale, extras);
       if (result?.cascade_result) setCascadeResult(result.cascade_result);
       setModalDecision(null);
     } finally {
@@ -267,7 +285,8 @@ const DecisionPanel = ({ item, decisions, onDecide, isPending }) => {
       setModalDecision(decision);
       return;
     }
-    submitDecision(decision.key);
+    // Direct decisions confirm through the cascade-impact modal.
+    setConfirmDecision(decision);
   };
 
   return (
@@ -345,6 +364,26 @@ const DecisionPanel = ({ item, decisions, onDecide, isPending }) => {
           isPending={isPending || active === modalDecision.key}
         />
       )}
+
+      {/* Direct decisions — cascade-impact confirmation */}
+      <CascadeImpactModal
+        open={!!confirmDecision}
+        onClose={() => setConfirmDecision(null)}
+        title={confirmDecision ? `${confirmDecision.label} — cascade impact` : ""}
+        subtitle={confirmDecision?.desc}
+        impactUrl={confirmDecision ? `/api/v1/queue/items/${item.id}/impact` : null}
+        impactParams={{ zone: "2", decision: confirmDecision?.key }}
+        initialRationale={rationale}
+        confirmLabel={confirmDecision?.label || "Confirm"}
+        danger={confirmDecision?.key === "Mark False Positive" || (confirmDecision?.key || "").startsWith("Remove")}
+        isPending={isPending}
+        onConfirm={async (confirmedRationale) => {
+          const decision = confirmDecision;
+          setConfirmDecision(null);
+          setRationale(confirmedRationale);
+          await submitDecision(decision.key, {}, confirmedRationale);
+        }}
+      />
     </div>
   );
 };

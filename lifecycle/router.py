@@ -244,6 +244,8 @@ async def _sp_to_doc(item: dict) -> dict:
         "LinkedNCId":               f.get("LinkedNCId", ""),
         "StandardsMapping":         f.get("StandardsMapping", ""),
         "LinkedDocumentRegisterItem": f.get("LinkedDocumentRegisterItem", ""),
+        "RevisionOf":               f.get("RevisionOf", ""),
+        "RevisionReason":           f.get("RevisionReason", ""),
         "SensitisationFeedback":    f.get("SensitisationFeedback", ""),
         "SensitisationDeadline":    f.get("SensitisationDeadline", ""),
         "StakeholderResponseCount": int(f.get("StakeholderResponseCount", 0) or 0),
@@ -270,6 +272,35 @@ class CreateDoc(BaseModel):
     linked_nc_id:    Optional[str] = None
     standards_mapping: Optional[str] = None
     sharepoint_file_url: Optional[str] = None
+
+
+# DINT §5.3.2 — revision reasons collected when re-opening an active document.
+# Reasons map onto existing Trigger choices; the verbatim reason is kept in
+# RevisionReason so nothing is lost when the Trigger vocabulary is narrower.
+REVISION_REASONS = {
+    "Scheduled Review":           "Scheduled Review",
+    "NC Corrective Action":       "NC Corrective Action",
+    "Business Initiative":        "Manual",
+    "Gap Remediation":            "Gap Remediation",
+    "Sphere of Influence Review": "Manual",
+    "Other":                      "Manual",
+}
+
+
+class ReviseDoc(BaseModel):
+    document_register_id: str
+    reason:               str                     # One of REVISION_REASONS
+    description:          str                     # What needs changing and why
+    nc_reference:         Optional[str] = None    # If reason = NC corrective action
+    gap_reference:        Optional[str] = None    # If reason = Gap remediation
+    triggering_document:  Optional[str] = None    # If reason = Sphere of influence review
+
+
+def _next_version(current: str) -> str:
+    """R01 → R02 → R03… Tolerates '1', 'r2', blank (treated as R01)."""
+    m = re.match(r"^\s*R?0*(\d+)\s*$", str(current or ""), re.IGNORECASE)
+    n = int(m.group(1)) if m else 1
+    return f"R{n + 1:02d}"
 
 
 class ProgressDoc(BaseModel):
@@ -500,6 +531,139 @@ async def create_doc(
         _handle_error(exc, "create lifecycle document")
 
 
+@router.post("/documents/revise", status_code=201)
+async def revise_doc(
+    body: ReviseDoc,
+    user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    """
+    DINT §5.3.2 — put an existing ACTIVE Document Register document back into
+    the Document Lifecycle for amendment. The active version stays live in the
+    register (status → Under Review) until the revision is approved; approval
+    then updates the register item in place with a version bump (R01 → R02).
+    """
+    reason = (body.reason or "").strip()
+    if reason not in REVISION_REASONS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"reason must be one of: {', '.join(sorted(REVISION_REASONS))}",
+        )
+    if len((body.description or "").strip()) < 10:
+        raise HTTPException(
+            status_code=422,
+            detail="description is required (min 10 characters) — what needs changing and why.",
+        )
+    if reason == "NC Corrective Action" and not (body.nc_reference or "").strip():
+        raise HTTPException(status_code=422, detail="nc_reference is required when reason is NC Corrective Action.")
+    if reason == "Gap Remediation" and not (body.gap_reference or "").strip():
+        raise HTTPException(status_code=422, detail="gap_reference is required when reason is Gap Remediation.")
+    if reason == "Sphere of Influence Review" and not (body.triggering_document or "").strip():
+        raise HTTPException(status_code=422, detail="triggering_document is required when reason is Sphere of Influence Review.")
+
+    if not settings.is_list_configured(settings.document_register_list_id):
+        raise HTTPException(status_code=503, detail="Document Register list is not configured.")
+
+    try:
+        register_item = await get_list_item(
+            settings.document_register_list_id, "Document Register", body.document_register_id
+        )
+        reg = register_item.get("fields", {})
+
+        if reg.get("Status") != "Active":
+            raise HTTPException(
+                status_code=409,
+                detail=f"Only Active documents can be revised (current status: '{reg.get('Status', '')}').",
+            )
+
+        # One revision in flight per document
+        existing = await get_list_items(_get_list_id(), _LIST_NAME)
+        for entry in existing:
+            ef = entry.get("fields", {})
+            if (
+                str(ef.get("RevisionOf", "")) == str(body.document_register_id)
+                and ef.get("ApprovalStatus") != "Approved"
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"A revision of this document is already in the lifecycle "
+                        f"(item {entry.get('id')}, stage '{ef.get('Stage', 'Review')}'). "
+                        "Complete or approve it before starting another."
+                    ),
+                )
+
+        owner_oid  = reg.get("OwnerId", "") or user.oid
+        owner_name = _field_text(reg.get("Owner")) or ""
+        if not owner_name:
+            owner_name = await _resolve_display_name(owner_oid, user.name)
+
+        notes_lines = [
+            f"Revision of {reg.get('DocumentCode', '')} ({reg.get('CurrentVersion') or 'R01'}).",
+            f"Reason: {reason}",
+            f"Description: {body.description.strip()}",
+        ]
+        if body.nc_reference:
+            notes_lines.append(f"NC reference: {body.nc_reference.strip()}")
+        if body.gap_reference:
+            notes_lines.append(f"Gap reference: {body.gap_reference.strip()}")
+        if body.triggering_document:
+            notes_lines.append(f"Triggered by revision of: {body.triggering_document.strip()}")
+
+        fields: dict = {
+            "Title":          f"Revision — {reg.get('Title', '')}"[:255],
+            "Stage":          "Review",
+            "Trigger":        REVISION_REASONS[reason],
+            "AIGenerated":    False,
+            "Revised":        False,
+            "OwnerEntraId":   owner_oid,
+            "Owner":          owner_name or owner_oid,
+            "Notes":          "\n".join(notes_lines)[:4000],
+            "RevisionOf":     str(body.document_register_id),
+            "RevisionReason": reason,
+            "RejectionCount": 0,
+            "StakeholderResponseCount": 0,
+        }
+        for reg_field, col in [
+            ("DocumentCode",  "DocumentCode"),
+            ("DocumentType",  "DocumentType"),
+            ("Department",    "Department"),
+            ("ApplicableStandards", "StandardsMapping"),
+        ]:
+            if reg.get(reg_field):
+                fields[col] = reg[reg_field]
+        # Attach the current approved file so the reviser can download it
+        if reg.get("SharePointUrl"):
+            fields["SharePointFileUrl"] = reg["SharePointUrl"]
+        if body.gap_reference:
+            fields["LinkedGapId"] = body.gap_reference.strip()
+        if body.nc_reference:
+            fields["LinkedNCId"] = body.nc_reference.strip()
+
+        item = await create_list_item(_get_list_id(), _LIST_NAME, fields)
+        item_id = str(item.get("id", ""))
+
+        # The live register entry stays visible but is flagged Under Review.
+        try:
+            await update_list_item(
+                settings.document_register_list_id, "Document Register",
+                body.document_register_id, {"Status": "Under Review"},
+            )
+        except Exception as exc:
+            logger.warning(
+                f"Revision lifecycle {item_id} created, but Document Register "
+                f"{body.document_register_id} could not be flagged Under Review: {exc}"
+            )
+
+        if item_id:
+            item = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
+        return await _sp_to_doc(item)
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _handle_error(exc, f"revise document {body.document_register_id}")
+
+
 @router.patch("/documents/{item_id}/progress")
 async def progress_doc(
     item_id: str,
@@ -620,6 +784,122 @@ async def claim_doc(
         _handle_error(exc, f"claim lifecycle document {item_id}")
 
 
+@router.get("/documents/{item_id}/approval-impact")
+async def approval_impact(
+    item_id: str,
+    user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    """
+    Read-only cascade impact preview for "Approve & publish" — what approving
+    this lifecycle document will create/update, shown to the approver before
+    they confirm (DINT §5.3.1 approval preview).
+    """
+    try:
+        item = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
+        doc  = await _sp_to_doc(item)
+
+        impact: dict = {
+            "action":   "Approve & publish",
+            "zone":     "lifecycle",
+            "summary":  "",
+            "creates":  [],
+            "updates":  [],
+            "flags":    [],
+            "warnings": [],
+            "blocked":  False,
+            "blocked_reason": None,
+        }
+
+        def blocked(reason: str) -> dict:
+            impact["blocked"] = True
+            impact["blocked_reason"] = reason
+            return impact
+
+        if doc["Stage"] != "Approval":
+            return blocked(f"Document must be in the Approval stage (currently '{doc['Stage']}').")
+        if doc.get("ApprovalStatus") == "Approved" and doc.get("LinkedDocumentRegisterItem"):
+            return blocked("Document is already approved and linked to the Document Register.")
+        approver_oid = doc.get("ApproverEntraId", "")
+        if approver_oid and user.oid != approver_oid:
+            return blocked("Only the designated approver can approve this document.")
+        if user.oid == doc.get("OwnerEntraId", ""):
+            return blocked("The document owner cannot approve their own document.")
+        if not settings.is_list_configured(settings.document_register_list_id):
+            return blocked("Document Register list is not configured — approval cannot publish.")
+        if not DOC_CODE_PATTERN.match(str(doc.get("DocumentCode", "")).strip().upper()):
+            return blocked(
+                f"Document code '{doc.get('DocumentCode', '')}' is invalid — fix it before approving."
+            )
+
+        revision_of = str(doc.get("RevisionOf") or "").strip()
+        if revision_of:
+            current_version = "R01"
+            try:
+                existing_reg = await get_list_item(
+                    settings.document_register_list_id, "Document Register", revision_of
+                )
+                current_version = existing_reg.get("fields", {}).get("CurrentVersion", "R01") or "R01"
+            except Exception as exc:
+                logger.warning(f"Approval impact could not fetch register item {revision_of}: {exc}")
+            impact["updates"].append({
+                "register": "Document Register",
+                "detail": (
+                    f"{doc.get('DocumentCode', '')} is UPDATED in place: version "
+                    f"{current_version} → {_next_version(current_version)}, status back to Active, "
+                    "new effective date, file link refreshed."
+                ),
+            })
+        else:
+            impact["creates"].append({
+                "register": "Document Register",
+                "detail": (
+                    f"New entry {doc.get('DocumentCode', '')} — status Active, version R01, "
+                    "effective today."
+                ),
+            })
+
+        if _extractor_type_for_lifecycle(doc.get("DocumentType", "")):
+            impact["updates"].append({
+                "register": "AI Review Queue",
+                "detail": (
+                    "The approved document is re-extracted — new/changed controls will appear "
+                    "in Extraction Review (Zone 1) for human confirmation."
+                ),
+            })
+            impact["flags"].append({
+                "register": "Document Register",
+                "detail": "LinkedControlsCount refreshes with the extraction result.",
+            })
+        else:
+            impact["warnings"].append(
+                f"Document type '{doc.get('DocumentType', '')}' is not an extraction target — "
+                "no controls will be extracted."
+            )
+
+        impact["updates"].append({
+            "register": "Document Lifecycle",
+            "detail": "This item → Approved (with approver and approval date recorded).",
+        })
+
+        if doc.get("CDIStatus") == "Failed":
+            impact["warnings"].append("CDI status is Failed — the published document will carry unresolved CDI findings.")
+
+        if revision_of:
+            published_as = f"as revision {_next_version(current_version)} of the existing register entry"
+        else:
+            published_as = "as a new register entry (R01)"
+        impact["summary"] = (
+            f"Approving publishes {doc.get('DocumentCode', 'this document')} {published_as}. "
+            "This action cannot be undone."
+        )
+        return impact
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _handle_error(exc, f"approval impact {item_id}")
+
+
 @router.post("/documents/{item_id}/approve")
 async def approve_doc(
     item_id: str,
@@ -679,40 +959,94 @@ async def approve_doc(
                 ),
             )
 
-        dr_fields: dict = {
-            "Title":               doc["Title"],
-            "DocumentCode":        doc["DocumentCode"],
-            "DocumentType":        doc["DocumentType"],
-            "Department":          doc["Department"],
-            "Status":              "Active",
-            "OwnerId":             doc.get("OwnerEntraId", ""),
-            "Owner":               doc.get("OwnerName", ""),
-            "CurrentVersion":      "R01",
-            "EffectiveDate":       effective_date.isoformat(),
-            "ApplicableStandards": doc.get("StandardsMapping", ""),
-            "LinkedControlsCount": 0,
-        }
-        if doc.get("SensitisationDeadline"):
-            dr_fields["NextReviewDate"] = doc["SensitisationDeadline"]
+        revision_of = str(doc.get("RevisionOf") or "").strip()
+        new_version = "R01"
 
-        try:
-            register_item = await create_list_item(
-                settings.document_register_list_id,
-                "Document Register",
-                dr_fields,
-            )
-        except Exception as exc:
-            logger.exception(f"Lifecycle {item_id} approval could not publish Document Register entry")
-            raise HTTPException(
-                status_code=502,
-                detail=f"Document approval failed: could not create Document Register entry ({exc}).",
-            )
+        if revision_of:
+            # ── Revision of an existing register document — update in place ──
+            # The register item keeps its identity; the version bumps R01→R02→…
+            # and the document returns to Active (DINT §5.3.2).
+            try:
+                existing_reg = await get_list_item(
+                    settings.document_register_list_id, "Document Register", revision_of
+                )
+                new_version = _next_version(
+                    existing_reg.get("fields", {}).get("CurrentVersion", "R01")
+                )
+            except Exception as exc:
+                logger.warning(
+                    f"Lifecycle {item_id} is a revision of register item {revision_of}, "
+                    f"but it could not be fetched ({exc}) — publishing as a new entry instead."
+                )
+                revision_of = ""
 
-        register_item_id = str(register_item.get("id", ""))
-        logger.info(
-            f"Document Register entry {register_item_id} created for approved lifecycle "
-            f"{item_id}: {doc['DocumentCode']}"
-        )
+        if revision_of:
+            dr_update: dict = {
+                "Status":         "Active",
+                "CurrentVersion": new_version,
+                "EffectiveDate":  effective_date.isoformat(),
+            }
+            if doc.get("Title"):
+                dr_update["Title"] = doc["Title"]
+            if doc.get("StandardsMapping"):
+                dr_update["ApplicableStandards"] = doc["StandardsMapping"]
+            if doc.get("SensitisationDeadline"):
+                dr_update["NextReviewDate"] = doc["SensitisationDeadline"]
+
+            try:
+                await update_list_item(
+                    settings.document_register_list_id,
+                    "Document Register",
+                    revision_of,
+                    dr_update,
+                )
+            except Exception as exc:
+                logger.exception(f"Lifecycle {item_id} approval could not update Document Register {revision_of}")
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Document approval failed: could not update the Document Register entry ({exc}).",
+                )
+
+            register_item_id = revision_of
+            logger.info(
+                f"Document Register entry {register_item_id} updated to {new_version} "
+                f"for approved revision lifecycle {item_id}: {doc['DocumentCode']}"
+            )
+        else:
+            dr_fields: dict = {
+                "Title":               doc["Title"],
+                "DocumentCode":        doc["DocumentCode"],
+                "DocumentType":        doc["DocumentType"],
+                "Department":          doc["Department"],
+                "Status":              "Active",
+                "OwnerId":             doc.get("OwnerEntraId", ""),
+                "Owner":               doc.get("OwnerName", ""),
+                "CurrentVersion":      new_version,
+                "EffectiveDate":       effective_date.isoformat(),
+                "ApplicableStandards": doc.get("StandardsMapping", ""),
+                "LinkedControlsCount": 0,
+            }
+            if doc.get("SensitisationDeadline"):
+                dr_fields["NextReviewDate"] = doc["SensitisationDeadline"]
+
+            try:
+                register_item = await create_list_item(
+                    settings.document_register_list_id,
+                    "Document Register",
+                    dr_fields,
+                )
+            except Exception as exc:
+                logger.exception(f"Lifecycle {item_id} approval could not publish Document Register entry")
+                raise HTTPException(
+                    status_code=502,
+                    detail=f"Document approval failed: could not create Document Register entry ({exc}).",
+                )
+
+            register_item_id = str(register_item.get("id", ""))
+            logger.info(
+                f"Document Register entry {register_item_id} created for approved lifecycle "
+                f"{item_id}: {doc['DocumentCode']}"
+            )
 
         # Optional trace fields. Some deployed registers may have these columns;
         # the provisioned baseline may not, so do not let this block approval.
