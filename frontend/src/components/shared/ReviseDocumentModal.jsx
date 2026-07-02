@@ -67,11 +67,13 @@ export default function ReviseDocumentModal({ open, onClose, document: docProp, 
     setRefValue("");
     setError("");
     setSaving(false);
-    // Picker mode — load Active register documents
+    // Picker mode — load register documents and filter to Active client-side.
+    // (A server-side ?status= filter becomes a SharePoint OData $filter, which
+    // fails on non-indexed columns — same reason the queue filters in Python.)
     if (!docProp) {
       setDocsLoading(true);
-      apiClient.get("/api/v1/grc/documents", { params: { status: "Active" } })
-        .then(r => setActiveDocs(r.data || []))
+      apiClient.get("/api/v1/grc/documents")
+        .then(r => setActiveDocs((r.data || []).filter(d => d.status === "Active")))
         .catch(err => setError(err.response?.data?.detail || err.message || "Could not load documents."))
         .finally(() => setDocsLoading(false));
     }
