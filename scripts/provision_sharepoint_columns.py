@@ -392,14 +392,37 @@ async def _auth_header() -> dict[str, str]:
 
 async def _get_existing_columns(
     client: httpx.AsyncClient, list_id: str
-) -> set[str]:
-    """Return the set of internal column names already on a list."""
+) -> dict[str, dict]:
+    """Return internal column name → full column object for a list."""
     url = f"{settings.graph_base_url}/sites/{settings.sharepoint_site_id}/lists/{list_id}/columns"
     headers = await _auth_header()
     resp = await client.get(url, headers=headers, timeout=30)
     resp.raise_for_status()
     data = resp.json()
-    return {col["name"] for col in data.get("value", [])}
+    return {col["name"]: col for col in data.get("value", [])}
+
+
+async def _update_choice_column(
+    client: httpx.AsyncClient,
+    list_id: str,
+    column_id: str,
+    choices: list[str],
+) -> None:
+    """PATCH an existing choice column with an expanded choice list."""
+    url = (
+        f"{settings.graph_base_url}/sites/{settings.sharepoint_site_id}"
+        f"/lists/{list_id}/columns/{column_id}"
+    )
+    headers = {**(await _auth_header()), "Content-Type": "application/json"}
+    resp = await client.patch(
+        url,
+        json={"choice": {"choices": choices, "displayAs": "dropDownMenu"}},
+        headers=headers,
+        timeout=30,
+    )
+    if resp.status_code == 403:
+        raise PermissionError403("403 Forbidden")
+    resp.raise_for_status()
 
 
 class PermissionError403(Exception):
@@ -487,6 +510,40 @@ async def provision(
 
             if present:
                 print(f"    {GREEN('OK')}  {len(present)} column(s) already exist")
+
+            # ── Existing choice columns missing new choice values ─────────────
+            # (e.g. ReviewStatus gained "Blocked" for cascade failures)
+            for col_name in present:
+                type_key, choices = required[col_name]
+                if type_key != CHOICE or not choices:
+                    continue
+                col_obj = existing[col_name]
+                current_choices = (col_obj.get("choice") or {}).get("choices") or []
+                new_values = [c for c in choices if c not in current_choices]
+                if not new_values:
+                    continue
+                merged = current_choices + new_values
+                if not apply:
+                    print(
+                        f"      {YELLOW('→')}  {col_name:45s}  "
+                        f"{DIM(f'Choice values to add: {new_values}')}"
+                    )
+                    total_missing += 1
+                else:
+                    try:
+                        await _update_choice_column(client, list_id, col_obj["id"], merged)
+                        print(
+                            f"      {GREEN('✓ UPDATED')}  {col_name:45s}  "
+                            f"{DIM(f'Added choice values: {new_values}')}"
+                        )
+                        total_created += 1
+                    except PermissionError403:
+                        print(f"      {RED('✗ FAILED')}   {col_name:45s}  {RED('403 — missing Sites.Manage.All permission')}")
+                        total_failed += 1
+                        _permission_error_seen = True
+                    except Exception as exc:
+                        print(f"      {RED('✗ FAILED')}   {col_name:45s}  {RED(str(exc))}")
+                        total_failed += 1
 
             if not missing:
                 print(f"    {GREEN('✓')}  All required columns present\n")
