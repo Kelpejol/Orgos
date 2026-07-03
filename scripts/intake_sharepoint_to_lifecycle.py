@@ -63,8 +63,11 @@ LOCK_FILE       = os.path.join(_SCRIPTS_DIR, "intake_lifecycle.lock")
 LOG_DIR         = os.path.join(_REPO_DIR, "logs", "intake")
 
 SUPPORTED_EXTENSIONS = {".pdf", ".docx"}
-# .doc (old OLE2 binary) excluded — python cannot read these reliably.
-# Convert to .docx in Word before uploading to SharePoint.
+# .doc (old OLE2 binary) cannot be parsed by python-docx, so no text
+# extraction or CDI check is possible. These are still intaken as lifecycle
+# Review cards — flagged with a FORMAT finding telling the owner to convert
+# to .docx in Word and re-upload on the card (which re-runs the CDI check).
+LEGACY_EXTENSIONS = {".doc"}
 LIFECYCLE_LIST_NAME = "Document Lifecycle"
 REGISTER_LIST_NAME = "Document Register"
 
@@ -243,7 +246,7 @@ async def walk_folder(
             continue
 
         ext = os.path.splitext(name)[1].lower()
-        if ext in SUPPORTED_EXTENSIONS:
+        if ext in SUPPORTED_EXTENSIONS or ext in LEGACY_EXTENSIONS:
             files.append({
                 "id": item["id"],
                 "name": name,
@@ -477,13 +480,32 @@ async def create_lifecycle_entry(
     file_bytes: bytes,
     download_name: str,
     role_titles: list[str],
+    legacy_format: bool = False,
 ) -> tuple[str, str]:
     filename = file_info["name"]
     web_url = file_info.get("web_url", "")
     cdi_status = "Pending"
     cdi_failures = ""
 
-    if run_cdi:
+    if legacy_format:
+        # .doc — unreadable by the pipeline. Surface it on the board with a
+        # FORMAT finding; the standard Review re-upload flow clears it once
+        # the owner uploads a .docx (upload re-runs the CDI check).
+        cdi_status = "Failed"
+        cdi_failures = json.dumps([{
+            "check": "FORMAT",
+            "detail": (
+                f"'{filename}' is in the legacy Word .doc binary format. "
+                "OrgOS cannot read it, so no CDI check or document-code "
+                "detection could run."
+            ),
+            "fix": (
+                "Download the file, open it in Microsoft Word, use "
+                "File → Save As → Word Document (.docx), then upload the "
+                ".docx on this card. The CDI check runs automatically on upload."
+            ),
+        }])
+    elif run_cdi:
         result = await run_cdi_check(
             file_bytes,
             download_name or filename,
@@ -515,6 +537,11 @@ async def create_lifecycle_entry(
         f"({classification.confidence} confidence: {classification.reason}). "
         f"Source folder: {file_info.get('folder_path', '')}."
     )
+    if legacy_format:
+        notes = (
+            "LEGACY FORMAT (.doc) — convert to .docx in Word and upload the "
+            ".docx on this card before this document can progress. " + notes
+        )
 
     fields: dict = {
         "Title": os.path.splitext(filename)[0],
@@ -697,23 +724,29 @@ async def run_intake(
             prefix = f"[{i}/{len(remaining)}]"
             filename = file_info["name"]
             url_key = file_info.get("web_url", "")
+            is_legacy = file_info.get("extension", "") in LEGACY_EXTENSIONS
 
-            try:
-                file_bytes, download_name = await download_file(drive_id, file_info["id"])
-                document_text = extract_text(file_bytes, download_name or filename)
-                document_code = extract_document_code_from_text(document_text)
-            except Exception as exc:
-                print(f"  {prefix} {filename[:64]}")
-                print(f"              → FAILED TO READ DOCUMENT CODE: {str(exc)[:90]}")
-                logger.exception(f"Could not read document code from {filename}")
-                checkpoint.setdefault("failed", []).append({
-                    "id": file_info["id"],
-                    "name": filename,
-                    "error": f"Could not read document code: {exc}",
-                })
-                save_checkpoint(checkpoint)
-                failed += 1
-                continue
+            if is_legacy:
+                # .doc cannot be parsed — intake the card without text
+                # extraction; the FORMAT finding tells the owner to convert.
+                file_bytes, download_name, document_code = b"", filename, ""
+            else:
+                try:
+                    file_bytes, download_name = await download_file(drive_id, file_info["id"])
+                    document_text = extract_text(file_bytes, download_name or filename)
+                    document_code = extract_document_code_from_text(document_text)
+                except Exception as exc:
+                    print(f"  {prefix} {filename[:64]}")
+                    print(f"              → FAILED TO READ DOCUMENT CODE: {str(exc)[:90]}")
+                    logger.exception(f"Could not read document code from {filename}")
+                    checkpoint.setdefault("failed", []).append({
+                        "id": file_info["id"],
+                        "name": filename,
+                        "error": f"Could not read document code: {exc}",
+                    })
+                    save_checkpoint(checkpoint)
+                    failed += 1
+                    continue
 
             classification = classify_for_lifecycle(
                 filename,
@@ -751,6 +784,7 @@ async def run_intake(
                 print(
                     f"              → DRY RUN ({classification.confidence}: "
                     f"{classification.reason})"
+                    + (" [LEGACY .doc — will be flagged for .docx conversion]" if is_legacy else "")
                 )
                 continue
 
@@ -764,6 +798,7 @@ async def run_intake(
                     file_bytes=file_bytes,
                     download_name=download_name,
                     role_titles=role_titles,
+                    legacy_format=is_legacy,
                 )
                 print(f"              → CREATED lifecycle #{item_id} | CDI={cdi_status}")
                 processed_ids.add(file_info["id"])
