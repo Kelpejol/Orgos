@@ -44,9 +44,9 @@ class Settings(BaseSettings):
     )
 
     compliance_site_url: str = Field(
-    default="https://dragnetnigeria.sharepoint.com/sites/compliance"
+    default="https://dragnetnigeria.sharepoint.com/sites/everybody"
 )
-    compliance_library_name: str = Field(default="Documents")
+    compliance_library_name: str = Field(default="DRAGNET DOCUMENT REPOSITORY")
     compliance_starting_folder: str = Field(default="GRC MASTERY")
 
     # ── SharePoint List IDs — Tier 1 ──────────────────────────────────────

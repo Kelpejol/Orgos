@@ -45,7 +45,7 @@ async def _resolve_compliance_site() -> tuple[str, str]:
     base = settings.graph_base_url
 
     # Extract hostname and path from the compliance site URL
-    # e.g. https://dragnetnigeria.sharepoint.com/sites/compliance
+    # e.g. https://dragnetnigeria.sharepoint.com/sites/everybody
     url = settings.compliance_site_url.rstrip("/")
     parts = url.replace("https://", "").split("/", 1)
     hostname = parts[0]

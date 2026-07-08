@@ -108,7 +108,7 @@ OrgOS is Dragnet Solutions Limited's internal **GRC (Governance, Risk, and Compl
 │  dragnetnigeria    │
 │  .sharepoint.com   │
 │  /sites/orgos      │
-│  /sites/compliance │
+│  /sites/everybody  │
 └────────────────────┘
 ```
 
@@ -1485,8 +1485,8 @@ CLIENT_SECRET=<client-secret-value>
 # ── SharePoint ──────────────────────────────────────────────────
 SHAREPOINT_SITE_ID=<site-guid-from-graph-api>
 SHAREPOINT_SITE_URL=https://dragnetnigeria.sharepoint.com/sites/orgos
-COMPLIANCE_SITE_URL=https://dragnetnigeria.sharepoint.com/sites/compliance
-COMPLIANCE_LIBRARY_NAME=Documents
+COMPLIANCE_SITE_URL=https://dragnetnigeria.sharepoint.com/sites/everybody
+COMPLIANCE_LIBRARY_NAME=DRAGNET DOCUMENT REPOSITORY
 COMPLIANCE_STARTING_FOLDER=GRC MASTERY
 
 # ── SharePoint List IDs (fill after creating lists) ─────────────
