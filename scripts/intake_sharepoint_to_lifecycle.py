@@ -63,10 +63,10 @@ LOCK_FILE       = os.path.join(_SCRIPTS_DIR, "intake_lifecycle.lock")
 LOG_DIR         = os.path.join(_REPO_DIR, "logs", "intake")
 
 SUPPORTED_EXTENSIONS = {".pdf", ".docx"}
-# .doc (old OLE2 binary) cannot be parsed by python-docx, so no text
-# extraction or CDI check is possible. These are still intaken as lifecycle
-# Review cards — flagged with a FORMAT finding telling the owner to convert
-# to .docx in Word and re-upload on the card (which re-runs the CDI check).
+# .doc (legacy Word) is parsed best-effort (RTF / OLE2 binary via the
+# extractor agent). If parsing yields no text, the card is still intaken but
+# flagged with a FORMAT finding telling the owner to convert to .docx in
+# Word and re-upload on the card (which re-runs the CDI check).
 LEGACY_EXTENSIONS = {".doc"}
 LIFECYCLE_LIST_NAME = "Document Lifecycle"
 REGISTER_LIST_NAME = "Document Register"
@@ -311,6 +311,30 @@ async def fetch_role_titles() -> list[str]:
         return []
 
 
+async def extract_text_with_ocr(file_bytes: bytes, filename: str) -> str:
+    """
+    CDI extract_text plus the Extractor agent's Azure OCR fallback.
+    Scanned/image-only PDFs and DOCXs yield almost no native text; when the
+    native result is under 100 chars, retry through the OCR-capable
+    extractor functions so the document code can still be read.
+    """
+    text = extract_text(file_bytes, filename)
+    if len(text.strip()) >= 100:
+        return text
+
+    ext = filename.lower().rsplit(".", 1)[-1]
+    try:
+        if ext == "pdf":
+            from agents.extractor.service import extract_text_from_pdf
+            return await extract_text_from_pdf(file_bytes) or text
+        if ext == "docx":
+            from agents.extractor.service import extract_text_from_docx
+            return await extract_text_from_docx(file_bytes) or text
+    except Exception as exc:
+        logger.warning(f"OCR fallback failed for {filename}: {exc}")
+    return text
+
+
 # =============================================================================
 #  OrgOS classification and duplicate checks
 # =============================================================================
@@ -488,16 +512,16 @@ async def create_lifecycle_entry(
     cdi_failures = ""
 
     if legacy_format:
-        # .doc — unreadable by the pipeline. Surface it on the board with a
-        # FORMAT finding; the standard Review re-upload flow clears it once
-        # the owner uploads a .docx (upload re-runs the CDI check).
+        # Legacy .doc that could not be parsed even best-effort. Surface it on
+        # the board with a FORMAT finding; the standard Review re-upload flow
+        # clears it once the owner uploads a .docx (which re-runs CDI).
         cdi_status = "Failed"
         cdi_failures = json.dumps([{
             "check": "FORMAT",
             "detail": (
-                f"'{filename}' is in the legacy Word .doc binary format. "
-                "OrgOS cannot read it, so no CDI check or document-code "
-                "detection could run."
+                f"'{filename}' is in the legacy Word .doc format and could "
+                "not be read even with best-effort parsing, so no CDI check "
+                "or document-code detection could run."
             ),
             "fix": (
                 "Download the file, open it in Microsoft Word, use "
@@ -742,16 +766,17 @@ async def run_intake(
             url_key = file_info.get("web_url", "")
             is_legacy = file_info.get("extension", "") in LEGACY_EXTENSIONS
 
-            if is_legacy:
-                # .doc cannot be parsed — intake the card without text
-                # extraction; the FORMAT finding tells the owner to convert.
-                file_bytes, download_name, document_code = b"", filename, ""
-            else:
-                try:
-                    file_bytes, download_name = await download_file(drive_id, file_info["id"])
-                    document_text = extract_text(file_bytes, download_name or filename)
-                    document_code = extract_document_code_from_text(document_text)
-                except Exception as exc:
+            document_text = ""
+            try:
+                file_bytes, download_name = await download_file(drive_id, file_info["id"])
+                document_text = await extract_text_with_ocr(file_bytes, download_name or filename)
+                document_code = extract_document_code_from_text(document_text)
+            except Exception as exc:
+                if is_legacy:
+                    # Unreadable legacy .doc — intake the card anyway; the
+                    # FORMAT finding tells the owner to convert to .docx.
+                    file_bytes, download_name, document_code = b"", filename, ""
+                else:
                     print(f"  {prefix} {filename[:64]}")
                     print(f"              → FAILED TO READ DOCUMENT CODE: {str(exc)[:90]}")
                     logger.exception(f"Could not read document code from {filename}")
@@ -763,6 +788,10 @@ async def run_intake(
                     save_checkpoint(checkpoint)
                     failed += 1
                     continue
+
+            # A legacy .doc that parsed cleanly proceeds like any other file
+            # (CDI check included); only an unreadable one gets the FORMAT flag.
+            legacy_unreadable = is_legacy and not document_text.strip()
 
             classification = classify_for_lifecycle(
                 filename,
@@ -800,7 +829,8 @@ async def run_intake(
                 print(
                     f"              → DRY RUN ({classification.confidence}: "
                     f"{classification.reason})"
-                    + (" [LEGACY .doc — will be flagged for .docx conversion]" if is_legacy else "")
+                    + (" [LEGACY .doc — unreadable, will be flagged for .docx conversion]" if legacy_unreadable else "")
+                    + (" [LEGACY .doc — parsed OK]" if is_legacy and not legacy_unreadable else "")
                 )
                 continue
 
@@ -814,7 +844,7 @@ async def run_intake(
                     file_bytes=file_bytes,
                     download_name=download_name,
                     role_titles=role_titles,
-                    legacy_format=is_legacy,
+                    legacy_format=legacy_unreadable,
                 )
                 print(f"              → CREATED lifecycle #{item_id} | CDI={cdi_status}")
                 processed_ids.add(file_info["id"])

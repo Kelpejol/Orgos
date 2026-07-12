@@ -13,6 +13,8 @@ mammoth>=1.6.0         # DOCX text extraction for CDI Checker and Extractor agen
                        # for extracting clean text; handles more DOCX variants robustly
 azure-ai-formrecognizer>=3.3.0  # Azure Document Intelligence — OCR fallback for
                                  # scanned/image-based PDFs and DOCXs with < 100 chars
+aiohttp>=3.9.0         # Async transport required by the azure SDK above ONLY.
+                       # Never import directly — all our own HTTP uses httpx.
 striprtf>=0.0.26       # RTF text extraction — legacy .doc files saved as RTF
 olefile>=0.47          # OLE2 binary parsing — legacy Word .doc (Word 97-2003)
 

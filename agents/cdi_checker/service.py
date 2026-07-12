@@ -233,10 +233,10 @@ def extract_text(file_bytes: bytes, filename: str) -> str:
         # A .doc saved by modern Word is often actually OOXML — check magic bytes
         if file_bytes[:2] == b"PK":
             return _extract_text_from_docx(file_bytes)
-        # Genuine OLE2 binary .doc — python-docx cannot read this
-        raise ValueError(
-            "This is an old .doc file. Open it in Word, save as .docx, then re-upload."
-        )
+        # Genuine legacy .doc (RTF or OLE2 binary) — use the extractor agent's
+        # best-effort parser. Returns "" if the file is unreadable.
+        from agents.extractor.service import extract_text_from_doc
+        return extract_text_from_doc(file_bytes)
 
     if ext == "txt":
         return file_bytes.decode("utf-8", errors="replace")

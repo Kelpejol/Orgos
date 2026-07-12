@@ -70,10 +70,11 @@ async def _azure_ocr_fallback(file_bytes: bytes, content_type: str) -> str:
         )
 
     async with DocumentAnalysisClient(endpoint, AzureKeyCredential(key)) as client:
+        # The SDK sets content_type itself for bytes input; passing it
+        # explicitly raises "multiple values for keyword argument".
         poller = await client.begin_analyze_document(
             "prebuilt-read",
             file_bytes,
-            content_type=content_type,
         )
         result = await poller.result()
 
