@@ -320,7 +320,7 @@ Generates CDI-compliant policy documents and uploads them to SharePoint.
 1. Generates a document code (`DRG-[DEPT]-[TYPE]-[REF]-[YY]`)
 2. Calls LLM gateway to draft CDI-structured policy text
 3. `docx_builder.py` creates a formatted `.docx` using python-docx
-4. Uploads to SharePoint `GRC MASTERY/Drafts/` folder
+4. Uploads to SharePoint `<starting folder>/Drafts/` in the compliance library
 5. Creates a Document Lifecycle entry pointing to the file
 
 ---
@@ -408,7 +408,7 @@ Gaps from two sources: AI Gap Analyzer agent, and AuditItem entries from the Rev
 
 ### sharepoint/ — File Browser
 
-Browse the SharePoint Compliance document library (GRC MASTERY folder) and trigger extraction on any file by its drive item ID.
+Browse the SharePoint Compliance document library (the configured starting folder) and trigger extraction on any file by its drive item ID.
 
 ---
 
@@ -700,8 +700,8 @@ CLIENT_SECRET=                          # Client secret value
 SHAREPOINT_SITE_ID=                     # Site ID from Graph API (see section 14)
 SHAREPOINT_SITE_URL=https://dragnetnigeria.sharepoint.com/sites/orgos
 COMPLIANCE_SITE_URL=https://dragnetnigeria.sharepoint.com/sites/everybody
-COMPLIANCE_LIBRARY_NAME=DRAGNET DOCUMENT REPOSITORY
-COMPLIANCE_STARTING_FOLDER=GRC MASTERY
+COMPLIANCE_LIBRARY_NAME=ORGOS LIBRARY
+COMPLIANCE_STARTING_FOLDER=Policies, Procedures, Manuals, Guidelines, Frameworks, Handbook, SOP
 
 # ── SharePoint List IDs (fill after creating lists in SharePoint) ─
 DOCUMENT_REGISTER_LIST_ID=placeholder
@@ -841,7 +841,7 @@ pytest tests/test_graph_client.py::test_token_cache_hit -v
 
 ### `scripts/bulk_extract.py` — Batch Extraction
 
-Traverses the entire `GRC MASTERY` SharePoint folder, extracts all PDF/DOCX/TXT files, writes COMPLETE results to the AI Review Queue. Supports checkpoint/resume — safe to interrupt.
+Traverses the entire configured starting folder in the compliance library, extracts all PDF/DOCX/TXT files, writes COMPLETE results to the AI Review Queue. Supports checkpoint/resume — safe to interrupt.
 
 ```bash
 python scripts/bulk_extract.py --dry-run              # Preview files, no extraction

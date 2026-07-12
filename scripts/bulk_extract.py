@@ -373,13 +373,27 @@ async def bulk_extract(
         all_files = []
         top_level = await list_folder(drive_id, root_id)
         for top_item in top_level:
-            if "folder" not in top_item:
+            if "folder" in top_item:
+                folder_name = top_item["name"]
+                if folder_filter and folder_filter.lower() not in folder_name.lower():
+                    continue
+                folder_files = await walk_folder(drive_id, folder_name, top_item["id"])
+                all_files.extend(folder_files)
                 continue
-            folder_name = top_item["name"]
-            if folder_filter and folder_filter.lower() not in folder_name.lower():
+            if folder_filter:
                 continue
-            folder_files = await walk_folder(drive_id, folder_name, top_item["id"])
-            all_files.extend(folder_files)
+            # Loose file at the starting-folder root
+            name = top_item.get("name", "")
+            ext = os.path.splitext(name)[1].lower()
+            if ext in SUPPORTED_EXTENSIONS:
+                all_files.append({
+                    "id":          top_item["id"],
+                    "name":        name,
+                    "folder_path": "",
+                    "extension":   ext,
+                    "size":        top_item.get("size", 0),
+                    "web_url":     top_item.get("webUrl", ""),
+                })
 
         remaining = [
             f for f in all_files

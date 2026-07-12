@@ -46,8 +46,10 @@ class Settings(BaseSettings):
     compliance_site_url: str = Field(
     default="https://dragnetnigeria.sharepoint.com/sites/everybody"
 )
-    compliance_library_name: str = Field(default="DRAGNET DOCUMENT REPOSITORY")
-    compliance_starting_folder: str = Field(default="GRC MASTERY")
+    compliance_library_name: str = Field(default="ORGOS LIBRARY")
+    compliance_starting_folder: str = Field(
+        default="Policies, Procedures, Manuals, Guidelines, Frameworks, Handbook, SOP"
+    )
 
     # ── SharePoint List IDs — Tier 1 ──────────────────────────────────────
     document_register_list_id: str = Field(default="placeholder")

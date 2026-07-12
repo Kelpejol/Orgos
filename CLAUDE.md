@@ -925,10 +925,10 @@ Tracks identified compliance gaps from two sources:
 
 Allows browsing the SharePoint Compliance document library and triggering extraction on any file.
 
-**Compliance library:** `settings.compliance_site_url` / `settings.compliance_library_name` / `settings.compliance_starting_folder` ("GRC MASTERY")
+**Compliance library:** `settings.compliance_site_url` / `settings.compliance_library_name` / `settings.compliance_starting_folder` ("Policies, Procedures, Manuals, Guidelines, Frameworks, Handbook, SOP" in ORGOS LIBRARY)
 
 **Endpoints:**
-- `GET /api/v1/sharepoint/browse` — Root of GRC MASTERY folder; returns folder/file listing with drive item IDs
+- `GET /api/v1/sharepoint/browse` — Root of the configured starting folder; returns folder/file listing with drive item IDs
 - `GET /api/v1/sharepoint/browse/{folder_id}` — Subfolder listing by drive item ID
 - `POST /api/v1/sharepoint/extract/{item_id}` — Download file by item ID from SharePoint, run through extractor pipeline, return `ExtractionResponse`
 
@@ -1262,7 +1262,7 @@ Several statuses are **never stored in SharePoint** — they are pure functions 
    a. Generate doc_code (DRG-[DEPT]-[TYPE]-[REF]-[YY])
    b. POST to Ollama: generate CDI-structured policy text
    c. docx_builder.build_docx(draft) → BytesIO
-   d. upload_file_to_sharepoint(docx_bytes, filename, "GRC MASTERY/Drafts") → webUrl
+   d. upload_file_to_sharepoint(docx_bytes, filename, "<starting folder>/Drafts") → webUrl
    e. create_list_item(document_lifecycle_list_id, {
         DocumentCode: doc_code,
         Stage: "Review",
@@ -1486,8 +1486,8 @@ CLIENT_SECRET=<client-secret-value>
 SHAREPOINT_SITE_ID=<site-guid-from-graph-api>
 SHAREPOINT_SITE_URL=https://dragnetnigeria.sharepoint.com/sites/orgos
 COMPLIANCE_SITE_URL=https://dragnetnigeria.sharepoint.com/sites/everybody
-COMPLIANCE_LIBRARY_NAME=DRAGNET DOCUMENT REPOSITORY
-COMPLIANCE_STARTING_FOLDER=GRC MASTERY
+COMPLIANCE_LIBRARY_NAME=ORGOS LIBRARY
+COMPLIANCE_STARTING_FOLDER=Policies, Procedures, Manuals, Guidelines, Frameworks, Handbook, SOP
 
 # ── SharePoint List IDs (fill after creating lists) ─────────────
 DOCUMENT_REGISTER_LIST_ID=placeholder
@@ -1612,7 +1612,7 @@ pytest tests/test_graph_client.py::test_token_cache_hit -v
 **Purpose:** Scan all documents in the SharePoint Compliance library and run extraction on each, with checkpoint/resume support.
 
 **Features:**
-- Traverses `GRC MASTERY` folder and all subfolders recursively
+- Traverses the configured starting folder recursively (including loose files at its root)
 - Processes PDF, DOCX, TXT files
 - Checkpoint file at `scripts/bulk_extract_checkpoint.json` tracks processed SharePoint item IDs
 - Safe to interrupt and resume — already-processed items are skipped

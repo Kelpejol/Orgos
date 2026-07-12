@@ -703,12 +703,28 @@ async def run_intake(
 
         all_files: list[dict] = []
         for item in await list_folder(drive_id, root_id):
-            if "folder" not in item:
+            if "folder" in item:
+                folder_name = item["name"]
+                if folder_filter and folder_filter.lower() not in folder_name.lower():
+                    continue
+                all_files.extend(await walk_folder(drive_id, folder_name, item["id"]))
                 continue
-            folder_name = item["name"]
-            if folder_filter and folder_filter.lower() not in folder_name.lower():
+            if folder_filter:
                 continue
-            all_files.extend(await walk_folder(drive_id, folder_name, item["id"]))
+            # Loose file at the starting-folder root. Empty folder_path so
+            # classification relies on the filename alone — the starting
+            # folder's own name is not a per-document signal.
+            name = item.get("name", "")
+            ext = os.path.splitext(name)[1].lower()
+            if ext in SUPPORTED_EXTENSIONS or ext in LEGACY_EXTENSIONS:
+                all_files.append({
+                    "id": item["id"],
+                    "name": name,
+                    "folder_path": "",
+                    "extension": ext,
+                    "size": item.get("size", 0),
+                    "web_url": item.get("webUrl", ""),
+                })
 
         remaining = [f for f in all_files if f["id"] not in processed_ids]
         if limit:
