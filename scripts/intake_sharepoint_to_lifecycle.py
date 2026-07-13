@@ -39,7 +39,7 @@ import logging
 import os
 import re
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Optional
 
@@ -427,6 +427,57 @@ def classify_for_lifecycle(filename: str, folder_path: str, document_code: str) 
     )
 
 
+# Lifecycle-valid document types and known department codes — the AI
+# classifier below is constrained to these; anything else is discarded.
+_VALID_LIFECYCLE_TYPES = {"Policy", "Procedure", "SOP", "Form", "Guidelines"}
+_VALID_DEPARTMENTS = {"ISMS", "DPO", "HR", "FIN", "LEGAL", "PROC", "OPS", "QMS", "AUDIT", "RISK", "GRC"}
+
+
+async def ai_refine_classification(
+    classification: IntakeClassification,
+    filename: str,
+    document_text: str,
+) -> IntakeClassification:
+    """
+    AI fallback for the judgment call keyword rules can't make.
+
+    Only runs when the keyword classifier reported LOW confidence (it
+    defaulted to Policy/GRC without a real signal). The model reads the
+    document opening and picks type + department from the fixed value sets.
+    Any LLM failure or out-of-set answer keeps the keyword result.
+    """
+    if classification.confidence != "low" or not document_text.strip():
+        return classification
+    try:
+        from agents.llm_client import llm_generate
+        prompt = f"""Classify this controlled document.
+
+Filename: {filename}
+
+Document opening:
+{document_text[:2000]}
+
+Pick exactly one document_type from: Policy, Procedure, SOP, Form, Guidelines
+Pick exactly one department from: ISMS (information security), DPO (data protection/privacy), HR, FIN (finance), LEGAL, PROC (procurement/vendor), OPS (operations), QMS (quality), AUDIT, RISK, GRC (general compliance)
+
+Return ONLY JSON: {{"document_type": "...", "department": "...", "reason": "one short sentence"}}"""
+        raw = await llm_generate(prompt, tier="light", max_tokens=150, temperature=0, json_mode=True)
+        data = json.loads(raw) if raw else {}
+        dtype = str(data.get("document_type", "")).strip()
+        dept = str(data.get("department", "")).strip().upper()
+        if dtype in _VALID_LIFECYCLE_TYPES:
+            return replace(
+                classification,
+                document_type=dtype,
+                department=dept if dept in _VALID_DEPARTMENTS else classification.department,
+                confidence="medium",
+                reason=f"AI classification: {str(data.get('reason', ''))[:100]}",
+            )
+    except Exception as exc:
+        logger.warning(f"AI classification fallback failed for {filename}: {exc}")
+    return classification
+
+
 def _field_text(fields: dict, key: str) -> str:
     value = fields.get(key)
     return str(value or "").strip()
@@ -797,6 +848,10 @@ async def run_intake(
                 filename,
                 file_info["folder_path"],
                 document_code,
+            )
+            # Keyword rules couldn't decide → let the AI read the document.
+            classification = await ai_refine_classification(
+                classification, filename, document_text
             )
             code_key = classification.document_code.upper()
 

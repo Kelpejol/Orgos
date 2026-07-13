@@ -251,6 +251,59 @@ def extract_text(file_bytes: bytes, filename: str) -> str:
 #  These are correct as rules-based checks. Do not convert to AI.
 # =============================================================================
 
+_WS_RE = re.compile(r"\s+")
+
+
+def _norm(text: str) -> str:
+    """Lowercase and collapse all whitespace — PDF extraction frequently puts
+    newlines inside cover-table labels ('Revision\\nHistory'), which breaks
+    naive substring matching."""
+    return _WS_RE.sub(" ", text.lower())
+
+
+# An actual date value: 12/01/2026, 2026-01-12, 12 March 2026, March 2026,
+# March 12, 2026 — the presence of a label word alone is not enough.
+_DATE_VALUE_RE = re.compile(
+    r"""
+      \d{1,2}[/\-.]\d{1,2}[/\-.]\d{2,4}
+    | \d{4}[/\-.]\d{1,2}[/\-.]\d{1,2}
+    | (?:\d{1,2}(?:st|nd|rd|th)?\s+)?
+      (?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\.?,?\s+
+      (?:\d{1,2}(?:st|nd|rd|th)?,?\s+)?\d{4}
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+def _label_followed_by_date(norm_text: str, label: str, window: int = 60) -> bool:
+    """True if `label` occurs with an actual date value within `window` chars
+    after it (e.g. 'Effective Date: 12/01/2026', 'Date: March 2026')."""
+    for m in re.finditer(re.escape(label), norm_text):
+        if _DATE_VALUE_RE.search(norm_text[m.end(): m.end() + window]):
+            return True
+    return False
+
+
+def _has_section_heading(text: str, keyword: str) -> bool:
+    """
+    True if `keyword` appears as a section heading rather than as ordinary
+    prose. Accepted shapes (checked against the raw text so line structure
+    survives):
+      '3. Purpose' / '1.0 PURPOSE'              — numbered heading
+      'Purpose'                                 — keyword alone on its line
+      'Purpose:'                                — keyword with a colon
+      '2.0 RESPONSIBILITIES AND AUTHORITIES'    — heading with a short tail
+    A bare mid-sentence occurrence ('for the purpose of…') does NOT count;
+    the keyword must open the line and the line must be heading-length or
+    end in a colon.
+    """
+    kw = re.escape(keyword)
+    pattern = re.compile(
+        rf"(?im)^\s*(?:\d+[\d.\)\s]*)?{kw}s?\b(?:\s*:|[^\n]{{0,48}}$)"
+    )
+    return bool(pattern.search(text))
+
+
 def check_01_document_code(text: str, doc_code: str) -> dict:
     """CDI-01: Document code present and in correct format."""
     if not doc_code:
@@ -273,8 +326,9 @@ def check_01_document_code(text: str, doc_code: str) -> dict:
 
 def check_02_revision_history(text: str) -> dict:
     """CDI-02: Revision history table present."""
-    indicators = ["revision history", "version history", "change log", "amendment history"]
-    if not any(ind in text.lower() for ind in indicators):
+    indicators = ["revision history", "version history", "change log", "amendment history",
+                  "document history", "change history"]
+    if not any(ind in _norm(text) for ind in indicators):
         return _fail(
             "CDI-02", "Revision history table",
             "No revision history table found.",
@@ -285,8 +339,20 @@ def check_02_revision_history(text: str) -> dict:
 
 
 def check_03_purpose_section(text: str) -> dict:
-    """CDI-03: Purpose section present."""
-    if "purpose" not in text.lower():
+    """CDI-03: Purpose section present.
+
+    Requires a Purpose *heading* or an explicit 'purpose of this document/
+    policy/…' statement — the bare word 'purpose' anywhere ('for the purpose
+    of…') is prose, not a section, and used to make this check pass on
+    virtually every document."""
+    has_purpose = (
+        _has_section_heading(text, "purpose")
+        or re.search(
+            r"purpose of this (?:document|policy|procedure|manual|sop|standard|guide|guideline|framework|handbook|plan)",
+            _norm(text),
+        )
+    )
+    if not has_purpose:
         return _fail(
             "CDI-03", "Purpose section",
             "No Purpose section found.",
@@ -297,8 +363,19 @@ def check_03_purpose_section(text: str) -> dict:
 
 
 def check_04_scope_section(text: str) -> dict:
-    """CDI-04: Scope section present."""
-    if "scope" not in text.lower():
+    """CDI-04: Scope section present.
+
+    Requires a Scope heading or an explicit scope statement — the bare word
+    'scope' in prose ('outside the scope of…') does not count."""
+    has_scope = (
+        _has_section_heading(text, "scope")
+        or re.search(
+            r"(?:scope of this (?:document|policy|procedure|manual|sop|standard|guide|guideline|framework|handbook)"
+            r"|this (?:document|policy|procedure|manual|sop|standard|guide|guideline|framework|handbook) applies to)",
+            _norm(text),
+        )
+    )
+    if not has_scope:
         return _fail(
             "CDI-04", "Scope section",
             "No Scope section found.",
@@ -310,8 +387,16 @@ def check_04_scope_section(text: str) -> dict:
 
 def check_05_responsibilities_section(text: str) -> dict:
     """CDI-05: Responsibilities section present."""
-    indicators = ["responsibilities", "roles and responsibilities", "accountability"]
-    if not any(ind in text.lower() for ind in indicators):
+    norm = _norm(text)
+    has_section = (
+        _has_section_heading(text, "responsibilities")
+        or _has_section_heading(text, "roles and responsibilities")
+        or _has_section_heading(text, "roles & responsibilities")
+        or "roles and responsibilities" in norm
+        or "roles & responsibilities" in norm
+        or "accountability" in norm
+    )
+    if not has_section:
         return _fail(
             "CDI-05", "Responsibilities section",
             "No Responsibilities section found.",
@@ -321,10 +406,23 @@ def check_05_responsibilities_section(text: str) -> dict:
     return _pass("CDI-05", "Responsibilities section")
 
 
+_STANDARDS_RE = re.compile(
+    r"""
+      ISO\s*/?\s*(?:IEC\s*)?27001        # ISO 27001, ISO/IEC 27001, ISO27001
+    | ISO\s*/?\s*(?:IEC\s*)?27002
+    | ISO\s*9001                          # ISO 9001, ISO9001
+    | \bNDPA\b | \bNDPR\b
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+# Clause references stay case-sensitive — 'A.5.18' / 'S.39' are precise
+# citation shapes; lowercasing would invite prose false-positives.
+_CLAUSE_REF_RE = re.compile(r"\bA\.\d{1,2}(?:\.\d{1,2})?\b|\bS\.\s?\d{1,3}\b")
+
+
 def check_09_standards_references(text: str) -> dict:
     """CDI-09: Standards references present."""
-    markers = ["ISO 27001", "ISO 9001", "NDPA", "A.5.", "A.8.", "A.6.", "A.9.", "S.3", "S.39"]
-    if not any(m in text for m in markers):
+    if not (_STANDARDS_RE.search(text) or _CLAUSE_REF_RE.search(text)):
         return _fail(
             "CDI-09", "Standards references",
             "No standards clause references found.",
@@ -337,8 +435,9 @@ def check_09_standards_references(text: str) -> dict:
 
 def check_10_related_documents(text: str) -> dict:
     """CDI-10: Related documents section present."""
-    indicators = ["related document", "associated document", "reference document", "see also"]
-    if not any(ind in text.lower() for ind in indicators):
+    indicators = ["related document", "associated document", "reference document",
+                  "referenced document", "related policies", "see also"]
+    if not any(ind in _norm(text) for ind in indicators):
         return _fail(
             "CDI-10", "Related documents section",
             "No Related Documents section found.",
@@ -349,9 +448,24 @@ def check_10_related_documents(text: str) -> dict:
 
 
 def check_11_classification_label(text: str) -> dict:
-    """CDI-11: Document classification label present."""
-    labels = ["internal", "confidential", "restricted", "public", "classification"]
-    if not any(l in text.lower() for l in labels):
+    """CDI-11: Document classification label present.
+
+    The old substring check matched 'internal' inside 'internally' and
+    'public' inside 'publication', so it passed on nearly everything.
+    Now requires an actual label: the word 'classification', an
+    'internal use only' marking, or a classification value standing alone
+    on its own line (typical header/footer marking)."""
+    norm = _norm(text)
+    has_label = (
+        "classification" in norm
+        or "internal use only" in norm
+        or re.search(
+            r"(?im)^\s*(?:document\s+classification\s*:?\s*)?"
+            r"(internal|confidential|restricted|public)\s*(?:use\s+only\s*)?$",
+            text,
+        )
+    )
+    if not has_label:
         return _fail(
             "CDI-11", "Classification label",
             "No document classification label found.",
@@ -363,8 +477,9 @@ def check_11_classification_label(text: str) -> dict:
 
 def check_12_owner_identified(text: str) -> dict:
     """CDI-12: Document owner identified."""
-    indicators = ["document owner", "policy owner", "owner:", "approved by", "authored by"]
-    if not any(ind in text.lower() for ind in indicators):
+    indicators = ["document owner", "policy owner", "process owner", "owner:",
+                  "approved by", "authored by", "prepared by"]
+    if not any(ind in _norm(text) for ind in indicators):
         return _fail(
             "CDI-12", "Document owner identified",
             "No document owner identified in the document metadata.",
@@ -375,22 +490,55 @@ def check_12_owner_identified(text: str) -> dict:
 
 
 
+# How much of the document counts as "the cover / metadata area" for the
+# generic 'Date:' label. Explicit labels ('Effective Date') are accepted
+# anywhere; a bare 'Date:' only near the front, where document metadata lives.
+_COVER_CHARS = 4_000
+
+
 def check_14_effective_date(text: str) -> dict:
-    """CDI-14: Effective date present."""
-    indicators = ["effective date", "effective from", "issue date", "date issued", "approved date"]
-    if not any(ind in text.lower() for ind in indicators):
+    """CDI-14: Effective date present.
+
+    A label must be followed by an actual date value. The old check passed on
+    the label words alone, anywhere in the body — a policy that merely
+    *discussed* issue dates passed, while a cover reading 'Date: March 2026'
+    failed because the exact phrase differed."""
+    norm = _norm(text)
+    explicit_labels = [
+        "effective date", "effective from", "effective:",
+        "issue date", "date issued", "date of issue",
+        "approved date", "date approved", "approval date",
+    ]
+    found = any(_label_followed_by_date(norm, label) for label in explicit_labels)
+
+    if not found:
+        # Cover-page 'Date: <value>' (Dragnet's common convention) or a
+        # 'dated <value>' statement near the front of the document.
+        cover = norm[:_COVER_CHARS]
+        found = _label_followed_by_date(cover, "date:") or _label_followed_by_date(cover, "dated ")
+
+    if not found:
         return _fail(
             "CDI-14", "Effective date",
-            "No effective date found.",
-            proposed_fix="Add an 'Effective Date' to the cover page — the date from which this version applies.",
+            "No effective date found — a date label with an actual date value "
+            "(e.g. 'Effective Date: 12/01/2026') is required.",
+            proposed_fix="Add an 'Effective Date' with a real date to the cover page — the date from which this version applies.",
             fix_source="Document Creation Standards §4",
         )
     return _pass("CDI-14", "Effective date")
 
 
 def check_15_version_number(text: str) -> dict:
-    """CDI-15: Version number present."""
-    pattern = re.compile(r"v?\d+\.\d+|version\s*\d+|rev\s*\d+|revision\s*\d+", re.IGNORECASE)
+    """CDI-15: Version number present.
+
+    The old pattern `v?\\d+\\.\\d+` matched ANY decimal — section numbers
+    ('1.1 Introduction'), clause refs ('A.5.18'), quantities ('1.5 days') —
+    so it could effectively never fail. Now the number must carry a version
+    marker: v1.0, Version 2, Rev. 05, Revision 1.2."""
+    pattern = re.compile(
+        r"\b(?:v|ver|version|rev|revision)\s*\.?\s*:?\s*\d+(?:\.\d+)?\b",
+        re.IGNORECASE,
+    )
     if not pattern.search(text):
         return _fail(
             "CDI-15", "Version number",
@@ -527,6 +675,27 @@ DOCUMENT TEXT:
 ---"""
 
 
+def _parse_llm_json(raw: str) -> Optional[dict]:
+    """
+    Tolerant JSON parse for LLM output: strips markdown code fences and
+    leading/trailing prose, then falls back to the outermost {...} slice.
+    Returns None if nothing parseable remains.
+    """
+    if not raw:
+        return None
+    cleaned = raw.strip()
+    cleaned = re.sub(r"^```(?:json)?\s*|\s*```$", "", cleaned, flags=re.IGNORECASE)
+    for candidate in (cleaned, cleaned[cleaned.find("{"): cleaned.rfind("}") + 1]):
+        if not candidate:
+            continue
+        try:
+            parsed = json.loads(candidate)
+            return parsed if isinstance(parsed, dict) else None
+        except json.JSONDecodeError:
+            continue
+    return None
+
+
 async def _call_ollama_language_checks(
     text: str,
     role_register_titles: list[str],
@@ -548,14 +717,14 @@ async def _call_ollama_language_checks(
         if not raw:
             logger.warning("CDI AI check: empty response from LLM")
             return None
-        result = json.loads(raw)
+        result = _parse_llm_json(raw)
+        if result is None:
+            logger.warning("CDI AI check: unparseable JSON from LLM")
+            return None
         if not all(k in result for k in ("cdi_06", "cdi_07", "cdi_08", "cdi_16")):
             logger.warning("CDI AI check: response missing expected keys")
             return None
         return result
-    except json.JSONDecodeError as exc:
-        logger.warning(f"CDI AI check: invalid JSON from LLM — {exc}")
-        return None
     except Exception as exc:
         logger.warning(f"CDI AI check: LLM call failed — {exc}")
         return None
@@ -774,6 +943,62 @@ def _run_fallback_language_checks(
 #  Main CDI check runner
 # =============================================================================
 
+# Checks the AI may rescue from a deterministic FAIL. These are the
+# subjective/structural ones where wording varies legitimately. Precise
+# checks (CDI-01 code format, CDI-09 clause refs, CDI-11 label, CDI-15
+# version) stay rules-only. The AI can only flip FAIL → PASS, never the
+# reverse — determinism is the floor, so a hallucinating model cannot
+# fail a compliant document.
+_AI_RESCUE_CHECKS: dict[str, str] = {
+    "CDI-02": "a revision/version history table or list (e.g. columns Version | Date | Author | Change)",
+    "CDI-03": "a Purpose section or an explicit statement of why the document exists",
+    "CDI-04": "a Scope section or an explicit statement of who or what the document applies to",
+    "CDI-05": "a Responsibilities section assigning duties to specific roles",
+    "CDI-10": "a Related Documents section listing other referenced controlled documents",
+    "CDI-12": "an identified document owner (owner / approved by / prepared by, with a role or name)",
+    "CDI-14": "an effective, issue, or approval date WITH an actual date value (a label alone does not count)",
+}
+
+
+async def _ai_confirm_failed_checks(
+    text: str,
+    failed_checks: list[dict],
+) -> Optional[dict]:
+    """
+    One LLM call as a second opinion on deterministically-failed subjective
+    checks. Returns {check_id: {"present": bool, "where": str}} or None on
+    any LLM failure (caller keeps the deterministic results).
+    """
+    questions = "\n".join(
+        f'- "{c["check_id"]}": does the document contain {_AI_RESCUE_CHECKS[c["check_id"]]}?'
+        for c in failed_checks
+    )
+    # Metadata and front sections live at the start; revision history is
+    # often at the end — send both ends of the document.
+    snippet = text[:10_000] + ("\n[...]\n" + text[-3_000:] if len(text) > 13_000 else "")
+    prompt = f"""You are auditing a controlled document. Automated rules could not find the items below — but rules miss unusual wording. Answer strictly from the document text; do NOT give benefit of the doubt.
+
+{questions}
+
+Return ONLY JSON, one key per check id:
+{{"CDI-XX": {{"present": true/false, "where": "short quote or location, empty if absent"}}}}
+
+DOCUMENT TEXT:
+{snippet}"""
+    try:
+        raw = await llm_generate(
+            prompt,
+            tier="light",
+            max_tokens=1024,
+            temperature=0,
+            json_mode=True,
+        )
+        return _parse_llm_json(raw)
+    except Exception as exc:
+        logger.warning(f"CDI AI second-opinion: LLM call failed — {exc}")
+        return None
+
+
 async def run_cdi_check(
     file_bytes: bytes,
     filename: str,
@@ -849,6 +1074,32 @@ async def run_cdi_check(
     checks.append(check_12_owner_identified(text))
     checks.append(check_14_effective_date(text))
     checks.append(check_15_version_number(text))
+
+    # ── Stage 4: AI second opinion on failed subjective checks ───────────────
+    # Rules miss unusual-but-valid wording; the model reviews only the checks
+    # that failed and may flip FAIL → PASS (never the reverse).
+    rescuable = [
+        c for c in checks
+        if c["result"] == "FAIL" and c["check_id"] in _AI_RESCUE_CHECKS
+    ]
+    if rescuable:
+        ai_confirm = await _ai_confirm_failed_checks(text, rescuable)
+        if ai_confirm:
+            used_ai = True
+            for c in rescuable:
+                verdict = ai_confirm.get(c["check_id"])
+                if isinstance(verdict, dict) and verdict.get("present") is True:
+                    idx = checks.index(c)
+                    rescued = _pass(c["check_id"], c["check_name"])
+                    rescued["note"] = (
+                        "Confirmed by AI review: "
+                        + str(verdict.get("where", ""))[:200]
+                    )
+                    checks[idx] = rescued
+                    logger.info(
+                        f"CDI {c['check_id']}: deterministic FAIL overturned by AI "
+                        f"second opinion ({str(verdict.get('where',''))[:80]})"
+                    )
 
     pass_count = sum(1 for c in checks if c["result"] == "PASS")
     fail_count = sum(1 for c in checks if c["result"] == "FAIL")
