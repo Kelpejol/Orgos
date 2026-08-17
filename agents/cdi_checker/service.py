@@ -754,36 +754,39 @@ def _ai_result_to_checks(
     else:
         checks.append(_pass("CDI-06", "Aspirational language"))
 
-    # CDI-07
-    findings_07 = ai.get("cdi_07", {}).get("findings") or []
-    if findings_07:
-        for f in findings_07[:5]:
-            term = f.get("term", "vague term")
-            checks.append(_fail(
-                "CDI-07", "Vague role reference",
-                f"Vague term '{term}' used as subject of an obligation — use a Role Register title.",
-                current_text=str(f.get("text", ""))[:200],
-                proposed_fix=str(f.get("fix", f"Replace '{term}' with a Role Register title, e.g. '{suggested}'."))[:300],
-                fix_source="Role Register + Document Creation Standards §5.2",
-                confidence=92,
-            ))
-    else:
-        checks.append(_pass("CDI-07", "Vague role reference"))
-
-    # CDI-08
-    findings_08 = ai.get("cdi_08", {}).get("findings") or []
-    if findings_08:
-        for f in findings_08[:5]:
-            checks.append(_fail(
-                "CDI-08", "Vague evidence reference",
-                "Vague evidence obligation — must specify an Evidence Taxonomy type code.",
-                current_text=str(f.get("text", ""))[:200],
-                proposed_fix=str(f.get("fix", "Evidence: [TYPE_CODE] — [description]. Source: [system]. Frequency: [period]."))[:300],
-                fix_source="Evidence Taxonomy DRG-QI-REF-EVTX-01-26",
-                confidence=90,
-            ))
-    else:
-        checks.append(_pass("CDI-08", "Vague evidence reference"))
+    # ── CDI-07 & CDI-08 (vague role / vague evidence) DISABLED for now ─────────
+    # Commented out per request — no more vague-term checks. Re-enable by
+    # uncommenting the two blocks below.
+    # # CDI-07
+    # findings_07 = ai.get("cdi_07", {}).get("findings") or []
+    # if findings_07:
+    #     for f in findings_07[:5]:
+    #         term = f.get("term", "vague term")
+    #         checks.append(_fail(
+    #             "CDI-07", "Vague role reference",
+    #             f"Vague term '{term}' used as subject of an obligation — use a Role Register title.",
+    #             current_text=str(f.get("text", ""))[:200],
+    #             proposed_fix=str(f.get("fix", f"Replace '{term}' with a Role Register title, e.g. '{suggested}'."))[:300],
+    #             fix_source="Role Register + Document Creation Standards §5.2",
+    #             confidence=92,
+    #         ))
+    # else:
+    #     checks.append(_pass("CDI-07", "Vague role reference"))
+    #
+    # # CDI-08
+    # findings_08 = ai.get("cdi_08", {}).get("findings") or []
+    # if findings_08:
+    #     for f in findings_08[:5]:
+    #         checks.append(_fail(
+    #             "CDI-08", "Vague evidence reference",
+    #             "Vague evidence obligation — must specify an Evidence Taxonomy type code.",
+    #             current_text=str(f.get("text", ""))[:200],
+    #             proposed_fix=str(f.get("fix", "Evidence: [TYPE_CODE] — [description]. Source: [system]. Frequency: [period]."))[:300],
+    #             fix_source="Evidence Taxonomy DRG-QI-REF-EVTX-01-26",
+    #             confidence=90,
+    #         ))
+    # else:
+    #     checks.append(_pass("CDI-08", "Vague evidence reference"))
 
     # CDI-16
     findings_16 = ai.get("cdi_16", {}).get("findings") or []
@@ -922,11 +925,12 @@ def _run_fallback_language_checks(
     f06 = _fallback_cdi_06(text)
     checks.extend(f06) if f06 else checks.append(_pass("CDI-06", "Aspirational language"))
 
-    f07 = _fallback_cdi_07(text, role_register_titles)
-    checks.extend(f07) if f07 else checks.append(_pass("CDI-07", "Vague role reference"))
-
-    f08 = _fallback_cdi_08(text)
-    checks.extend(f08) if f08 else checks.append(_pass("CDI-08", "Vague evidence reference"))
+    # CDI-07 & CDI-08 vague checks DISABLED for now — re-enable by uncommenting.
+    # f07 = _fallback_cdi_07(text, role_register_titles)
+    # checks.extend(f07) if f07 else checks.append(_pass("CDI-07", "Vague role reference"))
+    #
+    # f08 = _fallback_cdi_08(text)
+    # checks.extend(f08) if f08 else checks.append(_pass("CDI-08", "Vague evidence reference"))
 
     f16 = _fallback_cdi_16(text, role_register_titles)
     if f16:

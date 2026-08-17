@@ -711,11 +711,42 @@ async def progress_doc(
                     status_code=422,
                     detail="Select an approver or skip to progress to Approval.",
                 )
-            if body.approver_id == doc.get("OwnerEntraId"):
+            if body.approver_id and body.approver_id == doc.get("OwnerEntraId"):
                 raise HTTPException(
                     status_code=422,
                     detail="The approver cannot be the same person as the document owner.",
                 )
+
+            # ── Skip approver → auto-finalise ──────────────────────────────────
+            # With no approver assigned there is nobody to click Approve, so the
+            # document would otherwise sit in Approval forever and never reach the
+            # Document Register. Skipping the approver therefore COMPLETES the
+            # lifecycle: publish straight to the register, mark Approved, and
+            # record an audit note naming who finalised it.
+            if body.skip_approver and not body.approver_id:
+                finaliser = await resolve_user(user.oid)
+                await update_list_item(
+                    _get_list_id(), _LIST_NAME, item_id,
+                    {"Stage": "Approval", "SubmittedForApproval": date.today().isoformat()},
+                )
+                doc["Stage"] = "Approval"  # keep local dict consistent for finalise
+                note = (
+                    f"Approver skipped — document auto-finalised by "
+                    f"{finaliser.get('display_name') or user.name} on {date.today().isoformat()}."
+                )
+                register_item_id, extraction_result = await _finalize_document_approval(
+                    item_id,
+                    doc,
+                    approver_oid=user.oid,
+                    approver_email=finaliser.get("email", ""),
+                    approval_note=note,
+                )
+                updated = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
+                result = await _sp_to_doc(updated)
+                result["DocumentRegisterItemId"] = register_item_id
+                result["ExtractionResult"] = extraction_result
+                result["AutoFinalised"] = True
+                return result
 
         next_stage = NEXT_STAGE.get(body.current_stage)
         if not next_stage:
@@ -900,6 +931,199 @@ async def approval_impact(
         _handle_error(exc, f"approval impact {item_id}")
 
 
+async def _finalize_document_approval(
+    item_id: str,
+    doc: dict,
+    *,
+    approver_oid: str,
+    approver_email: str = "",
+    approval_note: str = "",
+) -> tuple[str, dict]:
+    """
+    Shared approval cascade — publishes the document to the Document Register
+    (creating a new entry, or updating in place with a version bump for a
+    revision), marks the lifecycle item Approved, and runs control extraction.
+
+    Used by BOTH:
+      • approve_doc — a designated approver approves the document.
+      • progress_doc (skip_approver) — no approver was assigned, so advancing
+        past Sensitisation auto-finalises the document straight into the register.
+
+    The CALLER performs the authorization/stage checks appropriate to its path;
+    this function assumes finalisation is permitted. Returns
+    (register_item_id, extraction_result).
+    """
+    if not settings.is_list_configured(settings.document_register_list_id):
+        raise HTTPException(
+            status_code=503,
+            detail="Document Register list is not configured; approval cannot publish this document.",
+        )
+
+    effective_date = date.today()
+    if not DOC_CODE_PATTERN.match(str(doc.get("DocumentCode", "")).strip().upper()):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Document code '{doc.get('DocumentCode', '')}' is invalid. "
+                "Fix the document code before approving/publishing."
+            ),
+        )
+
+    revision_of = str(doc.get("RevisionOf") or "").strip()
+    new_version = "R01"
+
+    if revision_of:
+        # ── Revision of an existing register document — update in place ──
+        # The register item keeps its identity; the version bumps R01→R02→…
+        # and the document returns to Active (DINT §5.3.2).
+        try:
+            existing_reg = await get_list_item(
+                settings.document_register_list_id, "Document Register", revision_of
+            )
+            new_version = _next_version(
+                existing_reg.get("fields", {}).get("CurrentVersion", "R01")
+            )
+        except Exception as exc:
+            logger.warning(
+                f"Lifecycle {item_id} is a revision of register item {revision_of}, "
+                f"but it could not be fetched ({exc}) — publishing as a new entry instead."
+            )
+            revision_of = ""
+
+    if revision_of:
+        dr_update: dict = {
+            "Status":         "Active",
+            "CurrentVersion": new_version,
+            "EffectiveDate":  effective_date.isoformat(),
+        }
+        if doc.get("Title"):
+            dr_update["Title"] = doc["Title"]
+        if doc.get("StandardsMapping"):
+            dr_update["ApplicableStandards"] = doc["StandardsMapping"]
+        if doc.get("SensitisationDeadline"):
+            dr_update["NextReviewDate"] = doc["SensitisationDeadline"]
+
+        try:
+            await update_list_item(
+                settings.document_register_list_id,
+                "Document Register",
+                revision_of,
+                dr_update,
+            )
+        except Exception as exc:
+            logger.exception(f"Lifecycle {item_id} approval could not update Document Register {revision_of}")
+            raise HTTPException(
+                status_code=502,
+                detail=f"Document approval failed: could not update the Document Register entry ({exc}).",
+            )
+
+        register_item_id = revision_of
+        logger.info(
+            f"Document Register entry {register_item_id} updated to {new_version} "
+            f"for approved revision lifecycle {item_id}: {doc['DocumentCode']}"
+        )
+    else:
+        dr_fields: dict = {
+            "Title":               doc["Title"],
+            "DocumentCode":        doc["DocumentCode"],
+            "DocumentType":        doc["DocumentType"],
+            "Department":          doc["Department"],
+            "Status":              "Active",
+            "OwnerId":             doc.get("OwnerEntraId", ""),
+            "Owner":               doc.get("OwnerName", ""),
+            "CurrentVersion":      new_version,
+            "EffectiveDate":       effective_date.isoformat(),
+            "ApplicableStandards": doc.get("StandardsMapping", ""),
+            "LinkedControlsCount": 0,
+        }
+        if doc.get("SensitisationDeadline"):
+            dr_fields["NextReviewDate"] = doc["SensitisationDeadline"]
+
+        try:
+            register_item = await create_list_item(
+                settings.document_register_list_id,
+                "Document Register",
+                dr_fields,
+            )
+        except Exception as exc:
+            logger.exception(f"Lifecycle {item_id} approval could not publish Document Register entry")
+            raise HTTPException(
+                status_code=502,
+                detail=f"Document approval failed: could not create Document Register entry ({exc}).",
+            )
+
+        register_item_id = str(register_item.get("id", ""))
+        logger.info(
+            f"Document Register entry {register_item_id} created for approved lifecycle "
+            f"{item_id}: {doc['DocumentCode']}"
+        )
+
+    # Optional trace fields. Some deployed registers may have these columns;
+    # the provisioned baseline may not, so do not let this block approval.
+    optional_dr_fields: dict = {}
+    if doc.get("SharePointFileUrl"):
+        optional_dr_fields["SharePointUrl"] = doc["SharePointFileUrl"]
+    optional_dr_fields["Source"] = "Document Lifecycle"
+    if optional_dr_fields and register_item_id:
+        try:
+            await update_list_item(
+                settings.document_register_list_id,
+                "Document Register",
+                register_item_id,
+                optional_dr_fields,
+            )
+        except Exception as exc:
+            logger.warning(f"Document Register optional trace fields were not written: {exc}")
+
+    fields: dict = {
+        "ApprovalStatus":             "Approved",
+        "ApprovedDate":               effective_date.isoformat(),
+        "ApproverEntraId":            approver_oid,
+        "LinkedDocumentRegisterItem": register_item_id,
+    }
+    if approval_note:
+        fields["Notes"] = (doc.get("Notes") or "") + f"\n\n{approval_note}"
+
+    await update_list_item(_get_list_id(), _LIST_NAME, item_id, fields)
+
+    # ── Best-effort: Person/Group column in a separate PATCH ──────────────
+    if approver_email:
+        try:
+            sp_uid = await resolve_sp_user_lookup_id(approver_email)
+            if sp_uid is not None:
+                await update_list_item(
+                    _get_list_id(), _LIST_NAME, item_id, {"ApproverLookupId": sp_uid}
+                )
+        except Exception as exc:
+            logger.warning(f"Could not set Approver Person/Group column on approve for item {item_id}: {exc}")
+
+    extraction_result: dict = {}
+    try:
+        extraction_result = await _extract_approved_document_to_review_queue(doc)
+        logger.info(
+            f"Approved lifecycle {item_id} extraction result: {extraction_result}"
+        )
+        if register_item_id and extraction_result.get("total_extracted") is not None:
+            try:
+                await update_list_item(
+                    settings.document_register_list_id,
+                    "Document Register",
+                    register_item_id,
+                    {"LinkedControlsCount": extraction_result.get("total_extracted", 0)},
+                )
+            except Exception as exc:
+                logger.warning(f"Could not update Document Register extraction count: {exc}")
+    except Exception as exc:
+        logger.exception(f"Approved lifecycle {item_id} extraction failed")
+        extraction_result = {
+            "started": True,
+            "written_to_sharepoint": False,
+            "error": str(exc),
+        }
+
+    return register_item_id, extraction_result
+
+
 @router.post("/documents/{item_id}/approve")
 async def approve_doc(
     item_id: str,
@@ -943,173 +1167,14 @@ async def approve_doc(
         approver_resolved  = await resolve_user(user.oid)
         approver_email_val = approver_resolved.get("email", "")
 
-        if not settings.is_list_configured(settings.document_register_list_id):
-            raise HTTPException(
-                status_code=503,
-                detail="Document Register list is not configured; approval cannot publish this document.",
-            )
-
-        effective_date = date.today()
-        if not DOC_CODE_PATTERN.match(str(doc.get("DocumentCode", "")).strip().upper()):
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    f"Document code '{doc.get('DocumentCode', '')}' is invalid. "
-                    "Fix the document code before approving/publishing."
-                ),
-            )
-
-        revision_of = str(doc.get("RevisionOf") or "").strip()
-        new_version = "R01"
-
-        if revision_of:
-            # ── Revision of an existing register document — update in place ──
-            # The register item keeps its identity; the version bumps R01→R02→…
-            # and the document returns to Active (DINT §5.3.2).
-            try:
-                existing_reg = await get_list_item(
-                    settings.document_register_list_id, "Document Register", revision_of
-                )
-                new_version = _next_version(
-                    existing_reg.get("fields", {}).get("CurrentVersion", "R01")
-                )
-            except Exception as exc:
-                logger.warning(
-                    f"Lifecycle {item_id} is a revision of register item {revision_of}, "
-                    f"but it could not be fetched ({exc}) — publishing as a new entry instead."
-                )
-                revision_of = ""
-
-        if revision_of:
-            dr_update: dict = {
-                "Status":         "Active",
-                "CurrentVersion": new_version,
-                "EffectiveDate":  effective_date.isoformat(),
-            }
-            if doc.get("Title"):
-                dr_update["Title"] = doc["Title"]
-            if doc.get("StandardsMapping"):
-                dr_update["ApplicableStandards"] = doc["StandardsMapping"]
-            if doc.get("SensitisationDeadline"):
-                dr_update["NextReviewDate"] = doc["SensitisationDeadline"]
-
-            try:
-                await update_list_item(
-                    settings.document_register_list_id,
-                    "Document Register",
-                    revision_of,
-                    dr_update,
-                )
-            except Exception as exc:
-                logger.exception(f"Lifecycle {item_id} approval could not update Document Register {revision_of}")
-                raise HTTPException(
-                    status_code=502,
-                    detail=f"Document approval failed: could not update the Document Register entry ({exc}).",
-                )
-
-            register_item_id = revision_of
-            logger.info(
-                f"Document Register entry {register_item_id} updated to {new_version} "
-                f"for approved revision lifecycle {item_id}: {doc['DocumentCode']}"
-            )
-        else:
-            dr_fields: dict = {
-                "Title":               doc["Title"],
-                "DocumentCode":        doc["DocumentCode"],
-                "DocumentType":        doc["DocumentType"],
-                "Department":          doc["Department"],
-                "Status":              "Active",
-                "OwnerId":             doc.get("OwnerEntraId", ""),
-                "Owner":               doc.get("OwnerName", ""),
-                "CurrentVersion":      new_version,
-                "EffectiveDate":       effective_date.isoformat(),
-                "ApplicableStandards": doc.get("StandardsMapping", ""),
-                "LinkedControlsCount": 0,
-            }
-            if doc.get("SensitisationDeadline"):
-                dr_fields["NextReviewDate"] = doc["SensitisationDeadline"]
-
-            try:
-                register_item = await create_list_item(
-                    settings.document_register_list_id,
-                    "Document Register",
-                    dr_fields,
-                )
-            except Exception as exc:
-                logger.exception(f"Lifecycle {item_id} approval could not publish Document Register entry")
-                raise HTTPException(
-                    status_code=502,
-                    detail=f"Document approval failed: could not create Document Register entry ({exc}).",
-                )
-
-            register_item_id = str(register_item.get("id", ""))
-            logger.info(
-                f"Document Register entry {register_item_id} created for approved lifecycle "
-                f"{item_id}: {doc['DocumentCode']}"
-            )
-
-        # Optional trace fields. Some deployed registers may have these columns;
-        # the provisioned baseline may not, so do not let this block approval.
-        optional_dr_fields: dict = {}
-        if doc.get("SharePointFileUrl"):
-            optional_dr_fields["SharePointUrl"] = doc["SharePointFileUrl"]
-        optional_dr_fields["Source"] = "Document Lifecycle"
-        if optional_dr_fields and register_item_id:
-            try:
-                await update_list_item(
-                    settings.document_register_list_id,
-                    "Document Register",
-                    register_item_id,
-                    optional_dr_fields,
-                )
-            except Exception as exc:
-                logger.warning(f"Document Register optional trace fields were not written: {exc}")
-
-        fields: dict = {
-            "ApprovalStatus":             "Approved",
-            "ApprovedDate":               effective_date.isoformat(),
-            "ApproverEntraId":            user.oid,
-            "LinkedDocumentRegisterItem": register_item_id,
-        }
-        if body.notes:
-            fields["Notes"] = (doc.get("Notes") or "") + f"\n\nApproval note: {body.notes}"
-
-        await update_list_item(_get_list_id(), _LIST_NAME, item_id, fields)
-
-        # ── Best-effort: Person/Group column in a separate PATCH ──────────────
-        if approver_email_val:
-            try:
-                sp_uid = await resolve_sp_user_lookup_id(approver_email_val)
-                if sp_uid is not None:
-                    await update_list_item(
-                        _get_list_id(), _LIST_NAME, item_id, {"ApproverLookupId": sp_uid}
-                    )
-            except Exception as exc:
-                logger.warning(f"Could not set Approver Person/Group column on approve for item {item_id}: {exc}")
-
-        extraction_result: dict = {}
-        try:
-            extraction_result = await _extract_approved_document_to_review_queue(doc)
-            logger.info(
-                f"Approved lifecycle {item_id} extraction result: {extraction_result}"
-            )
-            if register_item_id and extraction_result.get("total_extracted") is not None:
-                try:
-                    await update_list_item(
-                        settings.document_register_list_id,
-                        "Document Register",
-                        register_item_id,
-                        {"LinkedControlsCount": extraction_result.get("total_extracted", 0)},
-                    )
-                except Exception as exc:
-                    logger.warning(f"Could not update Document Register extraction count: {exc}")
-        except Exception as exc:
-            logger.exception(f"Approved lifecycle {item_id} extraction failed")
-            extraction_result = {
-                "started": True,
-                "written_to_sharepoint": False,
-                "error": str(exc),
-            }
+        approval_note = f"Approval note: {body.notes}" if body.notes else ""
+        register_item_id, extraction_result = await _finalize_document_approval(
+            item_id,
+            doc,
+            approver_oid=user.oid,
+            approver_email=approver_email_val,
+            approval_note=approval_note,
+        )
 
         updated = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
         result = await _sp_to_doc(updated)
