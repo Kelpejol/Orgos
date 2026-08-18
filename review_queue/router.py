@@ -359,7 +359,10 @@ async def _zone1_accept_cascade(item: dict, user: CurrentUser, overrides: dict) 
         await create_list_item(_al_id(), _AL_LIST, al_fields)
         created.append("Audit Log: 1 record")
     except Exception as exc:
-        logger.error(f"Audit Log cascade failed: {exc}")
+        logger.error(f"AUDIT TRAIL GAP — Zone 1 Audit Log write failed for {item.get('id', '')}: {exc}")
+        # Non-silent: record the gap on the item itself (persisted to
+        # CascadeResult) so the missing audit record is visible, not just logged.
+        created.append("⚠ AUDIT LOG NOT WRITTEN — decision not recorded in the audit trail (see server logs)")
 
     # 4. NL Search index — embed control for semantic search (non-blocking)
     if cr_id and control_stmt:
@@ -986,7 +989,8 @@ async def _zone2_cascade(
         await create_list_item(_al_id(), _AL_LIST, al_fields)
         created.append("Audit Log: 1 record")
     except Exception as exc:
-        logger.error(f"Zone 2 Audit Log failed: {exc}")
+        logger.error(f"AUDIT TRAIL GAP — Zone 2 Audit Log write failed: {exc}")
+        created.append("⚠ AUDIT LOG NOT WRITTEN — decision not recorded in the audit trail (see server logs)")
 
     return " | ".join(created) if created else "Decision recorded"
 
@@ -1172,7 +1176,8 @@ async def _zone3_cascade(
         await create_list_item(_al_id(), _AL_LIST, al_fields)
         created.append("Audit Log: 1 record")
     except Exception as exc:
-        logger.error(f"Zone 3 Audit Log failed: {exc}")
+        logger.error(f"AUDIT TRAIL GAP — Zone 3 Audit Log write failed: {exc}")
+        created.append("⚠ AUDIT LOG NOT WRITTEN — decision not recorded in the audit trail (see server logs)")
 
     return " | ".join(created) if created else "Decision recorded"
 

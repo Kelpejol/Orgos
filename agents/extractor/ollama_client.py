@@ -13,7 +13,7 @@ from typing import Optional
 
 import httpx
 
-from agents.llm_client import check_llm_connectivity, llm_generate
+from agents.llm_client import LLMUnavailable, check_llm_connectivity, llm_generate
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -256,9 +256,13 @@ async def run_extraction(
 
     all_items: list[dict] = []
     seen: set[str] = set()
+    ok_chunks = 0
+    llm_failures = 0
     for idx, chunk in enumerate(chunks, start=1):
         label = doc_code if len(chunks) == 1 else f"{doc_code} [chunk {idx}/{len(chunks)}]"
         try:
+            # raise_on_failure=True so a real LLM outage is distinguishable from
+            # "the model found nothing" (an empty completion still returns "").
             raw = await llm_generate(
                 _build_prompt(document_type, chunk, doc_code),
                 tier="heavy",
@@ -267,12 +271,14 @@ async def run_extraction(
                 top_p=0.9,
                 repeat_penalty=1.2,
                 json_mode=True,
+                raise_on_failure=True,
             )
-            items = _parse_response(raw, label)
-        except Exception as exc:
-            # One bad chunk must not sink the whole extraction.
-            logger.warning(f"{label}: extraction chunk failed: {exc}")
+        except LLMUnavailable as exc:
+            llm_failures += 1
+            logger.warning(f"{label}: LLM unavailable: {exc}")
             continue
+        ok_chunks += 1
+        items = _parse_response(raw, label)  # returns [] on empty/malformed
         # Dedup by statement text (guards against overlap/repeats across chunks).
         for it in items:
             key = (it.get("statement") or "").strip().lower()
@@ -280,7 +286,19 @@ async def run_extraction(
                 seen.add(key)
                 all_items.append(it)
 
-    logger.info(f"{doc_code}: {len(all_items)} unique items across {len(chunks)} chunk(s)")
+    # If the model was unreachable for EVERY chunk, this is an outage, not an
+    # empty document — raise so the caller records a failure/degraded result
+    # instead of a false "0 controls extracted" success.
+    if llm_failures and ok_chunks == 0:
+        raise LLMUnavailable(
+            f"{doc_code}: LLM unavailable for all {llm_failures} chunk(s); extraction could not run"
+        )
+    if llm_failures:
+        logger.warning(
+            f"{doc_code}: {llm_failures}/{len(chunks)} chunk(s) failed (LLM unavailable); "
+            f"returning partial results from {ok_chunks} chunk(s)"
+        )
+    logger.info(f"{doc_code}: {len(all_items)} unique items across {ok_chunks}/{len(chunks)} chunk(s)")
     return all_items
 
 

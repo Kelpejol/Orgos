@@ -206,8 +206,16 @@ async def _write_audit_log(
     cascade_result: str,
     state_from: str,
     state_to: str,
-) -> None:
-    """Write an audit log entry. Per DINT Section 8 — every decision logged."""
+) -> bool:
+    """
+    Write an audit log entry. Per DINT Section 8 — every decision logged.
+
+    Returns True if the audit record was written, False otherwise. An audit
+    failure must NOT block or roll back the cascade (the decision already
+    applied), but it must not be silent either: on failure we record a visible
+    marker on the decided item's CascadeResult so the audit gap is discoverable
+    where the decision lives, not only in server logs.
+    """
     try:
         await create_list_item(_log_list_id(), _LOG_LIST_NAME, {
             "Title":         f"{decision} — {item_id[:20]}",
@@ -223,9 +231,22 @@ async def _write_audit_log(
             "StateFrom":     state_from,
             "StateTo":       state_to,
         })
+        return True
     except Exception as exc:
-        # Audit log failure must not block the cascade — log and continue
-        logger.error(f"Audit log write failed: {exc}")
+        logger.error(f"AUDIT TRAIL GAP — audit log write failed for item {item_id}: {exc}")
+        # Non-silent fallback: append a gap marker to the decided item.
+        try:
+            existing = await get_list_item(_q_list_id(), _Q_LIST_NAME, item_id)
+            current = (existing.get("fields", {}) or {}).get("CascadeResult", "") or ""
+            if "AUDIT LOG NOT WRITTEN" not in current:
+                marker = " | ⚠ AUDIT LOG NOT WRITTEN — decision not recorded in the audit trail (see server logs)"
+                await update_list_item(
+                    _q_list_id(), _Q_LIST_NAME, item_id,
+                    {"CascadeResult": (current + marker)[:4000]},
+                )
+        except Exception as exc2:
+            logger.error(f"Could not record audit-gap marker on item {item_id}: {exc2}")
+        return False
 
 
 async def _get_queue_item(item_id: str) -> dict:

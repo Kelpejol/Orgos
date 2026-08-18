@@ -82,7 +82,10 @@ class SharePointListNotConfiguredError(GraphAPIError):
 
 
 def raise_for_graph_status(
-    status_code: int, body: dict, context: str = ""
+    status_code: int,
+    body: dict,
+    context: str = "",
+    retry_after: Optional[float] = None,
 ) -> None:
     """
     Inspect a Graph API response and raise the appropriate exception.
@@ -92,6 +95,9 @@ def raise_for_graph_status(
         status_code: HTTP status code from Graph API response
         body: Parsed JSON response body
         context: Human-readable description of what was being attempted
+        retry_after: Seconds from the response's `Retry-After` HEADER, if present.
+            Graph sends Retry-After as a header (never in the JSON body), so the
+            caller must read it from `response.headers` and pass it here.
     """
     error_block = body.get("error", {})
     message = error_block.get("message", "Unknown Graph API error")
@@ -104,8 +110,7 @@ def raise_for_graph_status(
     elif status_code == 404:
         raise GraphNotFoundError(context or message)
     elif status_code == 429:
-        retry_after = int(body.get("retry-after", 60))
-        raise GraphRateLimitError(retry_after)
+        raise GraphRateLimitError(int(retry_after) if retry_after is not None else 60)
     elif status_code >= 500:
         raise GraphServiceUnavailableError(full_message)
     else:

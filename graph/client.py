@@ -353,7 +353,9 @@
 # Depends on: config.py, graph/auth.py, graph/exceptions.py, httpx
 # =============================================================================
 
+import asyncio
 import logging
+import random
 from typing import Any, Optional
 
 import httpx
@@ -361,11 +363,42 @@ import httpx
 from config import settings
 from graph.auth import get_graph_access_token, invalidate_token_cache
 from graph.exceptions import (
+    GraphServiceUnavailableError,
     SharePointListNotConfiguredError,
     raise_for_graph_status,
 )
 
 logger = logging.getLogger(__name__)
+
+# ── Transient-failure retry policy ───────────────────────────────────────────
+# 429/503 mean Graph REJECTED the request (it was not processed), so they are
+# safe to retry for ANY method. 502/504 and network/timeout errors are
+# AMBIGUOUS for writes (the write may have reached SharePoint), so we retry them
+# only for idempotent reads — never for POST/PATCH/PUT/DELETE — to avoid
+# duplicate writes.
+_RETRY_ANY_METHOD_STATUSES = frozenset({429, 503})
+_RETRY_IDEMPOTENT_STATUSES = frozenset({502, 504})
+_IDEMPOTENT_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+_MAX_ATTEMPTS = 4          # 1 initial + 3 retries
+_BACKOFF_BASE_SECONDS = 0.5
+_BACKOFF_MAX_SECONDS = 20.0
+
+
+def _backoff_seconds(attempt: int) -> float:
+    """Exponential backoff with jitter for retry `attempt` (1-based)."""
+    base = min(_BACKOFF_MAX_SECONDS, _BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)))
+    return base + random.uniform(0, base * 0.25)
+
+
+def _parse_retry_after(headers) -> Optional[float]:
+    """Read the Retry-After HEADER (integer seconds) if present and numeric."""
+    value = headers.get("Retry-After") or headers.get("retry-after")
+    if not value:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None  # HTTP-date form is not used by Graph; ignore
 
 # Shared async client — created at app startup, closed at shutdown
 # Use get_client() to access it — do not instantiate httpx.AsyncClient directly
@@ -419,48 +452,89 @@ async def _request(
     retry_on_401: bool = True,
 ) -> Any:
     """
-    Internal request handler with automatic 401 retry.
-    On a 401, invalidates the token cache and retries once with a fresh token.
+    Internal request handler with:
+      • one 401 refresh-and-retry (inline, does not consume a transient attempt);
+      • bounded exponential-backoff retry on transient failures —
+        429/503 for any method, and 502/504/network/timeout for reads only
+        (writes are never retried on ambiguous errors, to avoid double-writes);
+      • Retry-After header honoured for the wait between attempts.
     """
-    headers = await _get_headers()
     client = get_client()
+    method_up = method.upper()
+    idempotent = method_up in _IDEMPOTENT_METHODS
+    last_transport_exc: Optional[Exception] = None
 
-    response = await client.request(
-        method=method,
-        url=url,
-        headers=headers,
-        json=json,
-        params=params,
-    )
-
-    # On 401 — token may have expired between cache check and use
-    if response.status_code == 401 and retry_on_401:
-        logger.warning("Graph API returned 401 — refreshing token and retrying")
-        invalidate_token_cache()
+    for attempt in range(1, _MAX_ATTEMPTS + 1):
         headers = await _get_headers()
-        response = await client.request(
-            method=method,
-            url=url,
-            headers=headers,
-            json=json,
-            params=params,
-        )
+        try:
+            response = await client.request(
+                method=method, url=url, headers=headers, json=json, params=params
+            )
+            # 401 — token may have expired mid-flight. Refresh once, re-issue
+            # immediately in this same attempt (not counted as a transient retry).
+            if response.status_code == 401 and retry_on_401:
+                logger.warning("Graph API returned 401 — refreshing token and retrying once")
+                invalidate_token_cache()
+                headers = await _get_headers()
+                response = await client.request(
+                    method=method, url=url, headers=headers, json=json, params=params
+                )
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            # Network-level failure — outcome unknown. Retry reads only.
+            last_transport_exc = exc
+            if idempotent and attempt < _MAX_ATTEMPTS:
+                delay = _backoff_seconds(attempt)
+                logger.warning(
+                    f"Graph transport error | {method} {url} | "
+                    f"retry {attempt}/{_MAX_ATTEMPTS - 1} in {delay:.1f}s | {exc}"
+                )
+                await asyncio.sleep(delay)
+                continue
+            logger.error(f"Graph transport error (no retry) | {method} {url} | {exc}")
+            raise GraphServiceUnavailableError(f"{context}: {exc}") from exc
 
-    if response.status_code not in (200, 201, 204):
+        status = response.status_code
+
+        # Success
+        if status in (200, 201, 204):
+            if status == 204 or not response.content:
+                return None
+            return response.json()
+
+        # Transient? 429/503 any method; 502/504 reads only.
+        retryable = status in _RETRY_ANY_METHOD_STATUSES or (
+            idempotent and status in _RETRY_IDEMPOTENT_STATUSES
+        )
+        if retryable and attempt < _MAX_ATTEMPTS:
+            retry_after = _parse_retry_after(response.headers)
+            delay = min(
+                retry_after if retry_after is not None else _backoff_seconds(attempt),
+                _BACKOFF_MAX_SECONDS,
+            )
+            logger.warning(
+                f"Graph API {status} | {method} {url} | "
+                f"retry {attempt}/{_MAX_ATTEMPTS - 1} in {delay:.1f}s"
+            )
+            await asyncio.sleep(delay)
+            continue
+
+        # Non-retryable, or retries exhausted → raise the mapped error.
         body = {}
         try:
             body = response.json()
         except Exception:
             pass
-        logger.error(
-            f"Graph API error | {method} {url} | status={response.status_code} | {body}"
+        logger.error(f"Graph API error | {method} {url} | status={status} | {body}")
+        raise_for_graph_status(
+            status, body, context, retry_after=_parse_retry_after(response.headers)
         )
-        raise_for_graph_status(response.status_code, body, context)
 
-    if response.status_code == 204 or not response.content:
-        return None
-
-    return response.json()
+    # Loop exhausted (only reachable if every attempt was a retried transport error).
+    if last_transport_exc is not None:
+        raise GraphServiceUnavailableError(f"{context}: {last_transport_exc}") from last_transport_exc
+    raise GraphServiceUnavailableError(
+        f"{context}: exhausted {_MAX_ATTEMPTS} attempts"
+    )
 
 
 def _guard_list_configured(list_id: str, list_name: str) -> None:

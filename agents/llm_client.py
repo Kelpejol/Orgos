@@ -17,6 +17,7 @@
 
 import asyncio
 import logging
+import random
 from typing import Optional
 
 import httpx
@@ -26,6 +27,74 @@ from config import settings
 logger = logging.getLogger(__name__)
 
 _RUNPOD_BASE = "https://api.runpod.ai/v2"
+
+
+class LLMUnavailable(Exception):
+    """
+    The LLM provider could not be reached or returned a transient error after
+    all retries. Distinct from a successful call that legitimately returned an
+    empty completion — callers that pass raise_on_failure=True get this instead
+    of a silent "", so they can tell "the model said nothing" apart from
+    "the model was unreachable".
+    """
+
+
+# LLM inference has no side effects, so — unlike Graph writes — a POST is safe
+# to retry even on timeout (worst case is a wasted inference).
+_LLM_MAX_ATTEMPTS = 4
+_LLM_BACKOFF_BASE_SECONDS = 0.75
+_LLM_BACKOFF_MAX_SECONDS = 30.0
+_LLM_RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+
+
+def _llm_backoff(attempt: int) -> float:
+    base = min(_LLM_BACKOFF_MAX_SECONDS, _LLM_BACKOFF_BASE_SECONDS * (2 ** (attempt - 1)))
+    return base + random.uniform(0, base * 0.25)
+
+
+def _llm_retry_after(headers) -> Optional[float]:
+    value = headers.get("Retry-After") or headers.get("retry-after")
+    if not value:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+async def _post_json(url: str, *, headers: dict, payload: dict, timeout, label: str) -> dict:
+    """
+    POST `payload` and return the parsed JSON body, retrying transient failures
+    (429/5xx, timeouts, network errors) with exponential backoff (honouring
+    Retry-After). Raises LLMUnavailable on hard failure or an unparseable body.
+    """
+    last_exc: Optional[Exception] = None
+    for attempt in range(1, _LLM_MAX_ATTEMPTS + 1):
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                resp = await client.post(url, headers=headers, json=payload)
+            if resp.status_code in _LLM_RETRY_STATUSES and attempt < _LLM_MAX_ATTEMPTS:
+                ra = _llm_retry_after(resp.headers)
+                delay = min(ra if ra is not None else _llm_backoff(attempt), _LLM_BACKOFF_MAX_SECONDS)
+                logger.warning(f"{label}: HTTP {resp.status_code}, retry {attempt}/{_LLM_MAX_ATTEMPTS - 1} in {delay:.1f}s")
+                await asyncio.sleep(delay)
+                continue
+            resp.raise_for_status()
+            try:
+                return resp.json()
+            except Exception as exc:  # 200 but non-JSON body — provider problem
+                raise LLMUnavailable(f"{label}: response was not valid JSON: {exc}") from exc
+        except (httpx.TimeoutException, httpx.TransportError) as exc:
+            last_exc = exc
+            if attempt < _LLM_MAX_ATTEMPTS:
+                delay = _llm_backoff(attempt)
+                logger.warning(f"{label}: transport error, retry {attempt}/{_LLM_MAX_ATTEMPTS - 1} in {delay:.1f}s | {exc}")
+                await asyncio.sleep(delay)
+                continue
+            raise LLMUnavailable(f"{label}: {exc}") from exc
+        except httpx.HTTPStatusError as exc:
+            raise LLMUnavailable(f"{label}: HTTP {exc.response.status_code}") from exc
+    raise LLMUnavailable(f"{label}: exhausted {_LLM_MAX_ATTEMPTS} attempts" + (f" ({last_exc})" if last_exc else ""))
 
 
 # =============================================================================
@@ -42,6 +111,7 @@ async def llm_generate(
     repeat_penalty: float = 1.2,
     json_mode: bool = False,
     system_prompt: str = "",
+    raise_on_failure: bool = False,
 ) -> str:
     """
     Generate text from the configured LLM provider.
@@ -55,9 +125,13 @@ async def llm_generate(
         repeat_penalty: Repetition penalty (Ollama only).
         json_mode:      Hint model to return JSON.
         system_prompt:  Optional system message override (gateway only).
+        raise_on_failure: If True, raise LLMUnavailable when the provider is
+            unreachable / errors after retries, instead of returning "".
+            Default False preserves the historical "" behaviour so existing
+            callers with their own fallbacks are unaffected.
 
     Returns:
-        Generated text, or "" on failure.
+        Generated text, or "" on failure (unless raise_on_failure=True).
     """
     if settings.chat_api_url:
         return await _gateway_generate(
@@ -65,6 +139,7 @@ async def llm_generate(
             max_tokens=max_tokens,
             temperature=temperature,
             system_prompt=system_prompt,
+            raise_on_failure=raise_on_failure,
         )
     if settings.llm_provider == "runpod":
         return await _runpod_generate(
@@ -72,6 +147,7 @@ async def llm_generate(
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=top_p,
+            raise_on_failure=raise_on_failure,
         )
     return await _ollama_generate(
         prompt,
@@ -80,6 +156,7 @@ async def llm_generate(
         top_p=top_p,
         repeat_penalty=repeat_penalty,
         json_mode=json_mode,
+        raise_on_failure=raise_on_failure,
     )
 
 
@@ -132,46 +209,50 @@ _GATEWAY_SYSTEM = (
 )
 
 
+def _extract_gateway_text(data: dict) -> str:
+    """Parse the gateway/OpenAI-shaped response into text (empty if none)."""
+    choices = data.get("choices") or []
+    if choices:
+        msg = choices[0].get("message") or {}
+        return str(msg.get("content", "")).strip()
+    # Proxy may return {"content": ...}, {"text": ...} or {"output": ...}
+    return str(data.get("content") or data.get("text") or data.get("output") or "").strip()
+
+
 async def _gateway_generate(
     prompt: str,
     *,
     max_tokens: int,
     temperature: float,
     system_prompt: str = "",
+    raise_on_failure: bool = False,
 ) -> str:
     headers = {
         "Authorization": f"Bearer {settings.inference_api_key}",
         "Content-Type":  "application/json",
     }
-    messages = [
-        {"role": "system", "content": system_prompt or _GATEWAY_SYSTEM},
-        {"role": "user",   "content": prompt},
-    ]
     payload = {
-        "messages":    messages,
+        "messages": [
+            {"role": "system", "content": system_prompt or _GATEWAY_SYSTEM},
+            {"role": "user",   "content": prompt},
+        ],
         "max_tokens":  max_tokens,
         "temperature": temperature,
     }
     try:
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(120.0, connect=10.0)
-        ) as client:
-            resp = await client.post(settings.chat_api_url, headers=headers, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
-
-        # Standard OpenAI response shape
-        choices = data.get("choices") or []
-        if choices:
-            msg = choices[0].get("message") or {}
-            return str(msg.get("content", "")).strip()
-
-        # Fallback — proxy may return {"content": "..."} or {"output": "..."}
-        return str(data.get("content") or data.get("text") or data.get("output") or "").strip()
-
-    except Exception as exc:
-        logger.warning(f"Gateway generate failed: {exc}")
+        data = await _post_json(
+            settings.chat_api_url,
+            headers=headers,
+            payload=payload,
+            timeout=httpx.Timeout(120.0, connect=10.0),
+            label="Gateway generate",
+        )
+    except LLMUnavailable:
+        if raise_on_failure:
+            raise
+        logger.warning("Gateway generate unavailable after retries — returning empty")
         return ""
+    return _extract_gateway_text(data)
 
 
 async def _gateway_chat(
@@ -191,18 +272,17 @@ async def _gateway_chat(
         "temperature": temperature,
     }
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=10.0)) as client:
-            resp = await client.post(settings.chat_api_url, headers=headers, json=payload)
-            resp.raise_for_status()
-            data = resp.json()
-        choices = data.get("choices") or []
-        if choices:
-            msg = choices[0].get("message") or {}
-            return str(msg.get("content", "")).strip()
-        return str(data.get("content") or data.get("text") or data.get("output") or "").strip()
-    except Exception as exc:
-        logger.warning(f"Gateway chat failed: {exc}")
+        data = await _post_json(
+            settings.chat_api_url,
+            headers=headers,
+            payload=payload,
+            timeout=httpx.Timeout(120.0, connect=10.0),
+            label="Gateway chat",
+        )
+    except LLMUnavailable as exc:
+        logger.warning(f"Gateway chat unavailable after retries: {exc}")
         return ""
+    return _extract_gateway_text(data)
 
 
 async def _check_gateway() -> dict:
@@ -239,6 +319,7 @@ async def _ollama_generate(
     top_p: float,
     repeat_penalty: float,
     json_mode: bool,
+    raise_on_failure: bool = False,
 ) -> str:
     payload: dict = {
         "model":  settings.ollama_model,
@@ -255,18 +336,19 @@ async def _ollama_generate(
         payload["format"] = "json"
 
     try:
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(settings.ollama_timeout, connect=10.0)
-        ) as client:
-            resp = await client.post(
-                f"{settings.ollama_base_url}/api/generate",
-                json=payload,
-            )
-            resp.raise_for_status()
-            return resp.json().get("response", "").strip()
-    except Exception as exc:
-        logger.warning(f"Ollama generate failed: {exc}")
+        data = await _post_json(
+            f"{settings.ollama_base_url}/api/generate",
+            headers={},
+            payload=payload,
+            timeout=httpx.Timeout(settings.ollama_timeout, connect=10.0),
+            label="Ollama generate",
+        )
+    except LLMUnavailable:
+        if raise_on_failure:
+            raise
+        logger.warning("Ollama generate unavailable after retries — returning empty")
         return ""
+    return str(data.get("response", "")).strip()
 
 
 async def _check_ollama() -> dict:
@@ -306,7 +388,14 @@ async def _runpod_generate(
     max_tokens: int,
     temperature: float,
     top_p: float,
+    raise_on_failure: bool = False,
 ) -> str:
+    def _fail(msg: str) -> str:
+        logger.warning(msg)
+        if raise_on_failure:
+            raise LLMUnavailable(msg)
+        return ""
+
     endpoint_id = (
         settings.runpod_light_endpoint_id
         if tier == "light"
@@ -359,20 +448,17 @@ async def _runpod_generate(
                     if poll_status == "COMPLETED":
                         return _extract_runpod_text(poll_data)
                     if poll_status in ("FAILED", "CANCELLED", "TIMED_OUT"):
-                        logger.warning(f"RunPod {tier} job {job_id} ended with {poll_status}")
-                        return ""
-                logger.warning(f"RunPod {tier} job {job_id} did not complete after 10 min of polling")
-                return ""
+                        return _fail(f"RunPod {tier} job {job_id} ended with {poll_status}")
+                return _fail(f"RunPod {tier} job {job_id} did not complete after 10 min of polling")
 
-            logger.warning(
-                f"RunPod {tier} ({endpoint_id}) status={status}: "
-                f"{data.get('error', '')}"
+            return _fail(
+                f"RunPod {tier} ({endpoint_id}) status={status}: {data.get('error', '')}"
             )
-            return ""
 
+    except LLMUnavailable:
+        raise
     except Exception as exc:
-        logger.warning(f"RunPod {tier} ({endpoint_id}) generate failed: {exc}")
-        return ""
+        return _fail(f"RunPod {tier} ({endpoint_id}) generate failed: {exc}")
 
 
 def _extract_runpod_text(data: dict) -> str:
