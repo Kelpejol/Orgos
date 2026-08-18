@@ -114,7 +114,6 @@ async def delete_steps_for_document(doc_code: str) -> int:
             list_id=_get_list_id(),
             list_name=_LIST_NAME,
             odata_filter=f"fields/DocumentCode eq '{doc_code}'",
-            select_fields="id,fields/DocumentCode",
         )
         count = 0
         for item in items:
@@ -144,12 +143,6 @@ async def get_steps_for_document(doc_code: str) -> list[dict]:
                 f"fields/DocumentCode eq '{doc_code}' "
                 "and fields/Status ne 'Withdrawn'"
             ),
-            select_fields=(
-                "id,fields/DocumentCode,fields/DocumentTitle,fields/SectionRef,"
-                "fields/ProcessName,fields/StepNumber,fields/StepText,"
-                "fields/RolesInvolved,fields/FormsReferenced,"
-                "fields/SystemsReferenced,fields/Keywords,fields/DocumentLink"
-            ),
         )
         return [_map_item(i) for i in items]
     except Exception as exc:
@@ -176,12 +169,6 @@ async def get_steps_for_process(
                 f"and fields/ProcessName eq '{process_name}' "
                 "and fields/Status ne 'Withdrawn'"
             ),
-            select_fields=(
-                "id,fields/ProcessName,fields/StepNumber,fields/StepText,"
-                "fields/RolesInvolved,fields/FormsReferenced,"
-                "fields/SystemsReferenced,fields/SectionRef,fields/DocumentTitle,"
-                "fields/Keywords,fields/DocumentLink"
-            ),
         )
         mapped = [_map_item(i) for i in items]
         return sorted(mapped, key=lambda s: s.get("step_number") or 0)
@@ -203,12 +190,6 @@ async def get_all_steps_paginated(top: int = 200) -> list[dict]:
             list_id=_get_list_id(),
             list_name=_LIST_NAME,
             odata_filter="fields/Status ne 'Withdrawn'",
-            select_fields=(
-                "id,fields/DocumentCode,fields/DocumentTitle,fields/ProcessName,"
-                "fields/StepNumber,fields/StepText,fields/RolesInvolved,"
-                "fields/FormsReferenced,fields/SystemsReferenced,fields/Keywords,"
-                "fields/SectionRef,fields/DocumentLink"
-            ),
             top=top,
         )
         return [_map_item(i) for i in items]

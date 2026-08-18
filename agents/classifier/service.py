@@ -127,6 +127,28 @@ def _guidance_text(guidance: dict) -> str:
     )[:500]
 
 
+def _clamp_confidence(*values) -> float:
+    """
+    Return a confidence in the [0.0, 1.0] range the Extraction Review
+    ConfidenceScore column enforces (number, max 1.0, 2 dp).
+
+    The LLM's semantic_confidence is meant to be 0-1 but is sometimes returned
+    on a 0-100 scale; a value > 1.0 was being sent straight through and rejected
+    by SharePoint with a 400 (invalidRequest). Any value in (1, 100] is treated
+    as a percentage and normalised; everything is then clamped and rounded.
+    """
+    best = 0.0
+    for v in values:
+        try:
+            f = float(v or 0)
+        except (TypeError, ValueError):
+            f = 0.0
+        if f > 1.0:
+            f = f / 100.0 if f <= 100.0 else 1.0
+        best = max(best, f)
+    return round(min(1.0, max(0.0, best)), 2)
+
+
 async def _semantic_assist(kind: str, candidate: dict) -> dict:
     """
     Ask AI to enrich a deterministic classifier candidate.
@@ -558,7 +580,7 @@ async def write_harmonisation_items(
                     f"{_guidance_text(guidance)}"
                 )[:500],
                 "ReviewStatus":     "Pending Review",
-                "ConfidenceScore":  max(float(v["best_score"] or 0), float(guidance.get("semantic_confidence") or 0)),
+                "ConfidenceScore":  _clamp_confidence(v["best_score"], guidance.get("semantic_confidence")),
                 "SourceDocumentCode": ", ".join(v["source_docs"][:3]),
             })
             written_variants += 1
@@ -587,7 +609,7 @@ async def write_harmonisation_items(
                 )[:500],
                 "SourceDocumentCode": f"{dup['source_a']} / {dup['source_b']}",
                 "ReviewStatus":      "Pending Review",
-                "ConfidenceScore":   max(float(dup["similarity"] or 0), float(guidance.get("semantic_confidence") or 0)),
+                "ConfidenceScore":   _clamp_confidence(dup["similarity"], guidance.get("semantic_confidence")),
             })
             written_duplicates += 1
         except Exception as exc:
@@ -652,7 +674,7 @@ async def write_conflict_items(conflicts: list[dict]) -> dict:
                 "VariantTerms":             f"Doc A: {conflict['control_a']}\nDoc B: {conflict['control_b']}"[:500],
                 "VariantFrequency":         f"Similarity: {round(conflict['similarity'] * 100)}%",
                 "ReviewStatus":             "Pending Review",
-                "ConfidenceScore":          max(float(conflict["similarity"] or 0), float(guidance.get("semantic_confidence") or 0)),
+                "ConfidenceScore":          _clamp_confidence(conflict["similarity"], guidance.get("semantic_confidence")),
             })
             written += 1
         except Exception as exc:
