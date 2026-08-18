@@ -2011,7 +2011,7 @@ const StakeholdersModal = ({ doc, onClose, onDone }) => {
               cursor: saving ? "not-allowed" : "pointer",
             }}
           >
-            Skip
+            {saving ? "Skipping…" : "Skip"}
           </button>
           <button onClick={onClose} style={{
             padding: "11px 14px", fontSize: 13, borderRadius: 9,
@@ -2209,7 +2209,7 @@ const ApproverModal = ({ doc, onClose, onDone }) => {
           <button
             onClick={handleSkip}
             disabled={saving}
-            title="Move to Approval stage without assigning an approver"
+            title="Finalise without assigning an approver — the document is published and approved automatically"
             style={{
               padding: "11px 14px", fontSize: 12, borderRadius: 9, fontWeight: 500,
               border: "1.5px solid #D0D0D0", background: "transparent",
@@ -2217,7 +2217,7 @@ const ApproverModal = ({ doc, onClose, onDone }) => {
               cursor: saving ? "not-allowed" : "pointer",
             }}
           >
-            Skip
+            {saving ? "Finalising…" : "Skip"}
           </button>
           <button onClick={onClose} style={{
             padding: "11px 14px", fontSize: 13, borderRadius: 9,
