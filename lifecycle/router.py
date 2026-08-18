@@ -955,6 +955,49 @@ def _extraction_outcome_note(ex: dict) -> str:
             f"enough to queue.")
 
 
+async def _background_extract_and_flag(
+    item_id: str, doc: dict, register_item_id: str
+) -> None:
+    """
+    Run control extraction for an approved document OFF the request path.
+
+    Extraction (chunked LLM calls) + role-variant classification + procedural-
+    steps indexing can take tens of seconds. Running it inline made approve/skip
+    appear to hang, so callers fire this as a background task after the document
+    is already Approved + in the Register. It updates the register's
+    LinkedControlsCount and, if no controls were written, appends a visible flag
+    to the lifecycle item's Notes so the outcome is never silent.
+    """
+    try:
+        result = await _extract_approved_document_to_review_queue(doc)
+        logger.info(f"Approved lifecycle {item_id} extraction result: {result}")
+        if register_item_id and result.get("total_extracted") is not None:
+            try:
+                await update_list_item(
+                    settings.document_register_list_id,
+                    "Document Register",
+                    register_item_id,
+                    {"LinkedControlsCount": result.get("total_extracted", 0)},
+                )
+            except Exception as exc:
+                logger.warning(f"Could not update Document Register extraction count: {exc}")
+    except Exception as exc:
+        logger.exception(f"Approved lifecycle {item_id} background extraction failed")
+        result = {"started": True, "written_to_sharepoint": False, "error": str(exc)}
+
+    flag = _extraction_outcome_note(result)
+    if flag:
+        logger.warning(f"Lifecycle {item_id}: {flag}")
+        try:
+            cur = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
+            notes = (cur.get("fields", {}) or {}).get("Notes", "") or ""
+            await update_list_item(
+                _get_list_id(), _LIST_NAME, item_id, {"Notes": notes + "\n\n" + flag}
+            )
+        except Exception as exc:
+            logger.warning(f"Could not record extraction flag on lifecycle {item_id}: {exc}")
+
+
 async def _finalize_document_approval(
     item_id: str,
     doc: dict,
@@ -1100,50 +1143,18 @@ async def _finalize_document_approval(
                 f"(is the 'SharePointUrl' column present on the list?): {exc}"
             )
 
-    # ── Extraction — run BEFORE the final Approved write-back so its outcome
-    #    can be recorded on the lifecycle item in the same write ──────────────
-    extraction_result: dict = {}
-    try:
-        extraction_result = await _extract_approved_document_to_review_queue(doc)
-        logger.info(f"Approved lifecycle {item_id} extraction result: {extraction_result}")
-        if register_item_id and extraction_result.get("total_extracted") is not None:
-            try:
-                await update_list_item(
-                    settings.document_register_list_id,
-                    "Document Register",
-                    register_item_id,
-                    {"LinkedControlsCount": extraction_result.get("total_extracted", 0)},
-                )
-            except Exception as exc:
-                logger.warning(f"Could not update Document Register extraction count: {exc}")
-    except Exception as exc:
-        logger.exception(f"Approved lifecycle {item_id} extraction failed")
-        extraction_result = {
-            "started": True,
-            "written_to_sharepoint": False,
-            "error": str(exc),
-        }
-
-    # Non-silent outcome: if no controls were written, surface it (log + a flag
-    # appended to the lifecycle item's Notes so a reviewer can see and retry it).
-    extraction_flag = _extraction_outcome_note(extraction_result)
-    if extraction_flag:
-        logger.warning(f"Lifecycle {item_id}: {extraction_flag}")
-
-    # ── Final lifecycle write-back: mark Approved and record notes (approval
-    #    note + extraction outcome) in a single write ──────────────────────────
-    note_parts = [p for p in (approval_note, extraction_flag) if p]
+    # ── Mark the document Approved now — fast, synchronous ───────────────────
     fields: dict = {
         "ApprovalStatus":             "Approved",
         "ApprovedDate":               effective_date.isoformat(),
         "ApproverEntraId":            approver_oid,
         "LinkedDocumentRegisterItem": register_item_id,
     }
-    if note_parts:
-        fields["Notes"] = (doc.get("Notes") or "") + "\n\n" + "\n\n".join(note_parts)
+    if approval_note:
+        fields["Notes"] = (doc.get("Notes") or "") + f"\n\n{approval_note}"
     await update_list_item(_get_list_id(), _LIST_NAME, item_id, fields)
 
-    # ── Best-effort: Person/Group column in a separate PATCH ──────────────────
+    # ── Best-effort: Person/Group column in a separate PATCH ─────────────────
     if approver_email:
         try:
             sp_uid = await resolve_sp_user_lookup_id(approver_email)
@@ -1154,7 +1165,21 @@ async def _finalize_document_approval(
         except Exception as exc:
             logger.warning(f"Could not set Approver Person/Group column on approve for item {item_id}: {exc}")
 
-    return register_item_id, extraction_result
+    # ── Extraction runs in the BACKGROUND ────────────────────────────────────
+    # Extraction (chunked LLM calls) + classification + indexing can take tens
+    # of seconds; running it inline made approve/skip look frozen and users
+    # retried. The document is already Approved + in the Register above, so fire
+    # extraction as a background task and return immediately. It populates the
+    # review queue shortly after and flags the item if it finds nothing.
+    asyncio.create_task(
+        _background_extract_and_flag(item_id, dict(doc), register_item_id)
+    )
+
+    return register_item_id, {
+        "started": True,
+        "background": True,
+        "status": "Control extraction is running in the background.",
+    }
 
 
 @router.post("/documents/{item_id}/approve")
