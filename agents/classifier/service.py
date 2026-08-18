@@ -21,6 +21,7 @@
 # to Zone 2 and Zone 3 of the AI Review Queue.
 # =============================================================================
 
+import asyncio
 import logging
 import json
 import re
@@ -364,9 +365,6 @@ async def detect_near_duplicates(
 
     Returns list of duplicate pairs.
     """
-    findings = []
-    seen_pairs: set[tuple] = set()
-
     # All controls to compare: queue items + confirmed register
     all_controls = [
         {
@@ -386,16 +384,40 @@ async def detect_near_duplicates(
         for c in confirmed_controls if c.get("ControlStatement")
     ]
 
+    # The O(n²) SequenceMatcher scan is pure CPU — run it in a worker thread so
+    # it never freezes the event loop for other requests as the register grows.
+    findings = await asyncio.to_thread(
+        _scan_near_duplicate_pairs, all_controls, similarity_threshold
+    )
+    logger.info(f"Near-duplicate detection: {len(findings)} pairs found")
+    return findings
+
+
+def _scan_near_duplicate_pairs(all_controls: list[dict], similarity_threshold: float) -> list[dict]:
+    """
+    CPU-bound O(n²) near-duplicate pair scan (run via asyncio.to_thread).
+    Normalises each statement once, and skips pairs whose lengths are too
+    different to reach the similarity threshold before the expensive compare.
+    """
+    findings: list[dict] = []
+    seen_pairs: set[tuple] = set()
+    norms = [_normalise_control(c["statement"]) for c in all_controls]
+
     for i, ctrl_a in enumerate(all_controls):
-        norm_a = _normalise_control(ctrl_a["statement"])
-        for ctrl_b in all_controls[i+1:]:
-            norm_b = _normalise_control(ctrl_b["statement"])
+        na = norms[i]
+        la = len(na)
+        for j in range(i + 1, len(all_controls)):
+            ctrl_b = all_controls[j]
+            nb = norms[j]
+            lb = len(nb)
+            if la and lb and min(la, lb) / max(la, lb) < 0.5:
+                continue  # lengths too different to be near-duplicates
             pair_key = tuple(sorted([ctrl_a["id"], ctrl_b["id"]]))
             if pair_key in seen_pairs:
                 continue
             seen_pairs.add(pair_key)
 
-            score = _similarity(norm_a, norm_b)
+            score = _similarity(na, nb)
             if score >= similarity_threshold and ctrl_a["source"] != ctrl_b["source"]:
                 findings.append({
                     "control_a":    ctrl_a["statement"],
@@ -408,8 +430,6 @@ async def detect_near_duplicates(
                     "origin_a":     ctrl_a["origin"],
                     "origin_b":     ctrl_b["origin"],
                 })
-
-    logger.info(f"Near-duplicate detection: {len(findings)} pairs found")
     return findings
 
 
@@ -437,23 +457,36 @@ async def detect_conflicts(
     Detect likely contradictory requirements from different documents.
     Conservative first pass: similar controls with different frequency or owner.
     """
-    findings = []
-    seen_pairs: set[tuple[str, str]] = set()
     controls = [i for i in queue_items if i.get("ControlStatement")]
+    # CPU-bound O(n²) scan — run off the event loop.
+    findings = await asyncio.to_thread(_scan_conflict_pairs, controls, similarity_threshold)
+    logger.info(f"Conflict detection: {len(findings)} conflicts found")
+    return findings
+
+
+def _scan_conflict_pairs(controls: list[dict], similarity_threshold: float) -> list[dict]:
+    """CPU-bound conflict pair scan (run via asyncio.to_thread)."""
+    findings: list[dict] = []
+    seen_pairs: set[tuple[str, str]] = set()
+    norms = [_normalise_control(c["ControlStatement"]) for c in controls]
 
     for i, a in enumerate(controls):
-        for b in controls[i + 1:]:
+        na = norms[i]
+        la = len(na)
+        for j in range(i + 1, len(controls)):
+            b = controls[j]
             if a.get("SourceDocumentCode") == b.get("SourceDocumentCode"):
+                continue
+            nb = norms[j]
+            lb = len(nb)
+            if la and lb and min(la, lb) / max(la, lb) < 0.5:
                 continue
             pair_key = tuple(sorted([a["id"], b["id"]]))
             if pair_key in seen_pairs:
                 continue
             seen_pairs.add(pair_key)
 
-            score = _similarity(
-                _normalise_control(a["ControlStatement"]),
-                _normalise_control(b["ControlStatement"]),
-            )
+            score = _similarity(na, nb)
             if score < similarity_threshold:
                 continue
 
@@ -481,8 +514,6 @@ async def detect_conflicts(
                     "similarity": round(score, 2),
                     "reason": "; ".join(reasons),
                 })
-
-    logger.info(f"Conflict detection: {len(findings)} conflicts found")
     return findings
 
 

@@ -7,6 +7,7 @@
 # =============================================================================
 
 import logging
+import time
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -20,6 +21,12 @@ from graph.exceptions import GraphAPIError
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/standards", tags=["Standards Map"])
+
+# Short-TTL cache for the whole-map endpoint. The map is read on every dashboard
+# load and recomputed from two full register reads; a few seconds of staleness
+# is fine for a traffic-light overview and spares Graph the repeated scans.
+_MAP_CACHE_TTL_SECONDS = 15.0
+_map_cache: dict[str, tuple[float, list]] = {}
 
 # =============================================================================
 #  ISO 27001:2022, ISO 9001:2015, NDPA clauses relevant to Dragnet
@@ -105,7 +112,7 @@ CLAUSES = [
 
 def _calculate_traffic_light(
     controls: list[dict],
-    evidence_items: list[dict],
+    clause_evidence: list[dict],
 ) -> str:
     """
     Calculate traffic light per DINT Section 5.4.
@@ -113,6 +120,9 @@ def _calculate_traffic_light(
     Amber:  evidence due soon (≤7 days), submitted but not verified, or new control with no evidence yet
     Red:    evidence overdue, no controls, owner unassigned, evidence rejected
     Returns: "Green" | "Amber" | "Red"
+
+    `clause_evidence` must already be scoped to `controls` (the caller indexes
+    evidence by control id — this avoids an O(controls × evidence) scan here).
     """
     if not controls:
         return "Red"
@@ -123,13 +133,7 @@ def _calculate_traffic_light(
         if not c.get("OwnerEntraId"):
             return "Red"
 
-    clause_evidence = [
-        e
-        for e in evidence_items
-        if any(e.get("LinkedControlId") == c["id"] for c in controls)
-    ]
-
-    if not clause_evidence and controls:
+    if not clause_evidence:
         return "Amber"  # Controls exist but no evidence defined yet
 
     for e in clause_evidence:
@@ -163,6 +167,11 @@ async def get_standards_map(
     Returns all clauses with traffic lights calculated from live register data.
     Optional filter by standard: ISO 27001 | ISO 9001 | NDPA
     """
+    cache_key = standard or "__all__"
+    cached = _map_cache.get(cache_key)
+    if cached and cached[0] > time.monotonic():
+        return cached[1]
+
     try:
         # Fetch all controls and evidence items
         cr_items = await get_list_items(
@@ -202,6 +211,12 @@ async def get_standards_map(
             for i in evd_items
         ]
 
+        # Index evidence by the control it's linked to — once, O(E) — so each
+        # clause is O(its controls) instead of scanning all evidence per clause.
+        evidence_by_control: dict[str, list[dict]] = {}
+        for e in evidence:
+            evidence_by_control.setdefault(e.get("LinkedControlId", ""), []).append(e)
+
         # Build result per clause
         clauses_to_show = [
             c for c in CLAUSES if not standard or c["standard"] == standard
@@ -210,16 +225,15 @@ async def get_standards_map(
         result = []
         for clause_def in clauses_to_show:
             clause_code = clause_def["clause"]
-            # Match controls to this clause (exact or partial match)
             clause_controls = [
                 c for c in controls if c.get("ISOClause", "").startswith(clause_code)
             ]
-            traffic = _calculate_traffic_light(clause_controls, evidence)
+            clause_evidence = [
+                e for c in clause_controls for e in evidence_by_control.get(c["id"], [])
+            ]
+            traffic = _calculate_traffic_light(clause_controls, clause_evidence)
             evidence_accepted = sum(
-                1
-                for e in evidence
-                if any(e.get("LinkedControlId") == c["id"] for c in clause_controls)
-                and e.get("Status") == "Accepted"
+                1 for e in clause_evidence if e.get("Status") == "Accepted"
             )
             result.append(
                 {
@@ -230,6 +244,7 @@ async def get_standards_map(
                 }
             )
 
+        _map_cache[cache_key] = (time.monotonic() + _MAP_CACHE_TTL_SECONDS, result)
         return result
 
     except Exception as exc:

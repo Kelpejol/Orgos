@@ -10,6 +10,7 @@
 #   - Writes to SharePoint AI Review Queue
 # =============================================================================
 
+import asyncio
 import io
 import logging
 import os
@@ -86,6 +87,25 @@ async def _azure_ocr_fallback(file_bytes: bytes, content_type: str) -> str:
     return "\n\n".join(pages)
 
 
+def _pdf_native_text(file_bytes: bytes) -> str:
+    """Synchronous pypdf extraction. Run via asyncio.to_thread (CPU-bound)."""
+    from pypdf import PdfReader
+    reader = PdfReader(io.BytesIO(file_bytes))
+    pages = []
+    for i, page in enumerate(reader.pages):
+        text = page.extract_text()
+        if text:
+            pages.append(f"[Page {i+1}]\n{text}")
+    return _clean_text("\n\n".join(pages))
+
+
+def _docx_native_text(file_bytes: bytes) -> str:
+    """Synchronous mammoth extraction. Run via asyncio.to_thread (CPU-bound)."""
+    import mammoth
+    result = mammoth.extract_raw_text(io.BytesIO(file_bytes))
+    return _clean_text(result.value or "")
+
+
 async def extract_text_from_pdf(file_bytes: bytes) -> str:
     """
     Extract text from a PDF.
@@ -95,14 +115,9 @@ async def extract_text_from_pdf(file_bytes: bytes) -> str:
     """
     native_text = ""
     try:
-        from pypdf import PdfReader
-        reader = PdfReader(io.BytesIO(file_bytes))
-        pages = []
-        for i, page in enumerate(reader.pages):
-            text = page.extract_text()
-            if text:
-                pages.append(f"[Page {i+1}]\n{text}")
-        native_text = _clean_text("\n\n".join(pages))
+        # pypdf is CPU-bound and synchronous — run it in a worker thread so a
+        # large/complex PDF does not block the event loop for all other requests.
+        native_text = await asyncio.to_thread(_pdf_native_text, file_bytes)
         logger.info(f"PDF: native extraction yielded {len(native_text)} chars")
     except ImportError as exc:
         raise RuntimeError("pypdf not installed. Run: pip install pypdf") from exc
@@ -135,9 +150,8 @@ async def extract_text_from_docx(file_bytes: bytes) -> str:
     """
     native_text = ""
     try:
-        import mammoth
-        result = mammoth.extract_raw_text(io.BytesIO(file_bytes))
-        native_text = _clean_text(result.value or "")
+        # mammoth is CPU-bound and synchronous — run it off the event loop.
+        native_text = await asyncio.to_thread(_docx_native_text, file_bytes)
         logger.info(f"DOCX: native extraction yielded {len(native_text)} chars")
     except ImportError as exc:
         raise RuntimeError("mammoth not installed. Run: pip install mammoth") from exc
