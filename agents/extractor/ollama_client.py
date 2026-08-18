@@ -18,7 +18,15 @@ from config import settings
 
 logger = logging.getLogger(__name__)
 
-MAX_CHUNK_CHARS = 8000
+# Max characters sent to the model per LLM call. Raised from the legacy 8000
+# (a local-Ollama-era limit) now that extraction routes to gpt-4o-mini via the
+# gateway (128K-token context ≈ ~500K chars). Long documents are split into
+# chunks of this size so nothing past the first window is silently dropped.
+MAX_CHUNK_CHARS = 50000
+
+# Safety cap on how many chunks a single document may be split into, to bound
+# cost/latency on unexpectedly huge inputs. Exceeding it is logged, not silent.
+MAX_CHUNKS = 12
 
 
 # =============================================================================
@@ -177,9 +185,11 @@ def _build_prompt(doc_type: DocumentType, text: str, doc_code: str) -> str:
     if not system:
         raise ValueError(f"No prompt for {doc_type}")
 
+    # Safety net only — run_extraction already splits text into <= MAX_CHUNK_CHARS
+    # chunks, so this should not normally trigger.
     if len(text) > MAX_CHUNK_CHARS:
         text = text[:MAX_CHUNK_CHARS]
-        logger.warning(f"{doc_code}: truncated to {MAX_CHUNK_CHARS} chars")
+        logger.warning(f"{doc_code}: chunk truncated to {MAX_CHUNK_CHARS} chars")
 
     return (
         f"{system}\n\n"
@@ -187,6 +197,37 @@ def _build_prompt(doc_type: DocumentType, text: str, doc_code: str) -> str:
         f"===BEGIN===\n{text}\n===END===\n\n"
         f"JSON array:"
     )
+
+
+def _chunk_text(text: str, max_chars: int) -> list[str]:
+    """
+    Split text into chunks no larger than max_chars, breaking on paragraph
+    boundaries so a control statement isn't cut mid-sentence. A single
+    paragraph larger than max_chars is hard-sliced as a last resort.
+    """
+    text = text or ""
+    if len(text) <= max_chars:
+        return [text] if text.strip() else []
+
+    chunks: list[str] = []
+    current = ""
+    for para in text.split("\n\n"):
+        candidate = para if not current else f"{current}\n\n{para}"
+        if len(candidate) <= max_chars:
+            current = candidate
+            continue
+        if current:
+            chunks.append(current)
+            current = ""
+        if len(para) > max_chars:
+            # Oversized single paragraph — hard-slice it.
+            for i in range(0, len(para), max_chars):
+                chunks.append(para[i:i + max_chars])
+        else:
+            current = para
+    if current.strip():
+        chunks.append(current)
+    return chunks
 
 
 async def run_extraction(
@@ -197,23 +238,50 @@ async def run_extraction(
     if document_type in NON_EXTRACTION_TYPES:
         return []
 
-    prompt = _build_prompt(document_type, document_text, doc_code)
+    chunks = _chunk_text(document_text, MAX_CHUNK_CHARS)
+    if not chunks:
+        return []
+    if len(chunks) > MAX_CHUNKS:
+        logger.warning(
+            f"{doc_code}: document produced {len(chunks)} chunks; extracting the "
+            f"first {MAX_CHUNKS} (~{MAX_CHUNKS * MAX_CHUNK_CHARS} chars). "
+            f"Raise MAX_CHUNKS if the document is legitimately longer."
+        )
+        chunks = chunks[:MAX_CHUNKS]
 
     logger.info(
         f"Extracting | {doc_code} | {document_type.value} | "
-        f"provider={settings.llm_provider} | chars={len(document_text)}"
+        f"provider={settings.llm_provider} | chars={len(document_text)} | chunks={len(chunks)}"
     )
 
-    raw = await llm_generate(
-        prompt,
-        tier="heavy",
-        max_tokens=2000,
-        temperature=0.1,
-        top_p=0.9,
-        repeat_penalty=1.2,
-        json_mode=True,
-    )
-    return _parse_response(raw, doc_code)
+    all_items: list[dict] = []
+    seen: set[str] = set()
+    for idx, chunk in enumerate(chunks, start=1):
+        label = doc_code if len(chunks) == 1 else f"{doc_code} [chunk {idx}/{len(chunks)}]"
+        try:
+            raw = await llm_generate(
+                _build_prompt(document_type, chunk, doc_code),
+                tier="heavy",
+                max_tokens=4000,
+                temperature=0.1,
+                top_p=0.9,
+                repeat_penalty=1.2,
+                json_mode=True,
+            )
+            items = _parse_response(raw, label)
+        except Exception as exc:
+            # One bad chunk must not sink the whole extraction.
+            logger.warning(f"{label}: extraction chunk failed: {exc}")
+            continue
+        # Dedup by statement text (guards against overlap/repeats across chunks).
+        for it in items:
+            key = (it.get("statement") or "").strip().lower()
+            if key and key not in seen:
+                seen.add(key)
+                all_items.append(it)
+
+    logger.info(f"{doc_code}: {len(all_items)} unique items across {len(chunks)} chunk(s)")
+    return all_items
 
 
 def _parse_response(raw: str, doc_code: str) -> list[dict]:

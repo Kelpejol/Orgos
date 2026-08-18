@@ -931,6 +931,30 @@ async def approval_impact(
         _handle_error(exc, f"approval impact {item_id}")
 
 
+def _extraction_outcome_note(ex: dict) -> str:
+    """
+    A short human-readable flag when extraction did NOT populate the review
+    queue — so a document that finalises with no controls is visible (not
+    silent) on the lifecycle item, and can be retried. Returns "" when controls
+    were written (the happy path needs no flag).
+    """
+    if not ex or ex.get("written_to_sharepoint"):
+        return ""
+    today = date.today().isoformat()
+    if ex.get("error"):
+        return (f"[{today}] ⚠ Control extraction did not run (error: {ex['error']}). "
+                f"Re-run extraction once the source file and LLM are available.")
+    reason = ex.get("reason") or ex.get("skipped_reason")
+    if reason:
+        return f"[{today}] ⚠ Control extraction skipped: {reason}"
+    total = ex.get("total_extracted")
+    if not total:
+        return (f"[{today}] ⚠ Control extraction found 0 controls in this document — "
+                f"nothing added to the review queue. Verify the source and re-run if needed.")
+    return (f"[{today}] ⚠ Control extraction found {total} item(s) but none were complete "
+            f"enough to queue.")
+
+
 async def _finalize_document_approval(
     item_id: str,
     doc: dict,
@@ -1058,51 +1082,30 @@ async def _finalize_document_approval(
             f"{item_id}: {doc['DocumentCode']}"
         )
 
-    # Optional trace fields. Some deployed registers may have these columns;
-    # the provisioned baseline may not, so do not let this block approval.
-    optional_dr_fields: dict = {}
-    if doc.get("SharePointFileUrl"):
-        optional_dr_fields["SharePointUrl"] = doc["SharePointFileUrl"]
-    optional_dr_fields["Source"] = "Document Lifecycle"
-    if optional_dr_fields and register_item_id:
+    # Link the register entry to its source file. Written as its OWN update:
+    # the previous code batched SharePointUrl together with a "Source" field
+    # that does not exist on the list, so SharePoint rejected the whole write
+    # and the URL silently never landed. Keeping SharePointUrl isolated fixes it.
+    if register_item_id and (doc.get("SharePointFileUrl") or ""):
         try:
             await update_list_item(
                 settings.document_register_list_id,
                 "Document Register",
                 register_item_id,
-                optional_dr_fields,
+                {"SharePointUrl": doc["SharePointFileUrl"]},
             )
         except Exception as exc:
-            logger.warning(f"Document Register optional trace fields were not written: {exc}")
+            logger.warning(
+                f"Document Register SharePointUrl not written for {register_item_id} "
+                f"(is the 'SharePointUrl' column present on the list?): {exc}"
+            )
 
-    fields: dict = {
-        "ApprovalStatus":             "Approved",
-        "ApprovedDate":               effective_date.isoformat(),
-        "ApproverEntraId":            approver_oid,
-        "LinkedDocumentRegisterItem": register_item_id,
-    }
-    if approval_note:
-        fields["Notes"] = (doc.get("Notes") or "") + f"\n\n{approval_note}"
-
-    await update_list_item(_get_list_id(), _LIST_NAME, item_id, fields)
-
-    # ── Best-effort: Person/Group column in a separate PATCH ──────────────
-    if approver_email:
-        try:
-            sp_uid = await resolve_sp_user_lookup_id(approver_email)
-            if sp_uid is not None:
-                await update_list_item(
-                    _get_list_id(), _LIST_NAME, item_id, {"ApproverLookupId": sp_uid}
-                )
-        except Exception as exc:
-            logger.warning(f"Could not set Approver Person/Group column on approve for item {item_id}: {exc}")
-
+    # ── Extraction — run BEFORE the final Approved write-back so its outcome
+    #    can be recorded on the lifecycle item in the same write ──────────────
     extraction_result: dict = {}
     try:
         extraction_result = await _extract_approved_document_to_review_queue(doc)
-        logger.info(
-            f"Approved lifecycle {item_id} extraction result: {extraction_result}"
-        )
+        logger.info(f"Approved lifecycle {item_id} extraction result: {extraction_result}")
         if register_item_id and extraction_result.get("total_extracted") is not None:
             try:
                 await update_list_item(
@@ -1120,6 +1123,36 @@ async def _finalize_document_approval(
             "written_to_sharepoint": False,
             "error": str(exc),
         }
+
+    # Non-silent outcome: if no controls were written, surface it (log + a flag
+    # appended to the lifecycle item's Notes so a reviewer can see and retry it).
+    extraction_flag = _extraction_outcome_note(extraction_result)
+    if extraction_flag:
+        logger.warning(f"Lifecycle {item_id}: {extraction_flag}")
+
+    # ── Final lifecycle write-back: mark Approved and record notes (approval
+    #    note + extraction outcome) in a single write ──────────────────────────
+    note_parts = [p for p in (approval_note, extraction_flag) if p]
+    fields: dict = {
+        "ApprovalStatus":             "Approved",
+        "ApprovedDate":               effective_date.isoformat(),
+        "ApproverEntraId":            approver_oid,
+        "LinkedDocumentRegisterItem": register_item_id,
+    }
+    if note_parts:
+        fields["Notes"] = (doc.get("Notes") or "") + "\n\n" + "\n\n".join(note_parts)
+    await update_list_item(_get_list_id(), _LIST_NAME, item_id, fields)
+
+    # ── Best-effort: Person/Group column in a separate PATCH ──────────────────
+    if approver_email:
+        try:
+            sp_uid = await resolve_sp_user_lookup_id(approver_email)
+            if sp_uid is not None:
+                await update_list_item(
+                    _get_list_id(), _LIST_NAME, item_id, {"ApproverLookupId": sp_uid}
+                )
+        except Exception as exc:
+            logger.warning(f"Could not set Approver Person/Group column on approve for item {item_id}: {exc}")
 
     return register_item_id, extraction_result
 
