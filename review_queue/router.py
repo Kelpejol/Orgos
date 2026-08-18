@@ -241,6 +241,13 @@ ZONE1_DECISIONS = {
     "Route to Owner",
 }
 
+# A queue item may only be decided from a non-terminal state. Deciding an
+# already-decided item is blocked (409) so a double-click / retry cannot re-run
+# a cascade and create duplicate downstream records. "Blocked" is included so a
+# genuinely failed cascade can be retried; "Pending Second Review" so a second
+# reviewer can still act.
+_DECIDABLE_STATUSES = {"", "Pending Review", "Pending Second Review", "Blocked"}
+
 
 class Zone1DecideBody(BaseModel):
     decision:          str
@@ -723,6 +730,20 @@ async def zone1_decide(
     try:
         item = _sp_to_item(await get_list_item(_q_id(), _Q_LIST, item_id))
 
+        # Idempotency guard — only decide from a non-terminal state. Without this
+        # a double-click / retry re-runs the accept cascade and creates DUPLICATE
+        # Control + Evidence + Audit records. (Mirrors control_register.accept_control.)
+        current_status = (item.get("ReviewStatus") or "").strip()
+        if current_status not in _DECIDABLE_STATUSES:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"This item already has a decision (status '{current_status}'). "
+                    "Refresh the queue — re-deciding is blocked to prevent duplicate "
+                    "Control/Evidence records."
+                ),
+            )
+
         status_map = {
             "Accept":               "Accepted",
             "Edit and Accept":      "Accepted",
@@ -767,7 +788,27 @@ async def zone1_decide(
                 logger.warning(f"Automatic classifier run after Zone 1 decision failed: {exc}")
             updates["CascadeResult"] = cascade_result
 
-        await update_list_item(_q_id(), _Q_LIST, item_id, updates)
+        try:
+            await update_list_item(_q_id(), _Q_LIST, item_id, updates)
+        except Exception as exc:
+            # If the create-cascade already ran, the Control/Evidence/Audit
+            # records exist but the queue item's status is now stale. Do NOT let
+            # the caller retry (the guard above keys off ReviewStatus, still
+            # non-terminal here) — a retry would duplicate everything.
+            if cascade_result:
+                logger.error(
+                    f"Zone 1 {item_id}: cascade succeeded but final queue update failed "
+                    f"({exc}). Records exist; status is stale — needs manual reconciliation."
+                )
+                raise HTTPException(
+                    status_code=502,
+                    detail=(
+                        "Decision applied — the Control and Evidence records were created — "
+                        "but the queue item could not be updated. Do NOT retry (it would create "
+                        "duplicates). The records exist; an admin should reconcile this item's status."
+                    ),
+                )
+            raise
         updated = _sp_to_item(await get_list_item(_q_id(), _Q_LIST, item_id))
         return {"item": updated, "cascade_result": cascade_result}
 
@@ -1011,6 +1052,16 @@ async def zone2_decide(
     try:
         item = _sp_to_item(await get_list_item(_q_id(), _Q_LIST, item_id))
 
+        current_status = (item.get("ReviewStatus") or "").strip()
+        if current_status not in _DECIDABLE_STATUSES:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"This item already has a decision (status '{current_status}'). "
+                    "Refresh the queue — re-deciding is blocked to prevent duplicate records."
+                ),
+            )
+
         status_map = {
             "Create new document":  "Accepted",
             "Add to existing policy":"Accepted",
@@ -1197,6 +1248,16 @@ async def zone3_decide(
 
     try:
         item = _sp_to_item(await get_list_item(_q_id(), _Q_LIST, item_id))
+
+        current_status = (item.get("ReviewStatus") or "").strip()
+        if current_status not in _DECIDABLE_STATUSES:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"This item already has a decision (status '{current_status}'). "
+                    "Refresh the queue — re-deciding is blocked to prevent duplicate records."
+                ),
+            )
 
         status_map = {
             "Merge":                   "Accepted",

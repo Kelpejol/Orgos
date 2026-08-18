@@ -272,6 +272,14 @@ async def submit_evidence(
         )
 
     try:
+        current = await get_list_item(_list_id(), _LIST_NAME, item_id)
+        if ((current.get("fields", {}) or {}).get("Status", "") or "") == "Accepted":
+            raise HTTPException(
+                status_code=409,
+                detail="This evidence is already Accepted. A Compliance Lead must reopen it "
+                       "(reject) before new evidence can be submitted.",
+            )
+
         fields: dict = {
             "EvidenceLink":   body.evidence_link.strip(),
             "Status":         "Submitted",
@@ -314,6 +322,14 @@ async def upload_evidence(
         raise HTTPException(status_code=503, detail=f"SharePoint upload failed: {exc}")
 
     try:
+        current = await get_list_item(_list_id(), _LIST_NAME, item_id)
+        if ((current.get("fields", {}) or {}).get("Status", "") or "") == "Accepted":
+            raise HTTPException(
+                status_code=409,
+                detail="This evidence is already Accepted. A Compliance Lead must reopen it "
+                       "(reject) before new evidence can be uploaded.",
+            )
+
         fields: dict = {
             "EvidenceLink":   evidence_url,
             "Status":         "Submitted",
@@ -356,6 +372,17 @@ async def verify_evidence(
         )
 
     try:
+        current = await get_list_item(_list_id(), _LIST_NAME, item_id)
+        cur_status = (current.get("fields", {}) or {}).get("Status", "") or ""
+        if cur_status != "Submitted":
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Only submitted evidence can be verified (current status: "
+                    f"'{cur_status or 'Pending'}'). The owner must submit the evidence first."
+                ),
+            )
+
         fields: dict = {
             "Status":     "Accepted" if body.accepted else "Pending",
             "VerifiedBy": user.name or user.oid,

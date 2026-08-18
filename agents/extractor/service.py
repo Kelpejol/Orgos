@@ -491,7 +491,7 @@ async def _write_to_queue(
     doc_type: DocumentType,
     web_url: str = "",
 ) -> int:
-    from graph.client import create_list_item
+    from graph.client import create_list_item, get_list_items
 
     list_id = _get_queue_list_id()
     if not settings.is_list_configured(list_id):
@@ -500,6 +500,25 @@ async def _write_to_queue(
 
     VALID_ITEM_TYPES = {"Extraction", "Orphan", "Harmonisation"}
     written = 0
+    skipped = 0
+
+    # Idempotency: collect the statements already queued for this document so a
+    # re-extraction (revised doc, or a client retry) does not create duplicates.
+    # Best-effort — if the read fails we proceed (writing is better than blocking).
+    existing_keys: set[str] = set()
+    try:
+        existing = await get_list_items(
+            list_id, _QUEUE_LIST_NAME,
+            odata_filter=f"fields/SourceDocumentCode eq '{doc_code}'",
+        )
+        for e in existing:
+            title = ((e.get("fields", {}) or {}).get("Title", "") or "").strip().lower()
+            if title:
+                existing_keys.add(title)
+        if existing_keys:
+            logger.info(f"{doc_code}: {len(existing_keys)} item(s) already queued — will dedupe")
+    except Exception as exc:
+        logger.warning(f"Could not read existing queue items for dedupe ({doc_code}): {exc}")
 
     for item in items:
         try:
@@ -510,6 +529,14 @@ async def _write_to_queue(
                 or item.get("obligation_statement")
                 or "Untitled"
             )
+
+            # Skip anything already queued for this document (and dedupe within
+            # this batch), keyed on the same value used for the item Title.
+            dedupe_key = str(stmt)[:255].strip().lower()
+            if dedupe_key in existing_keys:
+                skipped += 1
+                continue
+            existing_keys.add(dedupe_key)
 
             cat = item.get("extraction_category", "Extraction")
             if cat not in VALID_ITEM_TYPES:
@@ -609,7 +636,10 @@ async def _write_to_queue(
         except Exception as exc:
             logger.error(f"Failed to write queue item: {exc}")
 
-    logger.info(f"Wrote {written}/{len(items)} items for {doc_code}")
+    logger.info(
+        f"Wrote {written}/{len(items)} items for {doc_code}"
+        + (f" (skipped {skipped} already-queued duplicate(s))" if skipped else "")
+    )
     return written
 
 
