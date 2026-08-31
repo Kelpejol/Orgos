@@ -1740,23 +1740,44 @@ async def cdi_fix_plan(
     user: CurrentUser = Depends(get_current_user),
 ) -> dict:
     """
-    Build the reviewer's fix plan: every recorded CDI failure, enriched with
-    whether its exact text can be located in the CURRENT document
-    (located / ambiguous / not_found) and how it is applied
-    (auto / choice / structural / manual). No mutation, no LLM.
+    Build the reviewer's fix plan. The CDI check is re-run on the LIVE document
+    so the plan always carries fresh, locatable fix data (find/replace/anchor/
+    fixable) — this self-heals documents whose stored failures predate the
+    enriched-finding format. Each finding is then located in the file
+    (located / ambiguous / not_found). Falls back to stored failures only if the
+    re-check cannot run.
     """
     try:
         item = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
         doc  = await _sp_to_doc(item)
 
-        failures = _load_cdi_failures(doc)
-        if not failures:
+        if not doc.get("SharePointFileUrl"):
             return {"document_id": item_id, "title": doc.get("Title", ""),
                     "editable": False, "findings": [],
-                    "message": "No CDI failures recorded for this document."}
+                    "message": "No file has been uploaded for this document yet."}
 
-        _, filename = (await _download_doc_bytes(doc)) if doc.get("SharePointFileUrl") else (b"", "")
+        file_bytes, filename = await _download_doc_bytes(doc)
         is_docx = filename.lower().endswith(".docx")
+
+        # Re-run the CDI check to get fresh, enriched findings. Fall back to the
+        # stored failures if the live re-check errors (e.g. LLM unavailable).
+        failures: list[dict] = []
+        try:
+            role_titles = await _role_register_titles()
+            doc_code = item.get("fields", {}).get("DocumentCode", "")
+            recheck = await run_cdi_check(file_bytes, filename, doc_code, role_titles)
+            if not recheck.get("error"):
+                failures = [c for c in recheck.get("checks", []) if c.get("result") == "FAIL"]
+        except Exception as exc:
+            logger.warning(f"CDI re-check for fix plan {item_id} failed, using stored failures: {exc}")
+
+        if not failures:
+            failures = _load_cdi_failures(doc)
+
+        if not failures:
+            return {"document_id": item_id, "title": doc.get("Title", ""),
+                    "editable": is_docx, "findings": [],
+                    "message": "No CDI failures on the current document."}
 
         # Locate each fixable finding in the live document (docx only)
         locate_status: dict[str, str] = {}
@@ -1764,7 +1785,6 @@ async def cdi_fix_plan(
         contexts: dict[str, list[str]] = {}
         if is_docx:
             from agents.cdi_checker.fixer import preview_locations
-            file_bytes, _ = await _download_doc_bytes(doc)
             probe = [
                 {"fix_id": _fix_id_for(i, f), "find": f.get("find", "")}
                 for i, f in enumerate(failures)
