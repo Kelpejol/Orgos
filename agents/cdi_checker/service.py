@@ -136,6 +136,15 @@ _ROLE_SUBJECT_RE = re.compile(
 _NON_ROLE_SUBJECTS = {
     "document", "policy", "procedure", "process", "system",
     "organization", "company", "committee", "board",
+    # Collective / audience / distribution terms — legitimately used (e.g.
+    # "Distribution: All Staff") and NOT roles that need to be in the Role
+    # Register. CDI-16 must not flag these as unregistered roles.
+    "all staff", "staff", "staff members", "all staff members",
+    "members of staff", "member of staff", "all users", "users",
+    "all employees", "employees", "all personnel", "personnel",
+    "everyone", "all", "management", "leadership", "stakeholders",
+    "team", "the team", "administration", "responsible parties",
+    "relevant staff", "third party", "third parties",
 }
 
 
@@ -790,6 +799,12 @@ def _ai_result_to_checks(
 
     # CDI-16
     findings_16 = ai.get("cdi_16", {}).get("findings") or []
+    # Drop collective/audience terms the LLM may return ("All Staff", etc.) —
+    # these are legitimate and not roles that belong in the Role Register.
+    findings_16 = [
+        f for f in findings_16
+        if (f.get("role", "") or "").lower().strip() not in _NON_ROLE_SUBJECTS
+    ]
     if findings_16:
         for f in findings_16[:3]:
             role = f.get("role", "unknown role")
