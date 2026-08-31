@@ -197,12 +197,12 @@ async def download_file(drive_id: str, item_id: str) -> tuple[bytes, str]:
     return content.content, filename
 
 
-def extract_text(file_bytes: bytes, filename: str) -> str:
+async def extract_text(file_bytes: bytes, filename: str) -> str:
     ext = os.path.splitext(filename)[1].lower()
     if ext == ".pdf":
-        return extract_text_from_pdf(file_bytes)
+        return await extract_text_from_pdf(file_bytes)
     elif ext == ".docx":
-        return extract_text_from_docx(file_bytes)
+        return await extract_text_from_docx(file_bytes)
     elif ext == ".txt":
         return file_bytes.decode("utf-8", errors="replace")
     raise ValueError(f"Unsupported: {ext}")
@@ -450,7 +450,7 @@ async def bulk_extract(
             try:
                 file_bytes, _ = await download_file(drive_id, file_id)
 
-                text = extract_text(file_bytes, filename)
+                text = await extract_text(file_bytes, filename)
                 if not text.strip():
                     print(f"              → Empty — skipping")
                     processed_ids.add(file_id)

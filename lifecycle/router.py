@@ -1454,9 +1454,23 @@ async def upload_doc_file(
             cdi_status   = "Failed"
             cdi_failures = json.dumps([
                 {
+                    # back-compat keys (existing readers)
                     "check":  c["check_id"],
                     "detail": c["finding"],
                     "fix":    c.get("proposed_fix", ""),
+                    # full finding — everything the deterministic fixer needs
+                    "check_id":     c["check_id"],
+                    "check_name":   c.get("check_name", ""),
+                    "finding":      c["finding"],
+                    "current_text": c.get("current_text", ""),
+                    "proposed_fix": c.get("proposed_fix", ""),
+                    "find":         c.get("find", ""),
+                    "replace":      c.get("replace", ""),
+                    "anchor":       c.get("anchor", ""),
+                    "needs_choice": c.get("needs_choice", False),
+                    "choices":      c.get("choices", []),
+                    "fixable":      c.get("fixable", "manual"),
+                    "confidence":   c.get("confidence", 0),
                 }
                 for c in cdi_result["checks"] if c["result"] == "FAIL"
             ])
@@ -1671,6 +1685,277 @@ Return only the JSON array, no other text."""
         raise
     except Exception as exc:
         _handle_error(exc, f"cdi-fix-suggestions {item_id}")
+
+
+# =============================================================================
+#  CDI Auto-Fix — locate + apply exact fixes to the .docx (deterministic)
+#
+#  The AI produced find/replace/anchor at CDI-check time; here we (1) show the
+#  reviewer which findings are locatable in the current file, and (2) apply the
+#  ones the reviewer confirmed. No LLM runs here — pure find-and-replace on a
+#  working copy, verified, with the original preserved in SharePoint history.
+# =============================================================================
+
+_FIX_APPLICABLE_KINDS = {"auto", "choice", "manual"}  # not "structural"/"none"
+
+
+def _load_cdi_failures(doc: dict) -> list[dict]:
+    raw = doc.get("CDIFailures", "")
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+        return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _fix_id_for(index: int, failure: dict) -> str:
+    return f"{failure.get('check_id') or failure.get('check', 'CDI')}-{index}"
+
+
+async def _download_doc_bytes(doc: dict) -> tuple[bytes, str]:
+    url = doc.get("SharePointFileUrl")
+    if not url:
+        raise HTTPException(status_code=404, detail="No file uploaded for this document yet.")
+    file_bytes, filename = await download_file_from_sharepoint(url)
+    return file_bytes, (filename or "document.docx")
+
+
+class ConfirmedFix(BaseModel):
+    fix_id: str
+    check_id: str = ""
+    find: str = ""
+    replace: str = ""
+    occurrence_index: Optional[int] = None
+
+
+class ApplyCdiFixes(BaseModel):
+    fixes: list[ConfirmedFix]
+
+
+@router.get("/documents/{item_id}/cdi-fix/plan")
+async def cdi_fix_plan(
+    item_id: str,
+    user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    """
+    Build the reviewer's fix plan: every recorded CDI failure, enriched with
+    whether its exact text can be located in the CURRENT document
+    (located / ambiguous / not_found) and how it is applied
+    (auto / choice / structural / manual). No mutation, no LLM.
+    """
+    try:
+        item = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
+        doc  = await _sp_to_doc(item)
+
+        failures = _load_cdi_failures(doc)
+        if not failures:
+            return {"document_id": item_id, "title": doc.get("Title", ""),
+                    "editable": False, "findings": [],
+                    "message": "No CDI failures recorded for this document."}
+
+        _, filename = (await _download_doc_bytes(doc)) if doc.get("SharePointFileUrl") else (b"", "")
+        is_docx = filename.lower().endswith(".docx")
+
+        # Locate each fixable finding in the live document (docx only)
+        locate_status: dict[str, str] = {}
+        occ_counts: dict[str, int] = {}
+        contexts: dict[str, list[str]] = {}
+        if is_docx:
+            from agents.cdi_checker.fixer import preview_locations
+            file_bytes, _ = await _download_doc_bytes(doc)
+            probe = [
+                {"fix_id": _fix_id_for(i, f), "find": f.get("find", "")}
+                for i, f in enumerate(failures)
+            ]
+            results = preview_locations(file_bytes, probe)
+            for fid, res in results.items():
+                locate_status[fid] = res.status
+                occ_counts[fid] = len(res.occurrences)
+                contexts[fid] = [o.context for o in res.occurrences[:5]]
+
+        findings = []
+        for i, f in enumerate(failures):
+            fid = _fix_id_for(i, f)
+            fixable = f.get("fixable", "manual")
+            find = f.get("find", "")
+            loc = locate_status.get(fid, "unknown")
+            # Auto/choice fixes need a locatable find; downgrade if not found.
+            can_apply = (
+                is_docx and fixable in _FIX_APPLICABLE_KINDS
+                and bool(find) and loc in ("located", "ambiguous")
+            )
+            findings.append({
+                "fix_id":        fid,
+                "check_id":      f.get("check_id") or f.get("check", ""),
+                "check_name":    f.get("check_name", ""),
+                "finding":       f.get("finding") or f.get("detail", ""),
+                "anchor":        f.get("anchor") or f.get("current_text", ""),
+                "find":          find,
+                "replace":       f.get("replace", ""),
+                "proposed_fix":  f.get("proposed_fix") or f.get("fix", ""),
+                "needs_choice":  bool(f.get("needs_choice", False)),
+                "choices":       f.get("choices", []),
+                "fixable":       fixable,
+                "confidence":    f.get("confidence", 0),
+                "locate_status": loc,
+                "occurrences":   occ_counts.get(fid, 0),
+                "contexts":      contexts.get(fid, []),
+                "can_apply":     can_apply,
+            })
+
+        return {
+            "document_id": item_id,
+            "title":       doc.get("Title", ""),
+            "cdi_status":  doc.get("CDIStatus", ""),
+            "editable":    is_docx,
+            "editable_note": ("" if is_docx else
+                              "This document is a PDF — fixes are shown as guidance but "
+                              "cannot be auto-applied. Upload the editable .docx to auto-fix."),
+            "findings":    findings,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _handle_error(exc, f"cdi-fix plan {item_id}")
+
+
+@router.post("/documents/{item_id}/cdi-fix/apply")
+async def cdi_fix_apply(
+    item_id: str,
+    body: ApplyCdiFixes,
+    user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    """
+    Apply the reviewer's confirmed fixes to the document's .docx, save it as a
+    new version, re-run the CDI check, and audit-log every applied change.
+    Deterministic — the AI is not involved. The prior version is preserved in
+    SharePoint history, so every change is reversible.
+    """
+    if not body.fixes:
+        raise HTTPException(status_code=422, detail="No fixes were confirmed.")
+    try:
+        item = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
+        doc  = await _sp_to_doc(item)
+
+        file_bytes, filename = await _download_doc_bytes(doc)
+        if not filename.lower().endswith(".docx"):
+            raise HTTPException(
+                status_code=422,
+                detail="Auto-fix only supports .docx files. Upload the editable Word document.",
+            )
+
+        # Apply (pure, deterministic)
+        from agents.cdi_checker.fixer import apply_fixes
+        fixes = [f.model_dump() for f in body.fixes]
+        new_bytes, outcomes = apply_fixes(file_bytes, fixes)
+
+        applied = [o for o in outcomes if o.status == "applied"]
+        if not applied:
+            return {
+                "document_id": item_id,
+                "applied_count": 0,
+                "outcomes": [_outcome_dict(o) for o in outcomes],
+                "message": "No fixes could be applied — see per-fix reasons.",
+                "cdi_status": doc.get("CDIStatus", ""),
+            }
+
+        # Save as a new version (same path → SharePoint keeps version history)
+        file_url = await _upload_to_sharepoint(item_id, filename, new_bytes)
+
+        # Re-run the CDI check on the fixed document
+        role_titles = await _role_register_titles()
+        doc_code = item.get("fields", {}).get("DocumentCode", "")
+        recheck = await run_cdi_check(new_bytes, filename, doc_code, role_titles)
+        cdi_status, cdi_failures = _cdi_result_to_storage(recheck)
+
+        await update_list_item(_get_list_id(), _LIST_NAME, item_id, {
+            "SharePointFileUrl": file_url,
+            "Revised":           True,
+            "CDIStatus":         cdi_status,
+            "CDIFailures":       cdi_failures,
+        })
+
+        await _audit_cdi_fixes(item_id, doc, user, applied)
+
+        return {
+            "document_id":    item_id,
+            "applied_count":  len(applied),
+            "outcomes":       [_outcome_dict(o) for o in outcomes],
+            "cdi_status":     cdi_status,
+            "remaining_failures": recheck.get("fail_count", 0) if not recheck.get("passed") else 0,
+            "sharepoint_url": file_url,
+            "message":        f"Applied {len(applied)} fix(es). CDI re-check: {cdi_status}.",
+        }
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _handle_error(exc, f"cdi-fix apply {item_id}")
+
+
+def _outcome_dict(o) -> dict:
+    return {
+        "fix_id": o.fix_id, "check_id": o.check_id, "status": o.status,
+        "detail": o.detail, "before": o.before, "after": o.after,
+    }
+
+
+async def _role_register_titles() -> list[str]:
+    try:
+        role_items = await get_list_items(settings.role_register_list_id, "Role Register")
+        return [
+            i.get("fields", {}).get("Title", "")
+            for i in role_items if i.get("fields", {}).get("Title")
+        ]
+    except Exception as exc:
+        logger.debug(f"Role Register unavailable for CDI re-check ({exc})")
+        return []
+
+
+def _cdi_result_to_storage(cdi_result: dict) -> tuple[str, str]:
+    """Mirror of the upload endpoint's CDI storage — status + serialised failures."""
+    if cdi_result.get("error"):
+        return "Error", json.dumps([{
+            "check": "CDI", "detail": cdi_result["error"],
+            "fix": "Resolve the issue above, then re-upload the document.",
+        }])
+    if cdi_result.get("passed"):
+        return "Passed", ""
+    return "Failed", json.dumps([
+        {
+            "check": c["check_id"], "detail": c["finding"], "fix": c.get("proposed_fix", ""),
+            "check_id": c["check_id"], "check_name": c.get("check_name", ""),
+            "finding": c["finding"], "current_text": c.get("current_text", ""),
+            "proposed_fix": c.get("proposed_fix", ""), "find": c.get("find", ""),
+            "replace": c.get("replace", ""), "anchor": c.get("anchor", ""),
+            "needs_choice": c.get("needs_choice", False), "choices": c.get("choices", []),
+            "fixable": c.get("fixable", "manual"), "confidence": c.get("confidence", 0),
+        }
+        for c in cdi_result["checks"] if c["result"] == "FAIL"
+    ])
+
+
+async def _audit_cdi_fixes(item_id: str, doc: dict, user: CurrentUser, applied: list) -> None:
+    """Write one Audit Log record per applied CDI fix. Never raises."""
+    if not settings.is_list_configured(settings.audit_log_list_id):
+        return
+    for o in applied:
+        try:
+            await create_list_item(settings.audit_log_list_id, "Audit Log", {
+                "Title":              f"CDI Fix — {doc.get('DocumentCode', '')} [{o.check_id}]",
+                "Action":             "CDI Auto-Fix",
+                "ReviewerEntraId":    user.oid,
+                "ReviewerName":       user.name,
+                "Decision":           "Applied",
+                "SourceDocumentCode": doc.get("DocumentCode", ""),
+                "ControlStatement":   (f"{o.check_id}: '{o.before[:200]}' → '{o.after[:200]}'")[:500],
+                "Timestamp":          datetime.now(timezone.utc).isoformat(),
+            })
+        except Exception as exc:
+            logger.error(f"AUDIT GAP — CDI fix {o.fix_id} on {item_id} not logged: {exc}")
 
 
 @router.post("/documents/{item_id}/feedback/ai-suggestions")

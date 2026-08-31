@@ -16,6 +16,7 @@ import { LoadingState, ErrorState, EmptyState } from "../../components/shared/Lo
 import UserSearchField from "../../components/shared/UserSearchField.jsx";
 import { CascadeImpactPreview } from "../../components/shared/CascadeImpactModal.jsx";
 import ReviseDocumentModal from "../../components/shared/ReviseDocumentModal.jsx";
+import CdiFixPanel from "../../components/shared/CdiFixPanel.jsx";
 import apiClient from "../../api/grcApi.js";
 import { useAiSuggestion } from "../../hooks/useAiSuggestion.js";
 
@@ -1194,6 +1195,7 @@ const LifecycleCard = ({
   );
   const [claiming,        setClaiming]        = useState(false);
   const [claimError,      setClaimError]      = useState("");
+  const [showCdiFix,      setShowCdiFix]      = useState(false);
   const qc = useQueryClient();
 
   const isOwner         = doc.OwnerEntraId === currentUserOid;
@@ -1293,6 +1295,11 @@ const LifecycleCard = ({
   };
  
   return (
+   <>
+    {showCdiFix && (
+      <CdiFixPanel docId={doc.id} docCode={doc.DocumentCode}
+        onClose={() => setShowCdiFix(false)} />
+    )}
     <div style={{
       background: "var(--color-background-primary)",
       border: isOwner
@@ -1645,15 +1652,14 @@ const LifecycleCard = ({
                   — no upload needed
                 </div>
               )}
-              {/* Fix with AI — only in Review when CDI failures exist */}
+              {/* Auto-fix CDI issues — guided confirm-and-apply (Review only) */}
               {isReview && cdiCount > 0 && (
-                <button onClick={handleGetCdiFix} disabled={cdiFix.loading} style={{
-                  padding: "7px", fontSize: 11, borderRadius: 7,
-                  border: "1.5px solid #AFA9EC", background: cdiFix.loading ? "#F0F0F0" : "#EEEDFE",
-                  color: cdiFix.loading ? "#999" : "#3C3489",
-                  cursor: cdiFix.loading ? "not-allowed" : "pointer", fontWeight: 500,
+                <button onClick={() => setShowCdiFix(true)} style={{
+                  padding: "7px", fontSize: 11, borderRadius: 7, fontWeight: 600,
+                  border: "1.5px solid #9FD9C8", background: "#E7F5F0", color: "#085041",
+                  cursor: "pointer",
                 }}>
-                  {cdiFix.loading ? "Thinking..." : cdiFix.hasSuggestion ? "Refresh AI fix" : "Fix with AI"}
+                  Fix CDI issues
                 </button>
               )}
               {/* Reassign */}
@@ -1731,6 +1737,7 @@ const LifecycleCard = ({
         </span>
       </div>
     </div>
+   </>
   );
 };
  

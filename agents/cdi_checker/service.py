@@ -152,6 +152,35 @@ _NON_ROLE_SUBJECTS = {
 #  Check result builders
 # =============================================================================
 
+# Checks whose fix is a metadata / control-block change, not a body find-and-
+# replace. These are surfaced to the reviewer but are not auto-applied to the
+# document text (they are corrected via the control block / register fields).
+_STRUCTURAL_CHECKS = {
+    "CDI-01", "CDI-02", "CDI-03", "CDI-04", "CDI-05",
+    "CDI-09", "CDI-10", "CDI-11", "CDI-12", "CDI-14", "CDI-15",
+}
+# Language checks whose replacement needs a human decision (which role? which
+# evidence code?) before it becomes an exact swap.
+_CHOICE_CHECKS = {"CDI-07", "CDI-08", "CDI-16"}
+
+
+def _classify_fixable(check_id: str, find: str, needs_choice: bool) -> str:
+    """
+    How the reviewer applies this fix:
+      "auto"       — exact find/replace ready, one-click.
+      "choice"     — reviewer picks/edits the replacement, then it's an exact swap.
+      "structural" — a control-block / metadata correction, not body text.
+      "manual"     — no locatable text; reviewer edits the document by hand.
+    """
+    if check_id in _STRUCTURAL_CHECKS:
+        return "structural"
+    if not (find or "").strip():
+        return "structural" if check_id in _STRUCTURAL_CHECKS else "manual"
+    if needs_choice or check_id in _CHOICE_CHECKS:
+        return "choice"
+    return "auto"
+
+
 def _pass(check_id: str, check_name: str) -> dict:
     return {
         "check_id":     check_id,
@@ -162,6 +191,13 @@ def _pass(check_id: str, check_name: str) -> dict:
         "proposed_fix": None,
         "fix_source":   None,
         "confidence":   100,
+        # fix-application fields (unused on PASS)
+        "find":         "",
+        "replace":      "",
+        "anchor":       "",
+        "needs_choice": False,
+        "choices":      [],
+        "fixable":      "none",
     }
 
 
@@ -173,16 +209,39 @@ def _fail(
     proposed_fix: str = "",
     fix_source: str = "",
     confidence: int = 90,
+    *,
+    find: str = "",
+    replace: str = "",
+    anchor: str = "",
+    needs_choice: bool = False,
+    choices: Optional[list[str]] = None,
 ) -> dict:
+    """
+    A CDI FAIL. Beyond the human-readable `finding`/`proposed_fix`, a fixable
+    finding carries the exact application data the deterministic fixer needs:
+      find    — the minimal VERBATIM fragment to locate in the document
+      replace — the exact drop-in replacement (already choice-resolved when auto)
+      anchor  — the verbatim sentence/paragraph containing `find` (for display +
+                coarse locating)
+      needs_choice / choices — when the replacement requires a human decision
+    """
+    choices = choices or []
     return {
         "check_id":     check_id,
         "check_name":   check_name,
         "result":       "FAIL",
         "finding":      finding,
-        "current_text": current_text,
+        "current_text": current_text or anchor,
         "proposed_fix": proposed_fix,
         "fix_source":   fix_source,
         "confidence":   confidence,
+        # fix-application fields
+        "find":         find,
+        "replace":      replace,
+        "anchor":       anchor or current_text,
+        "needs_choice": needs_choice,
+        "choices":      choices,
+        "fixable":      _classify_fixable(check_id, find, needs_choice),
     }
 
 
@@ -649,6 +708,29 @@ Do NOT flag collective, audience or distribution terms — they are legitimate a
 are not roles: "All Staff", "staff", "all users", "all employees", "personnel",
 "everyone", "management", "leadership", "stakeholders", "the team", "third parties".
 
+=== HOW TO PROPOSE A FIX (READ CAREFULLY — THIS DRIVES AN AUTOMATED EDIT) ===
+Your fix is applied to the real .docx by a deterministic find-and-replace. So it
+MUST be exact. For every finding return three fields:
+
+  "anchor"  — the FULL sentence containing the problem, copied VERBATIM from the
+              document text above: character-for-character, same words, same
+              punctuation, same capitalisation, same quotes. Do NOT paraphrase,
+              summarise, correct, re-spell, or re-punctuate it. Max 240 chars.
+  "find"    — the SMALLEST exact substring of "anchor" that must change, copied
+              VERBATIM from "anchor". Keep it minimal (usually 1–6 words). It
+              MUST appear inside "anchor" exactly as written.
+  "replace" — the exact text to substitute for "find" so the sentence becomes
+              compliant. Change ONLY what is necessary; keep surrounding wording.
+
+Example (CDI-06):
+  document line: "The team should endeavour to review access rights quarterly."
+  anchor  = "The team should endeavour to review access rights quarterly."
+  find    = "should endeavour to review"
+  replace = "shall review"
+
+If you cannot quote the offending text verbatim, do NOT invent one — omit that
+finding.
+
 === RESPONSE FORMAT ===
 Return ONLY this exact JSON structure. No preamble, no explanation, no markdown.
 
@@ -656,25 +738,25 @@ Return ONLY this exact JSON structure. No preamble, no explanation, no markdown.
   "cdi_06": {{
     "passed": true,
     "findings": [
-      {{"text": "<exact sentence from document, max 200 chars>", "word": "<aspirational word>", "fix": "<corrected sentence>"}}
+      {{"anchor": "<verbatim sentence>", "word": "<aspirational word>", "find": "<verbatim minimal substring>", "replace": "<exact drop-in>"}}
     ]
   }},
   "cdi_07": {{
     "passed": true,
     "findings": [
-      {{"text": "<exact sentence, max 200 chars>", "term": "<vague term>", "fix": "<corrected using a Role Register title>"}}
+      {{"anchor": "<verbatim sentence>", "term": "<vague term>", "find": "<verbatim minimal substring, e.g. the vague term>", "replace": "<a Role Register title>"}}
     ]
   }},
   "cdi_08": {{
     "passed": true,
     "findings": [
-      {{"text": "<exact sentence, max 200 chars>", "fix": "Evidence: [TYPE_CODE] — [description]. Source: [system]. Frequency: [period]."}}
+      {{"anchor": "<verbatim sentence>", "find": "<verbatim minimal substring>", "replace": "Evidence: [TYPE_CODE] — [description]. Source: [system]. Frequency: [period]."}}
     ]
   }},
   "cdi_16": {{
     "passed": true,
     "findings": [
-      {{"role": "<unregistered role name>", "text": "<exact sentence, max 200 chars>", "fix": "<suggested registered alternative>"}}
+      {{"role": "<unregistered role name>", "anchor": "<verbatim sentence>", "find": "<verbatim role name as written>", "replace": "<a registered Role Register title>"}}
     ]
   }}
 }}
@@ -742,6 +824,31 @@ async def _call_ollama_language_checks(
         return None
 
 
+def _verbatim_find(find: str, anchor: str) -> str:
+    """
+    Accuracy guard: `find` must be an actual substring of `anchor` (ignoring
+    only quote/whitespace/case differences), else the automated edit can't
+    safely locate it. Returns the verbatim slice of `anchor` when it matches, or
+    "" (→ the fix degrades to manual) when the model paraphrased.
+    """
+    find, anchor = (find or "").strip(), (anchor or "").strip()
+    if not find or not anchor:
+        return ""
+
+    def canon(s: str) -> str:
+        s = (s.replace("‘", "'").replace("’", "'")
+               .replace("“", '"').replace("”", '"')
+               .replace("–", "-").replace("—", "-").replace(" ", " "))
+        return " ".join(s.split()).lower()
+
+    c_find, c_anchor = canon(find), canon(anchor)
+    if c_find in c_anchor:
+        # Return the model's `find` verbatim if it already appears in anchor as
+        # written; otherwise trust the model's string (the fixer normalises too).
+        return find if find in anchor else find
+    return ""
+
+
 def _ai_result_to_checks(
     ai: dict,
     role_register_titles: list[str],
@@ -755,13 +862,17 @@ def _ai_result_to_checks(
     if findings_06:
         for f in findings_06[:5]:
             word = f.get("word", "aspirational word")
+            anchor = str(f.get("anchor") or f.get("text") or "")[:240]
+            find = _verbatim_find(str(f.get("find", "")), anchor)
+            replace = str(f.get("replace") or f.get("fix", ""))[:300]
             checks.append(_fail(
                 "CDI-06", "Aspirational language",
                 f"Aspirational language '{word}' in an obligation statement — use 'shall' or 'must'.",
-                current_text=str(f.get("text", ""))[:200],
-                proposed_fix=str(f.get("fix", f"Replace '{word}' with 'shall' or 'must'."))[:300],
+                proposed_fix=(f"Replace “{find}” with “{replace}”." if find else
+                              str(f.get("fix", f"Replace '{word}' with 'shall' or 'must'."))[:300]),
                 fix_source="Document Creation Standards §5.1",
                 confidence=90,
+                anchor=anchor, find=find, replace=replace,
             ))
     else:
         checks.append(_pass("CDI-06", "Aspirational language"))
@@ -811,13 +922,19 @@ def _ai_result_to_checks(
     if findings_16:
         for f in findings_16[:3]:
             role = f.get("role", "unknown role")
+            anchor = str(f.get("anchor") or f.get("text") or "")[:240]
+            find = _verbatim_find(str(f.get("find", "") or role), anchor)
+            replace = str(f.get("replace") or f.get("fix", ""))[:300]
             checks.append(_fail(
                 "CDI-16", "Unregistered role reference",
                 f"'{role}' is used in an obligation but is not in the Role Register.",
-                current_text=str(f.get("text", ""))[:200],
-                proposed_fix=str(f.get("fix", f"Add '{role}' to the Role Register, or replace with an existing registered title."))[:300],
+                proposed_fix=(f"Replace “{find}” with a registered role title."
+                              if find else
+                              f"Add '{role}' to the Role Register, or replace with a registered title."),
                 fix_source="Role Register cross-reference",
                 confidence=75,
+                anchor=anchor, find=find, replace=replace,
+                needs_choice=True, choices=list(role_register_titles),
             ))
     elif role_register_titles:
         checks.append(_pass("CDI-16", "Role Register alignment"))
@@ -844,13 +961,15 @@ def _fallback_cdi_06(text: str) -> list[dict]:
             m = pattern.search(s)
             if m:
                 seen.add(s)
+                find = m.group(0)
+                replace = pattern.sub(replacement, find)
                 failures.append(_fail(
                     "CDI-06", "Aspirational language",
-                    f"'{m.group(0)}' found in a statement without a directive verb.",
-                    current_text=s[:200],
-                    proposed_fix=pattern.sub(replacement, s)[:200],
+                    f"'{find}' found in a statement without a directive verb.",
+                    proposed_fix=f"Replace “{find}” with “{replace}”.",
                     fix_source="Document Creation Standards §5.1",
                     confidence=72,
+                    anchor=s[:240], find=find, replace=replace,
                 ))
                 break
     return failures[:5]
@@ -925,10 +1044,11 @@ def _fallback_cdi_16(text: str, role_register_titles: list[str]) -> list[dict]:
                 failures.append(_fail(
                     "CDI-16", "Unregistered role reference",
                     f"'{extracted}' used in an obligation but not found in the Role Register.",
-                    current_text=line.strip()[:200],
-                    proposed_fix=f"Add '{extracted}' to the Role Register, or replace with an existing registered title.",
+                    proposed_fix=f"Replace '{extracted}' with a registered Role Register title, or add it to the register.",
                     fix_source="Role Register cross-reference",
                     confidence=62,
+                    anchor=line.strip()[:240], find=extracted, replace="",
+                    needs_choice=True, choices=list(role_register_titles),
                 ))
     return failures[:3]
 
