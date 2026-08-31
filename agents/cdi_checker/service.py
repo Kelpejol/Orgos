@@ -645,6 +645,9 @@ Named roles used in obligation statements must exist in the Role Register above.
 Only check roles used in obligations (not just mentioned in passing).
 A partial match counts as registered ("ISMS Lead (Acting)" matches "ISMS Lead" in the register).
 Skip this check if the Role Register is empty.
+Do NOT flag collective, audience or distribution terms — they are legitimate and
+are not roles: "All Staff", "staff", "all users", "all employees", "personnel",
+"everyone", "management", "leadership", "stakeholders", "the team", "third parties".
 
 === RESPONSE FORMAT ===
 Return ONLY this exact JSON structure. No preamble, no explanation, no markdown.
