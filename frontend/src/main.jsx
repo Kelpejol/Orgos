@@ -1,23 +1,21 @@
 // =============================================================================
 // main.jsx — React application entry point
-// Wraps the app in:
-//   1. MsalProvider — enables MSAL auth hooks throughout the app
-//   2. QueryClientProvider — enables React Query hooks throughout the app
-// The msalInstance is exported so grcApi.js can call acquireTokenSilent.
+// Standalone Dragnet ERP Tier-1 session resolution: verify the erp_auth
+// cookie via OrgOS's own backend before ever rendering the app. No session →
+// redirect to the ERP shell to authenticate; the shell bounces back here once
+// it's set the cookie. No MSAL, no login page — see docs/ERP_Module-Tier_1.md.
 // =============================================================================
 
 import React from "react";
 import ReactDOM from "react-dom/client";
-import { PublicClientApplication } from "@azure/msal-browser";
-import { MsalProvider } from "@azure/msal-react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter } from "react-router-dom";
-import { msalConfig } from "./authConfig.js";
+import { verifySession, redirectToShell } from "./auth/authBridge.js";
+import { AuthProvider } from "./context/AuthContext.jsx";
 import App from "./App.jsx";
 import "./index.css";
 
-// Singleton MSAL instance — exported so grcApi.js can acquire tokens
-export const msalInstance = new PublicClientApplication(msalConfig);
+const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
 // React Query client — global configuration
 const queryClient = new QueryClient({
@@ -38,18 +36,34 @@ const queryClient = new QueryClient({
 });
 
 async function bootstrap() {
-  // Initialise MSAL before rendering (handles redirect callbacks)
-  await msalInstance.initialize();
+  const auth = await verifySession();
+
+  if (!auth) {
+    redirectToShell();
+    return; // browser is navigating away — never render
+  }
 
   ReactDOM.createRoot(document.getElementById("root")).render(
     <React.StrictMode>
-      <BrowserRouter>
-        <MsalProvider instance={msalInstance}>
+      <AuthProvider
+        user={{ name: auth.name, email: auth.email, oid: auth.oid }}
+        roles={auth.roles}
+        refreshToken={async () => {
+          // Session expired mid-use — clear it and send the user back to the
+          // ERP shell for a fresh one.
+          await fetch(`${API_BASE}/api/auth/session`, {
+            method: "DELETE",
+            credentials: "include",
+          });
+          redirectToShell();
+        }}
+      >
+        <BrowserRouter>
           <QueryClientProvider client={queryClient}>
             <App />
           </QueryClientProvider>
-        </MsalProvider>
-      </BrowserRouter>
+        </BrowserRouter>
+      </AuthProvider>
     </React.StrictMode>
   );
 }

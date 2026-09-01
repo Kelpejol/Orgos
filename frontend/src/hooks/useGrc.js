@@ -10,7 +10,7 @@ import {
   complianceApi,
   contractsApi,
   documentsApi,
-  rolesApi,
+  orgRolesApi,
 } from "../api/grcApi.js";
 
 // Re-export for convenience in pages that need raw API access
@@ -23,8 +23,6 @@ export { complianceApi, contractsApi };
 export const QUERY_KEYS = {
   documents: (filters) => ["documents", filters],
   document: (id) => ["documents", id],
-  roles: (filters) => ["roles", filters],
-  role: (id) => ["roles", id],
   obligations: (filters) => ["obligations", filters],
   obligation: (id) => ["obligations", id],
   obligationsOverdue: ["obligations", "overdue"],
@@ -87,48 +85,6 @@ export const useSoftDeleteDocument = () => {
     mutationFn: (id) => documentsApi.softDelete(id),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["documents"] });
-    },
-  });
-};
-
-// =============================================================================
-//  Role Register hooks
-// =============================================================================
-
-/** Fetch all roles, optionally filtered by department. */
-export const useRoles = (filters = {}) =>
-  useQuery({
-    queryKey: QUERY_KEYS.roles(filters),
-    queryFn: () => rolesApi.list(filters),
-    staleTime: 120_000, // Roles change infrequently — 2 min stale time
-  });
-
-/** Fetch a single role. */
-export const useRole = (id) =>
-  useQuery({
-    queryKey: QUERY_KEYS.role(id),
-    queryFn: () => rolesApi.get(id),
-    enabled: !!id,
-  });
-
-/** Create a new role. */
-export const useCreateRole = () => {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: (role) => rolesApi.create(role),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["roles"] });
-    },
-  });
-};
-
-/** Update a role — primary use case: reassigning current_holder_id. */
-export const useUpdateRole = () => {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ id, updates }) => rolesApi.update(id, updates),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["roles"] });
     },
   });
 };
@@ -262,7 +218,7 @@ export const useUpdateContract = () => {
 
 /**
  * Update contract lifecycle status — Terminate, put Under Review, or Supersede.
- * Requires Compliance Lead role (enforced by backend).
+ * Requires Compliance role (enforced by backend).
  */
 export const useUpdateContractLifecycle = () => {
   const queryClient = useQueryClient();
@@ -302,23 +258,15 @@ export const useSoftDeleteContract = () => {
   });
 };
 
+// =============================================================================
+//  Org Roles hooks
+// =============================================================================
 
-/** Fetch all unassigned roles — used by Work Hub urgency stream. */
-export const useUnassignedRoles = () =>
+/** Fetch every user with an org_role assigned, read live from Entra ID. */
+export const useOrgRoles = () =>
   useQuery({
-    queryKey: ["roles", "unassigned"],
-    queryFn: () => rolesApi.listUnassigned(),
-    staleTime: 30_000,
+    queryKey: ["org-roles"],
+    queryFn: () => orgRolesApi.list(),
+    staleTime: 120_000,
   });
 
-/** Assign a person to an unassigned role. */
-export const useAssignRole = () => {
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ id, holderOid }) =>
-      rolesApi.assign(id, holderOid),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["roles"] });
-    },
-  });
-};

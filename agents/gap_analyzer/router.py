@@ -28,18 +28,12 @@ async def trigger_gap_analysis(
 ) -> dict:
     """
     Trigger the Gap Analyzer agent.
-    Reads confirmed Control Register, Evidence Tracker, and Role Register.
+    Reads confirmed Control Register and Evidence Tracker.
     Compares against ISO 27001, ISO 9001, and NDPA clause requirements.
     Writes gap findings with proposed remediation packages to the Gap Analysis list.
     Per Bobby's amendment: findings include complete remediation packages.
     """
     global _last_run
-
-    if "Compliance.Lead" not in user.roles and "OrgOS.Admin" not in user.roles:
-        raise HTTPException(
-            status_code=403,
-            detail="Compliance Lead or OrgOS Admin required to run Gap Analysis.",
-        )
 
     try:
         logger.info(f"Gap Analyzer triggered by {user.name}")

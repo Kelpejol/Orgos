@@ -18,7 +18,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, field_validator
 
-from auth.validator import CurrentUser, get_current_user
+from auth.validator import CurrentUser, get_current_user, require_compliance_lead
 from config import settings
 from graph.client import (
     create_list_item,
@@ -318,20 +318,14 @@ async def update_gap_status(
 async def approve_remediation(
     item_id: str,
     body: ApproveRemediation,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(require_compliance_lead),
 ) -> dict:
     """
-    Compliance Lead approves the proposed remediation package for a gap.
+    Compliance approves the proposed remediation package for a gap.
     If the package includes a document action, creates a Document Lifecycle entry
     and links it back to the gap.
     Sets gap status to 'In progress'.
     """
-    if "OrgOS.Admin" not in user.roles and "Compliance.Lead" not in user.roles:
-        raise HTTPException(
-            status_code=403,
-            detail="Compliance Lead or OrgOS Admin required to approve remediation.",
-        )
-
     try:
         gap = _sp_to_gap(await get_list_item(_list_id(), _LIST_NAME, item_id))
 
@@ -430,7 +424,7 @@ async def approve_remediation(
 async def accept_risk(
     item_id: str,
     body: AcceptRisk,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(require_compliance_lead),
 ) -> dict:
     """
     ExCo accepts the risk rather than remediating.
@@ -438,12 +432,6 @@ async def accept_risk(
     Updates gap status to 'Accepted risk' with acceptor and date recorded.
     Per DRG-QI-REF-DINT-01-26 Section 4.11.
     """
-    if "OrgOS.Admin" not in user.roles and "Compliance.Lead" not in user.roles:
-        raise HTTPException(
-            status_code=403,
-            detail="Compliance Lead or OrgOS Admin required to accept risk.",
-        )
-
     try:
         gap = _sp_to_gap(await get_list_item(_list_id(), _LIST_NAME, item_id))
 

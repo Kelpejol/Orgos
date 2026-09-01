@@ -298,19 +298,6 @@ async def resolve_owner_by_email(email: str) -> tuple[str, str]:
         return "", ""
 
 
-async def fetch_role_titles() -> list[str]:
-    try:
-        items = await get_list_items(settings.role_register_list_id, "Role Register")
-        return [
-            i.get("fields", {}).get("Title", "")
-            for i in items
-            if i.get("fields", {}).get("Title")
-        ]
-    except Exception as exc:
-        logger.warning(f"Could not load Role Register for CDI-16: {exc}")
-        return []
-
-
 async def extract_text_with_ocr(file_bytes: bytes, filename: str) -> str:
     """
     CDI extract_text plus the Extractor agent's Azure OCR fallback.
@@ -554,7 +541,6 @@ async def create_lifecycle_entry(
     run_cdi: bool,
     file_bytes: bytes,
     download_name: str,
-    role_titles: list[str],
     legacy_format: bool = False,
 ) -> tuple[str, str]:
     filename = file_info["name"]
@@ -585,7 +571,6 @@ async def create_lifecycle_entry(
             file_bytes,
             download_name or filename,
             classification.document_code,
-            role_titles,
         )
         if result.get("error"):
             cdi_status = "Error"
@@ -759,10 +744,6 @@ async def run_intake(
         elif owner_email:
             print(f"WARNING: Could not resolve {owner_email}; using {DEFAULT_OWNER_NAME}")
 
-        role_titles = await fetch_role_titles() if run_cdi else []
-        if run_cdi:
-            print(f"Loaded {len(role_titles)} Role Register titles for CDI checks.\n")
-
         lifecycle_codes, lifecycle_urls = await existing_lifecycle_keys()
         register_codes, register_urls = await existing_register_keys()
 
@@ -898,7 +879,6 @@ async def run_intake(
                     run_cdi=run_cdi,
                     file_bytes=file_bytes,
                     download_name=download_name,
-                    role_titles=role_titles,
                     legacy_format=legacy_unreadable,
                 )
                 print(f"              → CREATED lifecycle #{item_id} | CDI={cdi_status}")

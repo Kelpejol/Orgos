@@ -19,7 +19,7 @@ from main import app
 
 def _override_user():
     return CurrentUser(oid="rev-oid", name="Reviewer", email="r@dragnet.com",
-                       tenant_id="t", roles=["OrgOS.Admin", "Compliance.Lead"])
+                       tenant_id="t", roles=["orgos-admin", "compliance"])
 
 
 app.dependency_overrides[get_current_user] = _override_user

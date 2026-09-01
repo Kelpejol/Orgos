@@ -57,7 +57,7 @@ const RunClassifierButton = ({ onComplete }) => {
       </button>
       {result && (
         <div style={{ fontSize: 10, color: "#3C3489", textAlign: "right" }}>
-          {result.role_variants_written} role variants · {result.duplicates_written} duplicates · {result.conflicts_written || 0} conflicts written
+          {result.duplicates_written} duplicates · {result.conflicts_written || 0} conflicts written
         </div>
       )}
       {error && (
@@ -348,7 +348,7 @@ const HarmCard = ({ item, isCompliance, onDecide, isPending }) => {
                           background: "var(--color-background-secondary)",
                           borderRadius: 8, fontSize: 11, color: "var(--color-text-tertiary)",
                           border: "1px dashed var(--color-border-tertiary)" }}>
-              Compliance Lead role required to make decisions.
+              Compliance role required to make decisions.
             </div>
           )}
         </div>
@@ -429,16 +429,15 @@ export default function Harmonisation() {
               Harmonisation
             </div>
             <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>
-              Zone 3 — Variant role terms and near-duplicate controls across documents.
+              Zone 3 — Near-duplicate controls across documents.
               Automatic classifier runs after extraction/review updates; manual run is a fallback.
             </div>
             {isCompliance && classifierStatus && (
               <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginTop: 4 }}>
                 Last classifier run: {classifierStatus.triggered_at ? new Date(classifierStatus.triggered_at).toLocaleString() : classifierStatus.status || "never run"}
                 {classifierStatus.total_written != null ? ` · ${classifierStatus.total_written} written` : ""}
-                {classifierStatus.role_variants_suppressed || classifierStatus.duplicates_suppressed || classifierStatus.conflicts_suppressed
+                {classifierStatus.duplicates_suppressed || classifierStatus.conflicts_suppressed
                   ? ` · ${(
-                      (classifierStatus.role_variants_suppressed || 0) +
                       (classifierStatus.duplicates_suppressed || 0) +
                       (classifierStatus.conflicts_suppressed || 0)
                     )} suppressed`
@@ -464,7 +463,7 @@ export default function Harmonisation() {
           <div style={{ marginTop: 8, padding: "8px 12px", background: "#FAEEDA",
                         borderRadius: 8, fontSize: 12, color: "#633806",
                         border: "0.5px solid #FAC775" }}>
-            View only — Compliance Lead role required to make decisions.
+            View only — Compliance role required to make decisions.
           </div>
         )}
       </div>

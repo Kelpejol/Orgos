@@ -112,20 +112,6 @@ async def _load_evidence() -> list[dict]:
     ]
 
 
-async def _load_roles() -> list[dict]:
-    items = await get_list_items(
-        settings.role_register_list_id, "Role Register"
-    )
-    return [
-        {
-            "title":      i.get("fields", {}).get("Title", ""),
-            "holder_oid": i.get("fields", {}).get("CurrentHolderEntraId", ""),
-            "assigned":   i.get("fields", {}).get("AssignmentStatus", "") == "Assigned",
-        }
-        for i in items
-    ]
-
-
 async def _load_existing_gap_keys() -> set[str]:
     """
     Return the GapKey values of all currently open or in-progress gaps.
@@ -161,7 +147,6 @@ def _make_gap_key(standard: str, clause: str, gap_category: str, ctrl_id: str = 
 def _find_gaps(
     controls: list[dict],
     evidence: list[dict],
-    roles:    list[dict],
 ) -> list[dict]:
     """
     Compare confirmed registers against the required clause list.
@@ -254,7 +239,7 @@ def _find_gaps(
 #    • remediation package (document, controls, evidence, roles, target_date, verification)
 # =============================================================================
 
-async def _ai_analyse_and_remediate(gap: dict, role_titles: list[str]) -> dict:
+async def _ai_analyse_and_remediate(gap: dict) -> dict:
     """
     One Ollama call per gap: generates an AI-written finding description,
     audit risk statement, and full remediation package together.
@@ -263,7 +248,6 @@ async def _ai_analyse_and_remediate(gap: dict, role_titles: list[str]) -> dict:
         finding_narrative, audit_risk, remediation_json (str)
     Falls back to template values if Ollama is unavailable.
     """
-    roles_sample = ", ".join(role_titles[:8]) if role_titles else "ISMS Lead, Department Head"
     days   = SEVERITY_DAYS.get(gap["severity"], 90)
     target = (date.today() + timedelta(days=days)).isoformat()
 
@@ -275,7 +259,6 @@ Standard: {gap['standard']} {gap['clause']} — {gap['clause_title']}
 Gap type: {gap['gap_category']}
 Initial finding: {gap['finding']}
 Current impact: {gap['impact']}
-Available roles at Dragnet: {roles_sample}
 
 Your task has two parts:
 
@@ -292,7 +275,7 @@ Respond with ONLY valid JSON in this exact structure (no extra text before or af
   "document": "Specific document action required — include a suggested document title",
   "controls": ["Shall-statement control 1 specific to this clause", "Shall-statement control 2"],
   "evidence": ["EVT_CODE — evidence description. Source: system name. Frequency: period"],
-  "roles": ["Specific role title from the available roles list"],
+  "roles": ["Specific role name that plausibly owns this remediation"],
   "risk": "Business consequence if this gap remains open beyond the target date (one sentence)",
   "standards_mapping": "{gap['standard']} {gap['clause']}",
   "target_date": "{target}",
@@ -330,7 +313,7 @@ Respond with ONLY valid JSON in this exact structure (no extra text before or af
             "document":          f"Create or revise document covering {gap['clause_title']}",
             "controls":          [f"[Role] shall implement controls for {gap['clause_title']}"],
             "evidence":          ["REV — Review record. Source: SharePoint. Frequency: quarterly"],
-            "roles":             [role_titles[0]] if role_titles else ["ISMS Lead"],
+            "roles":             ["Compliance"],
             "risk":              gap["impact"],
             "standards_mapping": f"{gap['standard']} {gap['clause']}",
             "target_date":       (date.today() + timedelta(days=days)).isoformat(),
@@ -375,11 +358,9 @@ async def run_gap_analysis(triggered_by: str = "system") -> dict:
 
     controls    = await _load_controls()
     evidence    = await _load_evidence()
-    roles       = await _load_roles()
-    role_titles = [r["title"] for r in roles if r["title"]]
 
     logger.info(
-        f"Loaded: {len(controls)} controls, {len(evidence)} evidence items, {len(roles)} roles"
+        f"Loaded: {len(controls)} controls, {len(evidence)} evidence items"
     )
 
     # Load existing open gap keys for deduplication
@@ -387,7 +368,7 @@ async def run_gap_analysis(triggered_by: str = "system") -> dict:
     logger.info(f"Existing open gap keys: {len(existing_keys)}")
 
     # Part 1 — find gaps
-    gaps = _find_gaps(controls, evidence, roles)
+    gaps = _find_gaps(controls, evidence)
     logger.info(f"Gap finding complete: {len(gaps)} gaps found before deduplication")
 
     if not gaps:
@@ -429,7 +410,7 @@ async def run_gap_analysis(triggered_by: str = "system") -> dict:
                 f"AI analysing gap: {gap['standard']} {gap['clause']} "
                 f"({gap['gap_category']})..."
             )
-            ai = await _ai_analyse_and_remediate(gap, role_titles)
+            ai = await _ai_analyse_and_remediate(gap)
 
             days   = SEVERITY_DAYS.get(gap["severity"], 90)
             target = (date.today() + timedelta(days=days)).isoformat()

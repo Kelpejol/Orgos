@@ -99,15 +99,6 @@ async def resolve_owner_by_email(email: str) -> tuple[str, str]:
         return "", ""
 
 
-async def fetch_role_titles() -> list[str]:
-    try:
-        items = await get_list_items(settings.role_register_list_id, "Role Register")
-        return [i.get("fields", {}).get("Title", "") for i in items if i.get("fields", {}).get("Title")]
-    except Exception as exc:
-        logger.warning(f"Could not load Role Register: {exc}")
-        return []
-
-
 def _department_from_path(folder_path: str, filename: str) -> str:
     text = f"{folder_path} {filename}".lower()
     for needle, dept in [
@@ -279,9 +270,6 @@ async def run_patch(owner_email: Optional[str], dry_run: bool) -> int:
         elif owner_email:
             print(f"WARNING: Could not resolve {owner_email}; using '{DEFAULT_OWNER_NAME}'")
 
-        role_titles = await fetch_role_titles()
-        print(f"Loaded {len(role_titles)} role titles for CDI checks.\n")
-
         patched = failed = 0
 
         for i, item in enumerate(bare, 1):
@@ -307,7 +295,7 @@ async def run_patch(owner_email: Optional[str], dry_run: bool) -> int:
                 department = _department_from_path(folder_path, name)
 
                 # CDI check
-                cdi_result = await run_cdi_check(file_bytes, download_name or name, doc_code, role_titles)
+                cdi_result = await run_cdi_check(file_bytes, download_name or name, doc_code)
                 if cdi_result.get("error"):
                     cdi_status   = "Error"
                     cdi_failures = json.dumps([{

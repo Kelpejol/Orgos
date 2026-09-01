@@ -3,21 +3,18 @@
 // Top bar showing current user's name, role badge, and logout button.
 // =============================================================================
 
-import { useMsal } from "@azure/msal-react";
 import RoleBadge from "../shared/RoleBadge";
 import { useCurrentUserRole } from "../../hooks/useCurrentUserRole";
+import { logoutToShell } from "../../auth/authBridge.js";
 
 /**
  * @param {{ currentScreen: string }} props
  */
 export default function TopBar({ currentScreen }) {
-  const { instance } = useMsal();
   const { name, email, roleLabel } = useCurrentUserRole();
   const displayName = name || email || "Unknown user";
 
-  const handleLogout = () => {
-    instance.logoutPopup({ postLogoutRedirectUri: window.location.origin });
-  };
+  const handleLogout = () => logoutToShell();
 
   return (
     <div

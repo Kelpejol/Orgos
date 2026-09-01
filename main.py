@@ -15,6 +15,7 @@ from fastapi.responses import JSONResponse
 
 from config import configure_logging, settings
 from graph import client as graph_client
+from auth.router import router as auth_router
 from grc.router import router as grc_router
 from agents.extractor.router import router as extractor_router
 from sharepoint.router import router as sharepoint_router
@@ -30,6 +31,7 @@ from agents.cdi_checker.router import router as cdi_router
 from agents.policy_drafter.router import router as policy_drafter_router
 from agents.gap_analyzer.router   import router as gap_analyzer_router
 from agents.nl_search.router      import router as nl_search_router
+from org_roles.router             import router as org_roles_router
 
 
 # Configure logging before anything else
@@ -86,7 +88,7 @@ app = FastAPI(
     title="OrgOS — GRC API",
     description=(
         "Dragnet Solutions OrgOS GRC Orchestration Module. "
-        "Tier 1: Document Register, Role Register, Compliance Calendar, Contract Register."
+        "Tier 1: Document Register, Compliance Calendar, Contract Register."
     ),
     version="1.0.0",
     docs_url="/docs",        # Swagger UI at http://localhost:8000/docs
@@ -108,6 +110,7 @@ app.add_middleware(
 )
 
 
+app.include_router(auth_router)
 app.include_router(grc_router)
 app.include_router(extractor_router)
 app.include_router(sharepoint_router)
@@ -123,6 +126,7 @@ app.include_router(cdi_router)
 app.include_router(policy_drafter_router)
 app.include_router(gap_analyzer_router)
 app.include_router(nl_search_router)
+app.include_router(org_roles_router)
 
 # =============================================================================
 #  Health endpoints (no auth required — for monitoring)

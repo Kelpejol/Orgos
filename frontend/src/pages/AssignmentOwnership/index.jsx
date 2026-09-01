@@ -52,8 +52,6 @@ const JDToDocDecisions = [
 
 const DocToJDDecisions = [
   { key: "Add to existing JD",    label: "Add to JD",             desc: "Add this responsibility to the role's job description", primary: true },
-  { key: "Reassign control",      label: "Reassign control",      desc: "Assign this control to a different role" },
-  { key: "Create new role",       label: "Create new role",       desc: "A new role needs to be defined and added to the Role Register" },
   { key: "Remove from policy",    label: "Remove from policy",    desc: "This control should not reference this role" },
   { key: "Mark False Positive",   label: "Mark false positive",   desc: "The AI incorrectly flagged this as an orphan" },
   { key: "Request Second Review", label: "Request 2nd review",    desc: "Escalate to another compliance team member" },
@@ -73,14 +71,8 @@ const DOC_CODE_DECISIONS = new Set([
   "Merge",
 ]);
 
-const ROLE_DECISIONS = new Set([
-  "Reassign control",
-  "Create new role",
-]);
-
 const MODAL_DECISIONS = new Set([
   ...DOC_CODE_DECISIONS,
-  ...ROLE_DECISIONS,
   "Request Second Review",
   "Escalate to ExCo",
 ]);
@@ -94,16 +86,13 @@ const Zone2ActionModal = ({
   isPending,
 }) => {
   const needsDocCode = DOC_CODE_DECISIONS.has(decision.key);
-  const needsRole = ROLE_DECISIONS.has(decision.key);
   const needsReviewer = decision.key === "Request Second Review";
   const [linkedDoc, setLinkedDoc] = useState("");
-  const [targetRole, setTargetRole] = useState(item.ProposedOwnerRole || "");
   const [reviewer, setReviewer] = useState(null);
 
   const canSubmit =
     rationale.trim().length >= 10 &&
     (!needsDocCode || linkedDoc.trim().length > 0) &&
-    (!needsRole || targetRole.trim().length > 0) &&
     (!needsReviewer || reviewer) &&
     !isPending;
 
@@ -111,7 +100,6 @@ const Zone2ActionModal = ({
     if (!canSubmit) return;
     const extras = {};
     if (needsDocCode) extras.linked_doc_code = linkedDoc.trim();
-    if (needsRole) extras.target_role = targetRole.trim();
     if (needsReviewer && reviewer) {
       extras.reviewer_oid = reviewer.oid;
       extras.reviewer_name = reviewer.display_name;
@@ -178,28 +166,6 @@ const Zone2ActionModal = ({
           </div>
         )}
 
-        {needsRole && (
-          <div style={{ marginBottom: 12 }}>
-            <label style={{ display: "block", fontSize: 10, fontWeight: 600,
-                            color: "var(--color-text-secondary)", marginBottom: 5,
-                            textTransform: "uppercase", letterSpacing: "0.4px" }}>
-              Target role <span style={{ color: "#A32D2D" }}>*</span>
-            </label>
-            <input
-              autoFocus
-              value={targetRole}
-              onChange={e => setTargetRole(e.target.value)}
-              placeholder="Role Register title"
-              style={{
-                width: "100%", fontSize: 13, padding: "9px 11px", borderRadius: 9,
-                border: `1.5px solid ${targetRole.trim() ? "#5DCAA5" : "#C0C0C0"}`,
-                background: "var(--color-background-primary)",
-                color: "var(--color-text-primary)", boxSizing: "border-box", outline: "none",
-              }}
-            />
-          </div>
-        )}
-
         {decision.key === "Request Second Review" && (
           <div style={{ marginBottom: 12 }}>
             <UserSearchField
@@ -220,7 +186,6 @@ const Zone2ActionModal = ({
                 zone: "2",
                 decision: decision.key,
                 ...(needsDocCode && linkedDoc.trim() ? { linked_doc_code: linkedDoc.trim() } : {}),
-                ...(needsRole && targetRole.trim() ? { target_role: targetRole.trim() } : {}),
               }}
             />
           </div>
@@ -505,7 +470,7 @@ const OrphanCard = ({ item, isCompliance, onDecide, isPending }) => {
                           background: "var(--color-background-secondary)",
                           borderRadius: 8, fontSize: 11, color: "var(--color-text-tertiary)",
                           border: "1px dashed var(--color-border-tertiary)" }}>
-              Compliance Lead role required to make decisions.
+              Compliance role required to make decisions.
             </div>
           )}
         </div>
@@ -595,7 +560,7 @@ export default function AssignmentOwnership() {
           <div style={{ marginTop: 8, padding: "8px 12px", background: "#FAEEDA",
                         borderRadius: 8, fontSize: 12, color: "#633806",
                         border: "0.5px solid #FAC775" }}>
-            View only — Compliance Lead role required to make decisions.
+            View only — Compliance role required to make decisions.
           </div>
         )}
       </div>

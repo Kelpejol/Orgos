@@ -13,13 +13,6 @@ import apiClient, { complianceApi, contractsApi } from "../../api/grcApi.js";
 //  Data hooks
 // =============================================================================
 
-const useUnassignedRoles = () =>
-  useQuery({
-    queryKey: ["roles", "unassigned"],
-    queryFn: () => apiClient.get("/api/v1/grc/roles/unassigned").then((r) => r.data),
-    staleTime: 60_000,
-  });
-
 const usePendingQueue = () =>
   useQuery({
     queryKey: ["queue", "pending-wh"],
@@ -160,9 +153,8 @@ const QuickLink = ({ label, icon, onClick }) => (
 // =============================================================================
 
 export default function WorkHub({ go }) {
-  const { isAdmin, isCompliance, isStandard, name, oid } = useCurrentUserRole();
+  const { isCompliance, isStandard, name, oid } = useCurrentUserRole();
 
-  const rolesQ       = useUnassignedRoles();
   const queueQ       = usePendingQueue();
   const lifecycleQ   = useLifecycleDocs();
   const overdueEvidQ = useOverdueEvidence();
@@ -172,7 +164,6 @@ export default function WorkHub({ go }) {
 
   const allEvid    = overdueEvidQ.data  || [];
   const allOblig   = overdueObligQ.data || [];
-  const allRoles   = rolesQ.data        || [];
   const allQueue   = queueQ.data        || [];
   const allLife    = lifecycleQ.data    || [];
   const allExpire  = expiringQ.data     || [];
@@ -219,14 +210,6 @@ export default function WorkHub({ go }) {
       action: "View calendar", nav: "cal" },
 
     // Compliance/Admin only
-    isCompliance && allRoles.length > 0 && { key: "roles",   color: "#A32D2D", bg: "#FFF8F8", bd: "#F09595", icon: "⚠",
-      count: allRoles.length,
-      title: `unassigned role${allRoles.length > 1 ? "s" : ""} — controls unroutable`,
-      message: `Controls referencing unassigned roles cannot route evidence. ` +
-        allRoles.slice(0, 3).map((r) => r.role_title).join(", ") +
-        (allRoles.length > 3 ? ` +${allRoles.length - 3} more.` : "."),
-      action: isAdmin ? "Assign now" : "View roles", nav: "role" },
-
     isCompliance && criticalGaps.length > 0 && { key: "gaps", color: "#791F1F", bg: "#FCEBEB", bd: "#F09595", icon: "⊗",
       count: criticalGaps.length,
       title: `critical gap${criticalGaps.length > 1 ? "s" : ""} — no controls at all`,
@@ -300,10 +283,6 @@ export default function WorkHub({ go }) {
             color={allQueue.length > 0 ? "#BA7517" : undefined} />
         )}
         {isCompliance && (
-          <Stat label="Unassigned roles" value={allRoles.length}
-            color={allRoles.length > 0 ? "#A32D2D" : undefined} />
-        )}
-        {isCompliance && (
           <Stat label="Expiring contracts" value={allExpire.length}
             color={allExpire.length > 0 ? "#BA7517" : undefined} />
         )}
@@ -337,42 +316,6 @@ export default function WorkHub({ go }) {
         </div>
       )}
 
-      {/* Unassigned roles table — Compliance/Admin */}
-      {isCompliance && allRoles.length > 0 && (
-        <div style={{ marginTop: 24 }}>
-          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8, color: "#A32D2D" }}>
-            Unassigned roles
-          </div>
-          <div style={{ border: "1px solid #F09595", borderRadius: 10, overflow: "hidden" }}>
-            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
-              <thead>
-                <tr style={{ background: "#FFF0F0" }}>
-                  {["Role", "Department", "JD ref"].map((h) => (
-                    <th key={h} style={{ padding: "7px 10px", textAlign: "left", fontWeight: 500, fontSize: 11, color: "#A32D2D", borderBottom: "1px solid #F09595" }}>
-                      {h}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {allRoles.map((role, i) => (
-                  <tr key={role.id} style={{ borderBottom: i < allRoles.length - 1 ? "1px solid #FCE0E0" : "none", background: i % 2 ? "#FFF8F8" : "transparent" }}>
-                    <td style={{ padding: "7px 10px", fontWeight: 500 }}>{role.role_title}</td>
-                    <td style={{ padding: "7px 10px", color: "var(--color-text-secondary)" }}>{role.department || "—"}</td>
-                    <td style={{ padding: "7px 10px", fontFamily: "var(--font-mono)", fontSize: 10, color: "var(--color-text-tertiary)" }}>{role.jd_reference || "—"}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <button
-            onClick={() => go("role")}
-            style={{ marginTop: 8, padding: "8px 16px", fontSize: 12, borderRadius: 8, border: "1.5px solid #F09595", background: "transparent", color: "#A32D2D", cursor: "pointer", fontWeight: 500 }}
-          >
-            {isAdmin ? "Go to Role Register to assign →" : "Go to Role Register →"}
-          </button>
-        </div>
-      )}
     </>
   );
 }

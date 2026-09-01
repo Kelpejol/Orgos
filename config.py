@@ -33,9 +33,13 @@ class Settings(BaseSettings):
     )
 
     # ── Microsoft Entra ID ─────────────────────────────────────────────────
-    tenant_id: str = Field(..., description="Azure AD tenant ID")
-    client_id: str = Field(..., description="OrgOS app registration client ID")
-    client_secret: str = Field(..., description="OrgOS app registration client secret")
+    # These now identify the SHARED Dragnet ERP app registration, not a
+    # dedicated OrgOS one — OrgOS has no login of its own. They're used here
+    # to (a) independently validate the erp_auth session JWT via JWKS, and
+    # (b) acquire an app-only Graph token for SharePoint calls (graph/auth.py).
+    tenant_id: str = Field(..., description="Shared Dragnet ERP Azure AD tenant ID")
+    client_id: str = Field(..., description="Shared Dragnet ERP app registration client ID")
+    client_secret: str = Field(..., description="Shared Dragnet ERP app registration client secret")
 
     # ── SharePoint ─────────────────────────────────────────────────────────
     sharepoint_site_id: str = Field(..., description="SharePoint site ID")
@@ -53,7 +57,6 @@ class Settings(BaseSettings):
 
     # ── SharePoint List IDs — Tier 1 ──────────────────────────────────────
     document_register_list_id: str = Field(default="placeholder")
-    role_register_list_id: str = Field(default="placeholder")
     compliance_calendar_list_id: str = Field(default="placeholder")
     contract_register_list_id: str = Field(default="placeholder")
     ai_review_queue_list_id: str = Field(default="placeholder")
@@ -69,6 +72,11 @@ class Settings(BaseSettings):
     app_port: int = Field(default=8000)
     log_level: str = Field(default="DEBUG")
     skip_auth: bool = Field(default=False)
+
+    # ── Dragnet ERP session revocation ──────────────────────────────────────
+    # Shared secret the ERP calls POST /api/auth/revoke with when a user's
+    # org_roles change. Empty = revocation disabled (endpoint always 403s).
+    revoke_secret: str = Field(default="", description="Shared secret validated on POST /api/auth/revoke, issued by the ERP team")
 
     # ── LLM provider ──────────────────────────────────────────────────────
     # Set LLM_PROVIDER=runpod to route all inference to RunPod serverless.

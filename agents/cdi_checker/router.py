@@ -15,26 +15,11 @@ from pydantic import BaseModel
 
 from auth.validator import CurrentUser, get_current_user
 from agents.cdi_checker.service import run_cdi_check
-from config import settings
 from graph.auth import get_graph_access_token
-from graph.client import get_list_items
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/v1/agents", tags=["CDI Checker"])
-
-
-async def _fetch_role_titles() -> list[str]:
-    """Fetch all role titles from the Role Register for CDI-07 check."""
-    try:
-        items = await get_list_items(settings.role_register_list_id, "Role Register")
-        return [
-            i.get("fields", {}).get("Title", "")
-            for i in items
-            if i.get("fields", {}).get("Title")
-        ]
-    except Exception:
-        return []
 
 
 @router.post("/cdi-check")
@@ -51,8 +36,7 @@ async def check_document_upload(
     file_bytes = await file.read()
     filename   = file.filename or "document.docx"
 
-    role_titles = await _fetch_role_titles()
-    result      = await run_cdi_check(file_bytes, filename, doc_code, role_titles)
+    result = await run_cdi_check(file_bytes, filename, doc_code)
 
     logger.info(
         f"CDI check: {filename} | code={doc_code} | "
@@ -92,8 +76,7 @@ async def check_document_by_url(
             detail=f"Could not download document from SharePoint: {exc}",
         )
 
-    role_titles = await _fetch_role_titles()
-    result      = await run_cdi_check(file_bytes, body.filename, body.doc_code, role_titles)
+    result = await run_cdi_check(file_bytes, body.filename, body.doc_code)
 
     logger.info(
         f"CDI check (URL): {body.filename} | code={body.doc_code} | "

@@ -535,7 +535,7 @@ const QueueCard = ({ item, isCompliance, onDecide, isPending }) => {
                 border: "1px dashed var(--color-border-tertiary)",
               }}
             >
-              Compliance Lead role required to make decisions on queue items.
+              Compliance role required to make decisions on queue items.
               Contact the Compliance team to have this item reviewed.
             </div>
           )}
@@ -839,7 +839,7 @@ export default function AIReviewQueue() {
           any register.
           {!isCompliance && (
             <span style={{ color: "#BA7517", marginLeft: 6 }}>
-              View only — Compliance Lead role required to make decisions.
+              View only — Compliance role required to make decisions.
             </span>
           )}
         </div>

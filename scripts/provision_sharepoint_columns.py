@@ -91,21 +91,6 @@ LISTS: dict[str, dict] = {
         },
     },
 
-    # ─── 2. Role Register ────────────────────────────────────────────────────
-    "role_register": {
-        "list_id_attr": "role_register_list_id",
-        "display_name": "Role Register",
-        "columns": {
-            "Department":        (TEXT,   None),
-            "JDReference":       (TEXT,   None),
-            "CurrentHolder":     (TEXT,   None),
-            "CurrentHolderId":   (TEXT,   None),
-            "SourceSystem":      (CHOICE, ["Entra ID", "SeamlessHR", "BitWiseFlow", "Manual"]),
-            "VariantTerms":      (NOTE,   None),
-            "AssignmentStatus":  (CHOICE, ["Assigned", "Unassigned"]),
-        },
-    },
-
     # ─── 3. Compliance Calendar ──────────────────────────────────────────────
     "compliance_calendar": {
         "list_id_attr": "compliance_calendar_list_id",

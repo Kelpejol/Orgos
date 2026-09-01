@@ -13,9 +13,9 @@ import { useCurrentUserRole } from "../../hooks/useCurrentUserRole";
 const NAV = [
   { id: "workhub",       label: "Work hub",                tier: 0 },
   { id: "doc",           label: "Document register",        tier: 1 },
-  { id: "role",          label: "Role register",            tier: 1 },
   { id: "cal",           label: "Compliance calendar",      tier: 1 },
   { id: "contract",      label: "Contract register",        tier: 1 },
+  { id: "org-roles",     label: "Org roles",                tier: 1, complianceOnly: true },
   { id: "lifecycle",     label: "Document lifecycle",       tier: 2, complianceOnly: true },
   { id: "extraction",    label: "Extraction review",        tier: 2, complianceOnly: true },
   { id: "assignment",    label: "Assignment & ownership",   tier: 2, complianceOnly: true },

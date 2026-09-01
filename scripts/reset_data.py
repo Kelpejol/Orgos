@@ -1,5 +1,5 @@
 # =============================================================================
-# scripts/reset_data.py — Hard-delete all SharePoint list data (except Role Register)
+# scripts/reset_data.py — Hard-delete all SharePoint list data
 #                         and wipe ChromaDB collections.
 #
 # Usage:
@@ -7,8 +7,6 @@
 #   python scripts/reset_data.py --confirm    # live run — deletes everything
 #   python scripts/reset_data.py --confirm --skip-chroma   # SharePoint only
 #   python scripts/reset_data.py --confirm --chroma-only   # ChromaDB only
-#
-# ROLE REGISTER IS NEVER TOUCHED.
 # =============================================================================
 
 import asyncio
@@ -30,7 +28,6 @@ logger = logging.getLogger(__name__)
 
 settings = get_settings()
 
-# Lists to clear — Role Register is intentionally excluded
 LISTS_TO_CLEAR = [
     ("Document Register",       settings.document_register_list_id),
     ("Compliance Calendar",     settings.compliance_calendar_list_id),

@@ -1421,23 +1421,12 @@ async def upload_doc_file(
     cdi_failures = ""
     try:
         try:
-            role_items  = await get_list_items(settings.role_register_list_id, "Role Register")
-            role_titles = [
-                i.get("fields", {}).get("Title", "")
-                for i in role_items
-                if i.get("fields", {}).get("Title")
-            ]
-        except Exception as exc:
-            logger.debug(f"Role Register unavailable for CDI check ({exc}); proceeding without role validation")
-            role_titles = []
-
-        try:
             item_data = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
             doc_code  = item_data.get("fields", {}).get("DocumentCode", "")
         except Exception:
             doc_code = ""
 
-        cdi_result = await run_cdi_check(file_bytes, filename, doc_code, role_titles)
+        cdi_result = await run_cdi_check(file_bytes, filename, doc_code)
 
         if cdi_result.get("error"):
             cdi_status   = "Error"
@@ -1763,9 +1752,8 @@ async def cdi_fix_plan(
         # stored failures if the live re-check errors (e.g. LLM unavailable).
         failures: list[dict] = []
         try:
-            role_titles = await _role_register_titles()
             doc_code = item.get("fields", {}).get("DocumentCode", "")
-            recheck = await run_cdi_check(file_bytes, filename, doc_code, role_titles)
+            recheck = await run_cdi_check(file_bytes, filename, doc_code)
             if not recheck.get("error"):
                 failures = [c for c in recheck.get("checks", []) if c.get("result") == "FAIL"]
         except Exception as exc:
@@ -1886,9 +1874,8 @@ async def cdi_fix_apply(
         file_url = await _upload_to_sharepoint(item_id, filename, new_bytes)
 
         # Re-run the CDI check on the fixed document
-        role_titles = await _role_register_titles()
         doc_code = item.get("fields", {}).get("DocumentCode", "")
-        recheck = await run_cdi_check(new_bytes, filename, doc_code, role_titles)
+        recheck = await run_cdi_check(new_bytes, filename, doc_code)
         cdi_status, cdi_failures = _cdi_result_to_storage(recheck)
 
         await update_list_item(_get_list_id(), _LIST_NAME, item_id, {
@@ -1921,18 +1908,6 @@ def _outcome_dict(o) -> dict:
         "fix_id": o.fix_id, "check_id": o.check_id, "status": o.status,
         "detail": o.detail, "before": o.before, "after": o.after,
     }
-
-
-async def _role_register_titles() -> list[str]:
-    try:
-        role_items = await get_list_items(settings.role_register_list_id, "Role Register")
-        return [
-            i.get("fields", {}).get("Title", "")
-            for i in role_items if i.get("fields", {}).get("Title")
-        ]
-    except Exception as exc:
-        logger.debug(f"Role Register unavailable for CDI re-check ({exc})")
-        return []
 
 
 def _cdi_result_to_storage(cdi_result: dict) -> tuple[str, str]:

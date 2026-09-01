@@ -5,6 +5,7 @@
 # CRITICAL — these files contain real credentials, NEVER commit them
 .env
 frontend/.env.local
+**/docs.local/
 
 # Python
 __pycache__/

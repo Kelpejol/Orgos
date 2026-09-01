@@ -67,7 +67,6 @@ _CR_LIST = "Control Register"
 _EV_LIST = "Evidence Tracker"
 _AL_LIST = "Audit Log"
 _DL_LIST = "Document Lifecycle"
-_RR_LIST = "Role Register"
 _SR_LIST = "Strategic Risk Register"
 
 
@@ -76,7 +75,6 @@ def _cr_id(): return settings.control_register_list_id
 def _ev_id(): return settings.evidence_tracker_list_id
 def _al_id(): return settings.audit_log_list_id
 def _dl_id(): return settings.document_lifecycle_list_id
-def _rr_id(): return settings.role_register_list_id
 def _sr_id(): return settings.strategic_risk_register_list_id
 
 
@@ -389,33 +387,6 @@ async def _zone1_accept_cascade(item: dict, user: CurrentUser, overrides: dict) 
     return " | ".join(created)
 
 
-def _split_terms(value: str) -> list[str]:
-    """Parse comma/newline separated terms while preserving order."""
-    terms: list[str] = []
-    for raw in (value or "").replace("\n", ",").split(","):
-        term = raw.strip()
-        if term and term.lower() not in {t.lower() for t in terms}:
-            terms.append(term)
-    return terms
-
-
-def _join_variant_terms(terms: list[str]) -> str:
-    """Store Role Register VariantTerms as one term per line."""
-    cleaned: list[str] = []
-    seen: set[str] = set()
-    for term in terms:
-        value = str(term or "").strip()
-        key = value.lower()
-        if value and key not in seen:
-            cleaned.append(value)
-            seen.add(key)
-    return "\n".join(cleaned)
-
-
-def _normalise(value: str) -> str:
-    return " ".join((value or "").strip().lower().split())
-
-
 async def _create_lifecycle_task(
     *,
     title: str,
@@ -448,238 +419,6 @@ async def _create_lifecycle_task(
 
     dl_item = await create_list_item(_dl_id(), _DL_LIST, fields)
     return str(dl_item["id"])
-
-
-async def _find_role_by_title(role_title: str) -> Optional[dict]:
-    if not role_title:
-        return None
-    try:
-        roles = await get_list_items(_rr_id(), _RR_LIST)
-    except Exception as exc:
-        logger.warning(f"Could not fetch Role Register: {exc}")
-        return None
-
-    target = _normalise(role_title)
-    for role in roles:
-        fields = role.get("fields", {})
-        title = fields.get("Title", "")
-        if _normalise(title) == target:
-            return role
-    return None
-
-
-async def _control_owner_update_fields(owner_role: str) -> dict:
-    """
-    Build the ownership fields for a Control Register update.
-    A control is Active only when the canonical role has a current holder.
-    """
-    role = await _find_role_by_title(owner_role)
-    holder_oid = ""
-    if role:
-        fields = role.get("fields", {})
-        holder_oid = (
-            fields.get("CurrentHolderEntraId", "")
-            or fields.get("CurrentHolderId", "")
-            or ""
-        )
-    return {
-        "OwnerRole": owner_role,
-        "OwnerEntraId": holder_oid,
-        "Status": "Active" if holder_oid else "Blocked",
-    }
-
-
-async def _evidence_owner_update_fields(owner_role: str) -> dict:
-    """
-    Build ownership fields for Evidence Tracker.
-    Evidence Status is workflow state, so do not overwrite it here.
-    """
-    role = await _find_role_by_title(owner_role)
-    holder_oid = ""
-    if role:
-        fields = role.get("fields", {})
-        holder_oid = (
-            fields.get("CurrentHolderEntraId", "")
-            or fields.get("CurrentHolderId", "")
-            or ""
-        )
-    return {
-        "OwnerRole": owner_role,
-        "OwnerEntraId": holder_oid,
-    }
-
-
-async def _create_role_if_missing(role_title: str, item: dict, rationale: str) -> str:
-    existing = await _find_role_by_title(role_title)
-    if existing:
-        return f"Role already exists: {existing.get('id')}"
-
-    fields = {
-        "Title":            role_title[:255],
-        "Department":       item.get("Department") or "Unassigned",
-        "JDReference":      item.get("SourceDocumentCode") or "",
-        "SourceSystem":     "Manual",
-        "AssignmentStatus": "Unassigned",
-        "VariantTerms":     item.get("ProposedOwnerRole", "") if item.get("ProposedOwnerRole") != role_title else "",
-    }
-    role = await create_list_item(_rr_id(), _RR_LIST, fields)
-    return f"Role Register: created '{role_title}' ({role['id']})"
-
-
-async def _append_role_variants(canonical_name: str, variant_terms: list[str]) -> str:
-    role = await _find_role_by_title(canonical_name)
-    if not role:
-        fields = {
-            "Title":            canonical_name[:255],
-            "Department":       "Unassigned",
-            "JDReference":      "",
-            "SourceSystem":     "Manual",
-            "AssignmentStatus": "Unassigned",
-            "VariantTerms":     _join_variant_terms(variant_terms),
-        }
-        created = await create_list_item(_rr_id(), _RR_LIST, fields)
-        return f"Role Register: created canonical role '{canonical_name}' ({created['id']})"
-
-    fields = role.get("fields", {})
-    existing_terms = _split_terms(fields.get("VariantTerms", ""))
-    merged_terms = existing_terms[:]
-    for term in variant_terms:
-        if term and _normalise(term) != _normalise(canonical_name):
-            if term.lower() not in {t.lower() for t in merged_terms}:
-                merged_terms.append(term)
-
-    await update_list_item(
-        _rr_id(),
-        _RR_LIST,
-        str(role["id"]),
-        {"VariantTerms": _join_variant_terms(merged_terms)},
-    )
-    return f"Role Register: updated variants for '{canonical_name}'"
-
-
-async def _update_control_owner_variants(canonical_name: str, variant_terms: list[str]) -> str:
-    try:
-        controls = await get_list_items(_cr_id(), _CR_LIST)
-    except Exception as exc:
-        logger.warning(f"Could not fetch Control Register: {exc}")
-        return "Control Register update skipped"
-
-    variants = {_normalise(v) for v in variant_terms if v}
-    variants.add(_normalise(canonical_name))
-    update_fields = await _control_owner_update_fields(canonical_name)
-    updated = 0
-    for control in controls:
-        fields = control.get("fields", {})
-        owner_role = fields.get("OwnerRole", "")
-        needs_refresh = (
-            owner_role != canonical_name
-            or fields.get("OwnerEntraId", "") != update_fields["OwnerEntraId"]
-            or fields.get("Status", "") != update_fields["Status"]
-        )
-        if owner_role and _normalise(owner_role) in variants and needs_refresh:
-            await update_list_item(
-                _cr_id(),
-                _CR_LIST,
-                str(control["id"]),
-                update_fields,
-            )
-            updated += 1
-    return (
-        f"Control Register: {updated} owner role(s) standardised"
-        f" ({update_fields['Status']})"
-    )
-
-
-async def _update_evidence_owner_variants(canonical_name: str, variant_terms: list[str]) -> str:
-    try:
-        evidence_items = await get_list_items(_ev_id(), _EV_LIST)
-    except Exception as exc:
-        logger.warning(f"Could not fetch Evidence Tracker: {exc}")
-        return "Evidence Tracker update skipped"
-
-    variants = {_normalise(v) for v in variant_terms if v}
-    variants.add(_normalise(canonical_name))
-    update_fields = await _evidence_owner_update_fields(canonical_name)
-    updated = 0
-    for evidence in evidence_items:
-        fields = evidence.get("fields", {})
-        owner_role = fields.get("OwnerRole", "")
-        needs_refresh = (
-            owner_role != canonical_name
-            or fields.get("OwnerEntraId", "") != update_fields["OwnerEntraId"]
-        )
-        if owner_role and _normalise(owner_role) in variants and needs_refresh:
-            await update_list_item(
-                _ev_id(),
-                _EV_LIST,
-                str(evidence["id"]),
-                update_fields,
-            )
-            updated += 1
-    return f"Evidence Tracker: {updated} owner role(s) standardised"
-
-
-async def _update_matching_control_owner(item: dict, target_role: str) -> str:
-    stmt = item.get("ControlStatement", "")
-    if not stmt or not target_role:
-        return "Control reassignment skipped — missing control statement or target role"
-
-    try:
-        controls = await get_list_items(_cr_id(), _CR_LIST)
-    except Exception as exc:
-        logger.warning(f"Could not fetch Control Register: {exc}")
-        return "Control reassignment skipped"
-
-    updated = 0
-    source_doc = item.get("SourceDocumentCode", "")
-    update_fields = await _control_owner_update_fields(target_role)
-    for control in controls:
-        fields = control.get("fields", {})
-        same_statement = _normalise(fields.get("ControlStatement", "")) == _normalise(stmt)
-        same_source = not source_doc or fields.get("SourceDocument", "") == source_doc
-        if same_statement and same_source:
-            await update_list_item(
-                _cr_id(),
-                _CR_LIST,
-                str(control["id"]),
-                update_fields,
-            )
-            updated += 1
-    return (
-        f"Control Register: {updated} matching control(s) reassigned to '{target_role}'"
-        f" ({update_fields['Status']})"
-    )
-
-
-async def _update_matching_evidence_owner(item: dict, target_role: str) -> str:
-    stmt = item.get("ControlStatement", "")
-    if not stmt and not target_role:
-        return "Evidence reassignment skipped — missing control statement or target role"
-
-    try:
-        evidence_items = await get_list_items(_ev_id(), _EV_LIST)
-    except Exception as exc:
-        logger.warning(f"Could not fetch Evidence Tracker: {exc}")
-        return "Evidence reassignment skipped"
-
-    updated = 0
-    source_doc = item.get("SourceDocumentCode", "")
-    current_role = item.get("ProposedOwnerRole", "")
-    update_fields = await _evidence_owner_update_fields(target_role)
-    for evidence in evidence_items:
-        fields = evidence.get("fields", {})
-        same_source = not source_doc or fields.get("SourceDocument", "") == source_doc
-        same_role = not current_role or _normalise(fields.get("OwnerRole", "")) == _normalise(current_role)
-        same_control = not stmt or stmt[:180].lower() in (fields.get("Title", "") + " " + fields.get("EvidenceDescription", "")).lower()
-        if same_source and (same_role or same_control):
-            await update_list_item(
-                _ev_id(),
-                _EV_LIST,
-                str(evidence["id"]),
-                update_fields,
-            )
-            updated += 1
-    return f"Evidence Tracker: {updated} matching item(s) reassigned to '{target_role}'"
 
 
 async def _create_strategic_risk_from_zone2(
@@ -826,8 +565,6 @@ ZONE2_DECISIONS = {
     "Create new document",
     "Add to existing policy",
     "Add to existing JD",
-    "Reassign control",
-    "Create new role",
     "Remove from policy",
     "Intentional",
     "Remove from JD",
@@ -843,7 +580,6 @@ class Zone2DecideBody(BaseModel):
     decision:          str
     rationale:         str
     linked_doc_code:   Optional[str] = None
-    target_role:       Optional[str] = None
     reviewer_oid:      Optional[str] = None
     reviewer_name:     Optional[str] = None
     reviewer_email:    Optional[str] = None
@@ -855,7 +591,6 @@ async def _zone2_cascade(
     rationale: str,
     user: CurrentUser,
     linked_doc_code: Optional[str] = None,
-    target_role: Optional[str] = None,
     reviewer: Optional[dict] = None,
 ) -> str:
     created = []
@@ -914,27 +649,6 @@ async def _zone2_cascade(
             created.append(f"Document Lifecycle: {lifecycle_id}")
         except Exception as exc:
             raise CascadeError("Document Lifecycle", created, exc)
-
-    elif decision == "Reassign control":
-        role = target_role or item.get("ProposedOwnerRole", "")
-        if role:
-            try:
-                created.append(await _update_matching_control_owner(item, role))
-                created.append(await _update_matching_evidence_owner(item, role))
-            except Exception as exc:
-                raise CascadeError("Control/Evidence reassignment", created, exc)
-        else:
-            created.append("Control reassignment requires a target role.")
-
-    elif decision == "Create new role":
-        role = target_role or item.get("ProposedOwnerRole", "")
-        if role:
-            try:
-                created.append(await _create_role_if_missing(role, item, rationale))
-            except Exception as exc:
-                raise CascadeError("Role Register", created, exc)
-        else:
-            created.append("Role creation requires a role title.")
 
     elif decision == "Remove from policy":
         try:
@@ -1066,8 +780,6 @@ async def zone2_decide(
             "Create new document":  "Accepted",
             "Add to existing policy":"Accepted",
             "Add to existing JD":    "Accepted",
-            "Reassign control":      "Accepted",
-            "Create new role":       "Accepted",
             "Remove from policy":    "Rejected",
             "Intentional":          "Accepted",
             "Remove from JD":       "Rejected",
@@ -1081,7 +793,7 @@ async def zone2_decide(
         try:
             cascade_result = await _zone2_cascade(
                 item, body.decision, rationale,
-                user, body.linked_doc_code, body.target_role,
+                user, body.linked_doc_code,
                 {
                     "oid": body.reviewer_oid,
                     "name": body.reviewer_name,
@@ -1099,8 +811,6 @@ async def zone2_decide(
             "ReviewedByEntraId": user.oid,
             "CascadeResult":     cascade_result,
         }
-        if body.target_role:
-            updates["ProposedOwnerRole"] = body.target_role
 
         await update_list_item(_q_id(), _Q_LIST, item_id, updates)
         updated = _sp_to_item(await get_list_item(_q_id(), _Q_LIST, item_id))
@@ -1138,75 +848,53 @@ async def _zone3_cascade(
     user: CurrentUser,
 ) -> str:
     created = []
-    variant_terms = _split_terms(item.get("VariantTerms", ""))
-    if canonical_name:
-        variant_terms.append(canonical_name)
-    is_role_harmonisation = not item.get("ControlStatement")
     source_doc = item.get("SourceDocumentCode", "")
-
     source_doc2 = item.get("SourceDocumentCode2", "")
 
     if decision in ("Merge", "Rename and standardise") and canonical_name:
         created.append(f"Canonical name confirmed: '{canonical_name}'")
-        if is_role_harmonisation:
+        shared_notes = (
+            f"Created from Zone 3 Harmonisation decision.\n"
+            f"Decision: {decision}\n"
+            f"Canonical control/name: {canonical_name}\n"
+            f"Variant/control terms:\n{item.get('VariantTerms', '')[:1500]}\n"
+            f"Rationale: {rationale}"
+        )
+        for doc_code in filter(None, [source_doc, source_doc2]):
             try:
-                created.append(await _append_role_variants(canonical_name, variant_terms))
-                created.append(await _update_control_owner_variants(canonical_name, variant_terms))
-                created.append(await _update_evidence_owner_variants(canonical_name, variant_terms))
+                lifecycle_id = await _create_lifecycle_task(
+                    title=f"Harmonisation fix — standardise control in {doc_code}: {item.get('Title', '')[:140]}",
+                    trigger="Harmonisation Fix",
+                    document_code=doc_code,
+                    document_type="Policy",
+                    notes=shared_notes,
+                    user=user,
+                )
+                created.append(f"Document Lifecycle ({doc_code}): {lifecycle_id}")
             except Exception as exc:
-                raise CascadeError("Role harmonisation", created, exc)
-        else:
-            shared_notes = (
-                f"Created from Zone 3 Harmonisation decision.\n"
-                f"Decision: {decision}\n"
-                f"Canonical control/name: {canonical_name}\n"
-                f"Variant/control terms:\n{item.get('VariantTerms', '')[:1500]}\n"
-                f"Rationale: {rationale}"
-            )
-            for doc_code in filter(None, [source_doc, source_doc2]):
-                try:
-                    lifecycle_id = await _create_lifecycle_task(
-                        title=f"Harmonisation fix — standardise control in {doc_code}: {item.get('Title', '')[:140]}",
-                        trigger="Harmonisation Fix",
-                        document_code=doc_code,
-                        document_type="Policy",
-                        notes=shared_notes,
-                        user=user,
-                    )
-                    created.append(f"Document Lifecycle ({doc_code}): {lifecycle_id}")
-                except Exception as exc:
-                    raise CascadeError(f"Document Lifecycle ({doc_code})", created, exc)
+                raise CascadeError(f"Document Lifecycle ({doc_code})", created, exc)
 
     elif decision == "Partial merge" and canonical_name:
         created.append(f"Partial merge — canonical name '{canonical_name}' confirmed for overlapping variants.")
-        if is_role_harmonisation:
+        shared_notes = (
+            f"Created from Zone 3 partial merge decision.\n"
+            f"Canonical control/name: {canonical_name}\n"
+            f"Variant/control terms:\n{item.get('VariantTerms', '')[:1500]}\n"
+            f"Rationale: {rationale}"
+        )
+        for doc_code in filter(None, [source_doc, source_doc2]):
             try:
-                created.append(await _append_role_variants(canonical_name, variant_terms))
-                created.append(await _update_control_owner_variants(canonical_name, variant_terms))
-                created.append(await _update_evidence_owner_variants(canonical_name, variant_terms))
-                created.append("Remaining variants require manual review.")
+                lifecycle_id = await _create_lifecycle_task(
+                    title=f"Harmonisation fix — partial merge in {doc_code}: {item.get('Title', '')[:140]}",
+                    trigger="Harmonisation Fix",
+                    document_code=doc_code,
+                    document_type="Policy",
+                    notes=shared_notes,
+                    user=user,
+                )
+                created.append(f"Document Lifecycle ({doc_code}): {lifecycle_id}")
             except Exception as exc:
-                raise CascadeError("Role harmonisation", created, exc)
-        else:
-            shared_notes = (
-                f"Created from Zone 3 partial merge decision.\n"
-                f"Canonical control/name: {canonical_name}\n"
-                f"Variant/control terms:\n{item.get('VariantTerms', '')[:1500]}\n"
-                f"Rationale: {rationale}"
-            )
-            for doc_code in filter(None, [source_doc, source_doc2]):
-                try:
-                    lifecycle_id = await _create_lifecycle_task(
-                        title=f"Harmonisation fix — partial merge in {doc_code}: {item.get('Title', '')[:140]}",
-                        trigger="Harmonisation Fix",
-                        document_code=doc_code,
-                        document_type="Policy",
-                        notes=shared_notes,
-                        user=user,
-                    )
-                    created.append(f"Document Lifecycle ({doc_code}): {lifecycle_id}")
-                except Exception as exc:
-                    raise CascadeError(f"Document Lifecycle ({doc_code})", created, exc)
+                raise CascadeError(f"Document Lifecycle ({doc_code})", created, exc)
 
     elif decision == "Keep separate":
         created.append("Confirmed as separate items — future classifier runs should suppress this exact pair.")
@@ -1315,64 +1003,6 @@ def _impact_shell(zone: str, decision: str) -> dict:
     }
 
 
-async def _count_owner_variant_matches(canonical_name: str, variant_terms: list[str]) -> tuple[int, int]:
-    """Read-only counts of controls/evidence whose OwnerRole is one of the variants."""
-    variants = {_normalise(v) for v in variant_terms if v}
-    variants.add(_normalise(canonical_name))
-
-    control_count = 0
-    try:
-        for control in await get_list_items(_cr_id(), _CR_LIST):
-            owner_role = control.get("fields", {}).get("OwnerRole", "")
-            if owner_role and _normalise(owner_role) in variants:
-                control_count += 1
-    except Exception as exc:
-        logger.warning(f"Impact preview could not scan Control Register: {exc}")
-
-    evidence_count = 0
-    try:
-        for evidence in await get_list_items(_ev_id(), _EV_LIST):
-            owner_role = evidence.get("fields", {}).get("OwnerRole", "")
-            if owner_role and _normalise(owner_role) in variants:
-                evidence_count += 1
-    except Exception as exc:
-        logger.warning(f"Impact preview could not scan Evidence Tracker: {exc}")
-
-    return control_count, evidence_count
-
-
-async def _count_reassign_matches(item: dict) -> tuple[int, int]:
-    """Read-only counts matching the Reassign-control cascade predicates."""
-    stmt = item.get("ControlStatement", "")
-    source_doc = item.get("SourceDocumentCode", "")
-    current_role = item.get("ProposedOwnerRole", "")
-
-    control_count = 0
-    try:
-        for control in await get_list_items(_cr_id(), _CR_LIST):
-            fields = control.get("fields", {})
-            same_statement = _normalise(fields.get("ControlStatement", "")) == _normalise(stmt)
-            same_source = not source_doc or fields.get("SourceDocument", "") == source_doc
-            if stmt and same_statement and same_source:
-                control_count += 1
-    except Exception as exc:
-        logger.warning(f"Impact preview could not scan Control Register: {exc}")
-
-    evidence_count = 0
-    try:
-        for evidence in await get_list_items(_ev_id(), _EV_LIST):
-            fields = evidence.get("fields", {})
-            same_source = not source_doc or fields.get("SourceDocument", "") == source_doc
-            same_role = not current_role or _normalise(fields.get("OwnerRole", "")) == _normalise(current_role)
-            same_control = not stmt or stmt[:180].lower() in (fields.get("Title", "") + " " + fields.get("EvidenceDescription", "")).lower()
-            if same_source and (same_role or same_control):
-                evidence_count += 1
-    except Exception as exc:
-        logger.warning(f"Impact preview could not scan Evidence Tracker: {exc}")
-
-    return control_count, evidence_count
-
-
 async def _zone1_impact(item: dict, decision: str, impact: dict) -> dict:
     status_map = {
         "Accept":                "Accepted",
@@ -1392,14 +1022,7 @@ async def _zone1_impact(item: dict, decision: str, impact: dict) -> dict:
             return impact
 
         owner_role = item.get("ProposedOwnerRole", "")
-        holder_oid = ""
-        if owner_role:
-            role = await _find_role_by_title(owner_role)
-            if role:
-                fields = role.get("fields", {})
-                holder_oid = fields.get("CurrentHolderEntraId", "") or fields.get("CurrentHolderId", "") or ""
-
-        control_state = "Active" if (owner_role and holder_oid) else "Blocked"
+        control_state = "Active" if owner_role else "Blocked"
         impact["creates"].append({
             "register": "Control Register",
             "detail": (
@@ -1444,11 +1067,6 @@ async def _zone1_impact(item: dict, decision: str, impact: dict) -> dict:
 
         if not owner_role:
             impact["warnings"].append("No owner role proposed — the control will be created as Blocked (unassigned owner).")
-        elif not holder_oid:
-            impact["warnings"].append(
-                f"Owner role “{owner_role}” has no current holder in the Role Register — "
-                "the control will be created as Blocked until the role is assigned."
-            )
 
         impact["summary"] = (
             f"Accepting creates {len(impact['creates'])} record(s) and updates the queue item."
@@ -1473,7 +1091,7 @@ async def _zone1_impact(item: dict, decision: str, impact: dict) -> dict:
 
 
 async def _zone2_impact(item: dict, decision: str, impact: dict,
-                        target_role: Optional[str], linked_doc_code: Optional[str]) -> dict:
+                        linked_doc_code: Optional[str]) -> dict:
     stmt = (item.get("ResponsibilityStatement") or item.get("ControlStatement") or item.get("Title", ""))[:120]
     source_doc = item.get("SourceDocumentCode", "")
 
@@ -1493,50 +1111,6 @@ async def _zone2_impact(item: dict, decision: str, impact: dict,
             "detail": lifecycle_decisions[decision] + " Enters at the Review stage.",
         })
 
-    elif decision == "Reassign control":
-        role = target_role or item.get("ProposedOwnerRole", "")
-        if not role:
-            impact["blocked"] = True
-            impact["blocked_reason"] = "Reassign control requires a target role."
-            return impact
-        control_count, evidence_count = await _count_reassign_matches(item)
-        holder_role = await _find_role_by_title(role)
-        holder_oid = ""
-        if holder_role:
-            rf = holder_role.get("fields", {})
-            holder_oid = rf.get("CurrentHolderEntraId", "") or rf.get("CurrentHolderId", "") or ""
-        impact["updates"].append({
-            "register": "Control Register",
-            "detail": f"{control_count} matching control(s) reassigned to “{role}” ({'Active' if holder_oid else 'Blocked'}).",
-        })
-        impact["updates"].append({
-            "register": "Evidence Tracker",
-            "detail": f"{evidence_count} matching evidence item(s) reassigned to “{role}”.",
-        })
-        if not holder_oid:
-            impact["warnings"].append(
-                f"Role “{role}” has no current holder — reassigned controls will be Blocked until the role is assigned."
-            )
-
-    elif decision == "Create new role":
-        role = target_role or item.get("ProposedOwnerRole", "")
-        if not role:
-            impact["blocked"] = True
-            impact["blocked_reason"] = "Create new role requires a role title."
-            return impact
-        existing = await _find_role_by_title(role)
-        if existing:
-            impact["warnings"].append(f"Role “{role}” already exists in the Role Register — no new role will be created.")
-        else:
-            impact["creates"].append({
-                "register": "Role Register",
-                "detail": f"New role “{role}”, status: Unassigned (Blocked until a person is assigned).",
-            })
-            impact["flags"].append({
-                "register": "Work Hub",
-                "detail": "Compliance is surfaced: “New role requires person assignment.”",
-            })
-
     elif decision == "Escalate to ExCo":
         impact["creates"].append({
             "register": "Strategic Risk Register",
@@ -1551,8 +1125,7 @@ async def _zone2_impact(item: dict, decision: str, impact: dict,
 
     status_map = {
         "Create new document": "Accepted", "Add to existing policy": "Accepted",
-        "Add to existing JD": "Accepted", "Reassign control": "Accepted",
-        "Create new role": "Accepted", "Remove from policy": "Rejected",
+        "Add to existing JD": "Accepted", "Remove from policy": "Rejected",
         "Intentional": "Accepted", "Remove from JD": "Rejected",
         "Mark False Positive": "False Positive", "Request Second Review": "Pending Second Review",
         "Select governing document": "Accepted", "Escalate to ExCo": "Pending Second Review",
@@ -1574,9 +1147,7 @@ async def _zone2_impact(item: dict, decision: str, impact: dict,
 
 
 async def _zone3_impact(item: dict, decision: str, impact: dict, canonical_name: Optional[str]) -> dict:
-    variant_terms = _split_terms(item.get("VariantTerms", ""))
     canonical = canonical_name or item.get("CanonicalName", "")
-    is_role_harmonisation = not item.get("ControlStatement")
     source_docs = [d for d in [item.get("SourceDocumentCode", ""), item.get("SourceDocumentCode2", "")] if d]
 
     if decision == "Keep separate":
@@ -1590,44 +1161,15 @@ async def _zone3_impact(item: dict, decision: str, impact: dict, canonical_name:
             impact["blocked_reason"] = "A canonical name is required for this decision."
             return impact
 
-        if is_role_harmonisation:
-            control_count, evidence_count = await _count_owner_variant_matches(canonical, variant_terms)
-            existing_role = await _find_role_by_title(canonical)
-            holder_oid = ""
-            if existing_role:
-                rf = existing_role.get("fields", {})
-                holder_oid = rf.get("CurrentHolderEntraId", "") or rf.get("CurrentHolderId", "") or ""
-                impact["updates"].append({
-                    "register": "Role Register",
-                    "detail": f"Role “{canonical}” absorbs {len(variant_terms)} variant term(s).",
-                })
-            else:
-                impact["creates"].append({
-                    "register": "Role Register",
-                    "detail": f"New canonical role “{canonical}” (Unassigned) holding the variant terms.",
-                })
-            impact["updates"].append({
-                "register": "Control Register",
-                "detail": f"{control_count} control(s) whose owner matches a variant are re-pointed to “{canonical}”.",
+        for doc_code in source_docs:
+            impact["creates"].append({
+                "register": "Document Lifecycle",
+                "detail": f"Harmonisation-fix revision task for {doc_code} (standardise to “{canonical}”).",
             })
-            impact["updates"].append({
-                "register": "Evidence Tracker",
-                "detail": f"{evidence_count} evidence item(s) re-pointed to “{canonical}”.",
-            })
-            if not holder_oid:
-                impact["warnings"].append(
-                    f"“{canonical}” has no current holder — re-pointed controls will be Blocked until the role is assigned."
-                )
-            if decision == "Partial merge":
-                impact["warnings"].append("Partial merge: remaining variants stay separate and require manual review.")
-        else:
-            for doc_code in source_docs:
-                impact["creates"].append({
-                    "register": "Document Lifecycle",
-                    "detail": f"Harmonisation-fix revision task for {doc_code} (standardise to “{canonical}”).",
-                })
-            if not source_docs:
-                impact["warnings"].append("No source document codes on this item — no lifecycle revision tasks will be created.")
+        if not source_docs:
+            impact["warnings"].append("No source document codes on this item — no lifecycle revision tasks will be created.")
+        if decision == "Partial merge":
+            impact["warnings"].append("Partial merge: remaining variants stay separate and require manual review.")
 
     impact["updates"].append({
         "register": "AI Review Queue",
@@ -1649,7 +1191,6 @@ async def decision_impact(
     item_id: str,
     zone: str,
     decision: str,
-    target_role:     Optional[str] = None,
     linked_doc_code: Optional[str] = None,
     canonical_name:  Optional[str] = None,
     user: CurrentUser = Depends(get_current_user),
@@ -1682,7 +1223,7 @@ async def decision_impact(
         if zone == "1":
             return await _zone1_impact(item, decision, impact)
         if zone == "2":
-            return await _zone2_impact(item, decision, impact, target_role, linked_doc_code)
+            return await _zone2_impact(item, decision, impact, linked_doc_code)
         return await _zone3_impact(item, decision, impact, canonical_name)
 
     except HTTPException:

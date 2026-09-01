@@ -24,18 +24,6 @@ const evidenceApi = {
     apiClient.get("/api/v1/evidence", { params }).then(r => r.data),
 
   submit: async (id, file, notes) => {
-    const { msalInstance } = await import("../../main.jsx");
-    const { apiTokenRequest } = await import("../../authConfig.js");
-    const accounts = msalInstance.getAllAccounts();
-    if (!accounts.length) throw new Error("Not authenticated");
-
-    let tokenResp;
-    try {
-      tokenResp = await msalInstance.acquireTokenSilent({ ...apiTokenRequest, account: accounts[0] });
-    } catch {
-      tokenResp = await msalInstance.acquireTokenPopup(apiTokenRequest);
-    }
-
     const form = new FormData();
     form.append("file", file);
     if (notes) form.append("submission_notes", notes);
@@ -43,7 +31,7 @@ const evidenceApi = {
     const BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
     const resp = await fetch(`${BASE}/api/v1/evidence/${id}/upload`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${tokenResp.accessToken}` },
+      credentials: "include",
       body: form,
     });
     if (!resp.ok) {
