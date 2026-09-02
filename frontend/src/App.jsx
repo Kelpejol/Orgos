@@ -8,8 +8,7 @@
 
 import { useState } from "react";
 import { Routes, Route } from "react-router-dom";
-import Sidebar from "./components/layout/Sidebar.jsx";
-import TopBar from "./components/layout/TopBar.jsx";
+import Navbar from "./components/layout/Navbar.jsx";
 import { useCurrentUserRole } from "./hooks/useCurrentUserRole.js";
 import { AlertProvider } from "./components/shared/AlertModal.jsx";
 import AccessDenied from "./pages/shared/AccessDenied.jsx";
@@ -324,9 +323,6 @@ const ROUTE_NAMES = {
 // ── Main app shell (all state-nav screens) ───────────────────────────────────
 function OrgOSShell() {
   const [nav, setNav] = useState("workhub");
-  const [collapsed, setCollapsed] = useState(
-    typeof window !== "undefined" && window.innerWidth < 768,
-  );
 
   const { isCompliance } = useCurrentUserRole();
 
@@ -381,33 +377,26 @@ function OrgOSShell() {
   return (
     <div
       style={{
-        display: "flex",
-        flexDirection: "column",
-        height: "100vh",
-        fontFamily: "var(--font-sans)",
+        fontFamily: "var(--font-ui)",
         color: "var(--color-text-primary)",
         fontSize: 13,
       }}
     >
-      <TopBar currentScreen={nav} />
-      <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
-        <Sidebar
-          nav={nav}
-          setNav={go}
-          collapsed={collapsed}
-          setCollapsed={setCollapsed}
-        />
-        <div
-          style={{
-            flex: 1,
-            padding: "16px 20px",
-            overflowY: "auto",
-            overflowX: "auto",
-          }}
-        >
-          {renderScreen()}
-        </div>
-      </div>
+      <Navbar nav={nav} setNav={go} />
+      <main
+        style={{
+          minHeight: "100vh",
+          width: "100%",
+          maxWidth: "var(--page-max-7xl)",
+          margin: "0 auto",
+          padding: "16px 20px",
+          paddingTop: "calc(var(--navbar-height) + 16px)",
+          boxSizing: "border-box",
+          overflowX: "auto",
+        }}
+      >
+        {renderScreen()}
+      </main>
     </div>
   );
 }

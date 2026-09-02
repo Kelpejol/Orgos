@@ -5,7 +5,7 @@
 // backend. This module only ever talks to OrgOS's own /api/auth/* routes.
 // =============================================================================
 
-const SHELL_URL = import.meta.env.VITE_ERP_URL;
+export const SHELL_URL = import.meta.env.VITE_ERP_URL;
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
 // Check the erp_auth cookie via OrgOS's own backend — covers new tabs and

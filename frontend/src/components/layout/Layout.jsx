@@ -1,4 +1,3 @@
-// Layout.jsx — shell wrapper (Sidebar + TopBar + content slot)
+// Layout.jsx — shell wrapper (Navbar + content slot)
 // Used when wrapping individual pages with consistent chrome.
-export { default as Sidebar } from "./Sidebar.jsx";
-export { default as TopBar } from "./TopBar.jsx";
+export { default as Navbar } from "./Navbar.jsx";
