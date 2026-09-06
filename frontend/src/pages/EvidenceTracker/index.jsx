@@ -13,6 +13,7 @@ import { Field } from "../../components/shared/Forms.jsx";
 import { LoadingState, ErrorState, EmptyState } from "../../components/shared/LoadingState.jsx";
 import { useCurrentUserRole } from "../../hooks/useCurrentUserRole.js";
 import { useAlert } from "../../components/shared/AlertModal.jsx";
+import JobTitleInput from "../../components/shared/JobTitleInput.jsx";
 import apiClient from "../../api/grcApi.js";
 
 // =============================================================================
@@ -53,6 +54,11 @@ const evidenceApi = {
     apiClient.patch(`/api/v1/evidence/${id}/verify`, {
       accepted,
       rejection_note: rejectionNote || undefined,
+    }).then(r => r.data),
+
+  reassignOwner: (id, ownerRole) =>
+    apiClient.patch(`/api/v1/evidence/${id}/reassign-owner`, {
+      owner_role: ownerRole,
     }).then(r => r.data),
 };
 
@@ -338,10 +344,12 @@ const VerifyPanel = ({ item, onVerify, onClose, isPending }) => {
 //  Evidence card
 // =============================================================================
 
-const EvidenceCard = ({ item, currentOid, isCompliance, onSubmit, onSubmitLink, onVerify, actionItemId }) => {
+const EvidenceCard = ({ item, currentOid, isCompliance, onSubmit, onSubmitLink, onVerify, onReassignOwner, actionItemId }) => {
   const [expanded, setExpanded]     = useState(false);
   const [showSubmit, setShowSubmit] = useState(false);
   const [showVerify, setShowVerify] = useState(false);
+  const [showReassign, setShowReassign] = useState(false);
+  const [newOwner, setNewOwner]     = useState("");
 
   const ss = STATUS_STYLES[item.Status] || STATUS_STYLES["Pending"];
   const isOwner     = item.OwnerEntraId === currentOid;
@@ -363,7 +371,7 @@ const EvidenceCard = ({ item, currentOid, isCompliance, onSubmit, onSubmitLink, 
       {/* Header */}
       <div
         role="button" tabIndex={0}
-        onClick={() => { setExpanded(!expanded); setShowSubmit(false); setShowVerify(false); }}
+        onClick={() => { setExpanded(!expanded); setShowSubmit(false); setShowVerify(false); setShowReassign(false); }}
         onKeyDown={e => e.key === "Enter" && setExpanded(!expanded)}
         style={{ padding: "11px 14px", cursor: "pointer" }}
       >
@@ -491,6 +499,56 @@ const EvidenceCard = ({ item, currentOid, isCompliance, onSubmit, onSubmitLink, 
               isPending={isPending}
             />
           )}
+
+          {/* Reassign owner — compliance can set the owner to a real job title */}
+          {isCompliance && !showReassign && (
+            <button
+              onClick={e => { e.stopPropagation(); setNewOwner(item.OwnerRole || ""); setShowReassign(true); }}
+              style={{ marginTop: 8, width: "100%", padding: "8px", fontSize: 12,
+                       borderRadius: 8, border: "1.5px solid var(--color-border-tertiary)",
+                       background: "transparent", color: "var(--color-text-secondary)",
+                       cursor: "pointer", fontWeight: 500 }}>
+              Reassign owner
+            </button>
+          )}
+          {showReassign && (
+            <div style={{ marginTop: 10, padding: "10px 12px", borderRadius: 8,
+                          background: "var(--color-background-secondary)",
+                          border: "1px solid var(--color-border-tertiary)" }}
+                 onClick={e => e.stopPropagation()}>
+              <label style={{ fontSize: 11, fontWeight: 600, color: "var(--color-text-secondary)" }}>
+                Owner role (job title)
+              </label>
+              <JobTitleInput
+                value={newOwner}
+                onChange={e => setNewOwner(e.target.value)}
+                placeholder={item.OwnerRole || "Job title responsible"}
+                style={{ width: "100%", padding: "8px 10px", fontSize: 12.5, borderRadius: 8,
+                         border: "1.5px solid var(--color-border-tertiary)", marginTop: 4,
+                         boxSizing: "border-box", background: "var(--color-background-primary)",
+                         color: "var(--color-text-primary)" }} />
+              <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                <button
+                  disabled={isPending || !newOwner.trim() || newOwner.trim() === (item.OwnerRole || "")}
+                  onClick={async e => {
+                    e.stopPropagation();
+                    await onReassignOwner(item.id, newOwner.trim());
+                    setShowReassign(false);
+                  }}
+                  style={{ flex: 1, padding: "8px", fontSize: 12, fontWeight: 600, borderRadius: 8,
+                           border: "none", color: "#fff", cursor: "pointer",
+                           background: (!newOwner.trim() || newOwner.trim() === (item.OwnerRole || "")) ? "#9FBAAF" : "#085041" }}>
+                  {isPending ? "Saving…" : "Save owner"}
+                </button>
+                <button onClick={e => { e.stopPropagation(); setShowReassign(false); }}
+                  style={{ padding: "8px 14px", fontSize: 12, borderRadius: 8,
+                           border: "1.5px solid var(--color-border-tertiary)", background: "transparent",
+                           color: "var(--color-text-secondary)", cursor: "pointer" }}>
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -584,6 +642,23 @@ export default function EvidenceTracker() {
     }
   };
 
+  const handleReassignOwner = async (id, ownerRole) => {
+    setActionItemId(id);
+    try {
+      await evidenceApi.reassignOwner(id, ownerRole);
+      qc.invalidateQueries({ queryKey: ["evidence"] });
+      notify({ tone: "success", title: "Owner updated", message: `Evidence owner set to ${ownerRole}.` });
+    } catch (err) {
+      notify({
+        tone: "danger",
+        title: "Reassign failed",
+        message: err.response?.data?.detail || err.message || "Could not reassign owner.",
+      });
+    } finally {
+      setActionItemId(null);
+    }
+  };
+
   const tabViews = [
     { k: "mine",      l: `My evidence (${views.mine.length})` },
     ...(isCompliance ? [
@@ -657,6 +732,7 @@ export default function EvidenceTracker() {
               onSubmit={handleSubmit}
               onSubmitLink={handleSubmitLink}
               onVerify={handleVerify}
+              onReassignOwner={handleReassignOwner}
               actionItemId={actionItemId}
             />
           ))}

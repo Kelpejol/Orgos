@@ -303,3 +303,29 @@ async def verify_evidence(
         raise
     except Exception as exc:
         _handle(exc, f"verify evidence {item_id}")
+
+
+class ReassignEvidenceOwner(BaseModel):
+    owner_role: str
+
+
+@router.patch("/api/v1/evidence/{item_id}/reassign-owner")
+async def reassign_evidence_owner(
+    item_id: str,
+    body: ReassignEvidenceOwner,
+    user: CurrentUser = Depends(require_compliance_lead),
+) -> dict:
+    """
+    Reassign the evidence owner role to a (real) job title. Compliance only.
+    """
+    owner = (body.owner_role or "").strip()
+    if not owner:
+        raise HTTPException(status_code=422, detail="owner_role is required.")
+    try:
+        await update_list_item(_list_id(), _LIST_NAME, item_id, {"OwnerRole": owner})
+        updated = await get_list_item(_list_id(), _LIST_NAME, item_id)
+        return _sp_to_evd(updated)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _handle(exc, f"reassign evidence owner {item_id}")
