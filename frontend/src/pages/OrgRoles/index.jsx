@@ -31,12 +31,34 @@ const OrgRolesCell = ({ roles }) => {
   if (!roles || roles.length === 0) {
     return <span style={{ color: "var(--color-text-tertiary)" }}>—</span>;
   }
+  // List ALL roles; wrap within the column and expose the full list on hover.
   return (
-    <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+    <div
+      title={roles.join(", ")}
+      style={{ display: "flex", flexWrap: "wrap", gap: 4, maxWidth: 240 }}
+    >
       {roles.map((r) => (
         <OrgRoleChip key={r} role={r} />
       ))}
     </div>
+  );
+};
+
+// Text cell that wraps long values gracefully and shows the full value on hover.
+const TextCell = ({ value, muted }) => {
+  if (!value) return <span style={{ color: "var(--color-text-tertiary)" }}>—</span>;
+  return (
+    <span
+      title={value}
+      style={{
+        display: "inline-block",
+        maxWidth: 220,
+        overflowWrap: "anywhere",
+        color: muted ? "var(--color-text-secondary)" : "var(--color-text-primary)",
+      }}
+    >
+      {value}
+    </span>
   );
 };
 
@@ -51,6 +73,8 @@ export default function OrgRoles() {
       (u) =>
         u.display_name?.toLowerCase().includes(q) ||
         u.email?.toLowerCase().includes(q) ||
+        u.job_title?.toLowerCase().includes(q) ||
+        u.department?.toLowerCase().includes(q) ||
         (u.org_roles || []).some((r) => r.toLowerCase().includes(q)),
     );
   }, [users, search]);
@@ -63,7 +87,8 @@ export default function OrgRoles() {
           Org roles
         </div>
         <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>
-          Every Dragnet user with at least one org_role assigned.
+          Every Dragnet user with an org_role, with their job title and department
+          (job title is the role used in control ownership and extraction).
         </div>
       </div>
 
@@ -71,7 +96,7 @@ export default function OrgRoles() {
         type="text"
         value={search}
         onChange={(e) => setSearch(e.target.value)}
-        placeholder="Search people or roles..."
+        placeholder="Search people, job title, department, or roles..."
         style={{
           width: "100%",
           fontSize: 13,
@@ -86,7 +111,7 @@ export default function OrgRoles() {
         }}
       />
 
-      {isLoading && <TableSkeleton rows={8} cols={3} />}
+      {isLoading && <TableSkeleton rows={8} cols={5} />}
       {error && <ErrorState error={error} onRetry={refetch} />}
       {!isLoading && !error && filtered.length === 0 && (
         <EmptyState
@@ -116,7 +141,7 @@ export default function OrgRoles() {
             >
               <thead>
                 <tr style={{ background: "var(--color-background-secondary)" }}>
-                  {["Name", "Email", "Org roles"].map((h) => (
+                  {["Name", "Email", "Job title", "Department", "Org roles"].map((h) => (
                     <th
                       key={h}
                       style={{
@@ -146,6 +171,12 @@ export default function OrgRoles() {
                     </td>
                     <td style={{ padding: "6px 8px", color: "var(--color-text-secondary)" }}>
                       {u.email || "—"}
+                    </td>
+                    <td style={{ padding: "6px 8px" }}>
+                      <TextCell value={u.job_title} />
+                    </td>
+                    <td style={{ padding: "6px 8px" }}>
+                      <TextCell value={u.department} muted />
                     </td>
                     <td style={{ padding: "6px 8px" }}>
                       <OrgRolesCell roles={u.org_roles} />

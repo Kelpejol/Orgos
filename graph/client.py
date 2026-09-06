@@ -797,7 +797,7 @@ async def list_users_with_org_roles() -> list[dict]:
     results: list[dict] = []
     url = f"{settings.graph_base_url}/users"
     params: Optional[dict] = {
-        "$select": "id,displayName,mail,userPrincipalName,onPremisesExtensionAttributes",
+        "$select": "id,displayName,mail,userPrincipalName,jobTitle,department,onPremisesExtensionAttributes",
         "$filter": "onPremisesExtensionAttributes/extensionAttribute1 ne null",
         "$count": "true",
         "$top": "999",
@@ -820,6 +820,8 @@ async def list_users_with_org_roles() -> list[dict]:
                     "oid": u.get("id", ""),
                     "display_name": u.get("displayName", ""),
                     "email": u.get("mail") or u.get("userPrincipalName", ""),
+                    "job_title": u.get("jobTitle") or "",
+                    "department": u.get("department") or "",
                     "org_roles": roles,
                 })
             url = data.get("@odata.nextLink")
