@@ -247,6 +247,7 @@ async def _sp_to_doc(item: dict) -> dict:
         "RevisionOf":               f.get("RevisionOf", ""),
         "RevisionReason":           f.get("RevisionReason", ""),
         "SensitisationFeedback":    f.get("SensitisationFeedback", ""),
+        "AmendmentSummary":         f.get("AmendmentSummary", ""),
         "SensitisationDeadline":    f.get("SensitisationDeadline", ""),
         "StakeholderResponseCount": int(f.get("StakeholderResponseCount", 0) or 0),
         "Stakeholders":             stakeholders,
@@ -711,11 +712,8 @@ async def progress_doc(
                     status_code=422,
                     detail="Select an approver or skip to progress to Approval.",
                 )
-            if body.approver_id and body.approver_id == doc.get("OwnerEntraId"):
-                raise HTTPException(
-                    status_code=422,
-                    detail="The approver cannot be the same person as the document owner.",
-                )
+            # The approver MAY be the document owner — an owner can sensitise and
+            # also approve, so we no longer block approver == owner.
 
             # ── Skip approver → auto-finalise ──────────────────────────────────
             # With no approver assigned there is nobody to click Approve, so the
@@ -1207,19 +1205,14 @@ async def approve_doc(
                 detail="Document is already approved and linked to the Document Register.",
             )
 
-        # Enforce: only the designated approver can approve
+        # Enforce: only the designated approver can approve.
+        # (The owner MAY be the approver — a document owner can also sensitise
+        # and approve, so we no longer block owner == approver.)
         approver_oid = doc.get("ApproverEntraId", "")
         if approver_oid and user.oid != approver_oid:
             raise HTTPException(
                 status_code=403,
                 detail="Only the designated approver can approve this document.",
-            )
-
-        # Enforce: owner cannot approve their own document
-        if user.oid == doc.get("OwnerEntraId", ""):
-            raise HTTPException(
-                status_code=403,
-                detail="The document owner cannot approve their own document.",
             )
 
         approver_resolved  = await resolve_user(user.oid)
@@ -1978,6 +1971,298 @@ async def _audit_cdi_fixes(item_id: str, doc: dict, user: CurrentUser, applied: 
             logger.error(f"AUDIT GAP — CDI fix {o.fix_id} on {item_id} not logged: {exc}")
 
 
+# =============================================================================
+#  Feedback-driven amendments (Sensitisation) — AI proposes, owner confirms,
+#  deterministic engine edits the .docx. The owner is the sole amender; the AI
+#  turns stakeholder feedback into exact edits (replace + insert), each tied to
+#  the feedback that prompted it. Same safety model as CDI auto-fix.
+# =============================================================================
+
+def _load_feedback(doc: dict) -> list[dict]:
+    raw = doc.get("SensitisationFeedback", "")
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+        if isinstance(data, list):
+            return data
+    except Exception:
+        return [{"text": raw, "submittedBy": "Unknown", "category": "General"}]
+    return []
+
+
+def _ensure_owner(doc: dict, user: CurrentUser) -> None:
+    owner = doc.get("OwnerEntraId", "")
+    if owner and user.oid != owner and "OrgOS.Admin" not in (user.roles or []):
+        raise HTTPException(
+            status_code=403,
+            detail="Only the document owner can amend this document.",
+        )
+
+
+class ConfirmedAmendment(BaseModel):
+    amend_id: str
+    action: str = "replace"                 # replace | insert_after | insert_before
+    find: str = ""
+    text: str = ""
+    occurrence_index: Optional[int] = None
+    summary: str = ""                       # neutral one-line description of the change
+
+
+class ApplyAmendments(BaseModel):
+    amendments: list[ConfirmedAmendment]
+
+
+@router.post("/documents/{item_id}/amend/plan")
+async def amend_plan(
+    item_id: str,
+    user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    """
+    Turn stakeholder feedback into concrete, applyable amendments for the owner.
+    The AI proposes exact edits (replace existing text / insert new text), each
+    tied to the feedback that prompted it; the deterministic engine reports which
+    can be located in the live .docx. No mutation here.
+    """
+    try:
+        item = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
+        doc  = await _sp_to_doc(item)
+        _ensure_owner(doc, user)
+
+        feedback = _load_feedback(doc)
+        if not feedback:
+            return {"document_id": item_id, "title": doc.get("Title", ""),
+                    "editable": False, "amendments": [],
+                    "message": "No stakeholder feedback has been submitted yet."}
+
+        if not doc.get("SharePointFileUrl"):
+            return {"document_id": item_id, "title": doc.get("Title", ""),
+                    "editable": False, "amendments": [],
+                    "message": "No document file has been uploaded yet."}
+
+        file_bytes, filename = await _download_doc_bytes(doc)
+        is_docx = filename.lower().endswith(".docx")
+        doc_text = await _get_document_text(doc)
+
+        raw = await _llm_propose_amendments(doc, feedback, doc_text)
+
+        # Locate each proposed amendment's anchor in the live document (docx only)
+        from agents.cdi_checker.fixer import preview_locations
+        from agents.cdi_checker.service import _verbatim_find
+
+        amendments = []
+        probe = []
+        for i, a in enumerate(raw):
+            action = (a.get("action") or "replace").lower()
+            if action not in ("replace", "insert_after", "insert_before"):
+                action = "replace"
+            find = _verbatim_find(str(a.get("find", "")), doc_text) or str(a.get("find", ""))
+            amendments.append({
+                "amend_id":  f"AM-{i}",
+                "action":    action,
+                "find":      find,
+                "text":      str(a.get("text", "")),
+                "reason":    str(a.get("reason", "")),
+                "based_on":  str(a.get("based_on_feedback_from", "")),
+                "needs_choice": bool(a.get("needs_choice", False)),
+            })
+            probe.append({"fix_id": f"AM-{i}", "find": find})
+
+        loc = preview_locations(file_bytes, probe) if is_docx else {}
+        out = []
+        for a in amendments:
+            r = loc.get(a["amend_id"])
+            status = r.status if r else "unknown"
+            can_apply = is_docx and bool(a["find"]) and status in ("located", "ambiguous")
+            out.append({
+                **a,
+                "locate_status": status,
+                "occurrences":   len(r.occurrences) if r else 0,
+                "contexts":      [o.context for o in r.occurrences[:5]] if r else [],
+                "can_apply":     can_apply,
+            })
+
+        return {
+            "document_id":  item_id,
+            "title":        doc.get("Title", ""),
+            "editable":     is_docx,
+            "editable_note": ("" if is_docx else
+                              "This document is a PDF — amendments are shown as guidance but "
+                              "cannot be auto-applied. Upload the editable .docx to amend."),
+            "feedback_count": len(feedback),
+            "amendments":   out,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _handle_error(exc, f"amend plan {item_id}")
+
+
+@router.post("/documents/{item_id}/amend/apply")
+async def amend_apply(
+    item_id: str,
+    body: ApplyAmendments,
+    user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    """
+    Apply the owner's confirmed amendments to the .docx, save a new version,
+    re-run CDI, record a neutral change summary (for the approver), and audit-log.
+    Deterministic — the AI is not in the apply path.
+    """
+    if not body.amendments:
+        raise HTTPException(status_code=422, detail="No amendments were confirmed.")
+    try:
+        item = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
+        doc  = await _sp_to_doc(item)
+        _ensure_owner(doc, user)
+
+        file_bytes, filename = await _download_doc_bytes(doc)
+        if not filename.lower().endswith(".docx"):
+            raise HTTPException(
+                status_code=422,
+                detail="Amendments can only be auto-applied to .docx files.",
+            )
+
+        from agents.cdi_checker.fixer import apply_amendments
+        amendments = [a.model_dump() for a in body.amendments]
+        new_bytes, outcomes = apply_amendments(file_bytes, amendments)
+        applied = [o for o in outcomes if o.status == "applied"]
+
+        if not applied:
+            return {"document_id": item_id, "applied_count": 0,
+                    "outcomes": [_outcome_dict(o) for o in outcomes],
+                    "message": "No amendments could be applied — see per-item reasons."}
+
+        file_url = await _upload_to_sharepoint(item_id, filename, new_bytes)
+
+        role_titles = await _role_register_titles()
+        doc_code = item.get("fields", {}).get("DocumentCode", "")
+        recheck = await run_cdi_check(new_bytes, filename, doc_code, role_titles)
+        cdi_status, cdi_failures = _cdi_result_to_storage(recheck)
+
+        # Neutral change summary for the approver (no stakeholder names).
+        applied_ids = {o.fix_id for o in applied}
+        summary_notes = _merge_amendment_summary(
+            doc,
+            [a for a in body.amendments if a.amend_id in applied_ids],
+        )
+
+        update_fields = {
+            "SharePointFileUrl": file_url,
+            "Revised":           True,
+            "CDIStatus":         cdi_status,
+            "CDIFailures":       cdi_failures,
+        }
+        await update_list_item(_get_list_id(), _LIST_NAME, item_id, update_fields)
+        # AmendmentSummary column is optional — write best-effort so the feature
+        # works whether or not the column has been provisioned.
+        try:
+            await update_list_item(_get_list_id(), _LIST_NAME, item_id,
+                                   {"AmendmentSummary": json.dumps(summary_notes)})
+        except Exception as exc:
+            logger.info(f"AmendmentSummary not persisted for {item_id} (column may not exist): {exc}")
+
+        await _audit_amendments(item_id, doc, user, applied)
+
+        return {
+            "document_id":   item_id,
+            "applied_count": len(applied),
+            "outcomes":      [_outcome_dict(o) for o in outcomes],
+            "cdi_status":    cdi_status,
+            "sharepoint_url": file_url,
+            "message":       f"Applied {len(applied)} amendment(s). CDI re-check: {cdi_status}.",
+        }
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _handle_error(exc, f"amend apply {item_id}")
+
+
+async def _llm_propose_amendments(doc: dict, feedback: list[dict], doc_text: str) -> list[dict]:
+    """Ask the LLM to translate feedback into exact, applyable amendments."""
+    doc_context = (doc_text[:4000] + "\n[...truncated...]") if len(doc_text) > 4000 else doc_text
+    feedback_text = "\n".join(
+        f"- [{f.get('category', 'General')}] {f.get('submittedBy', 'Unknown')}: {f.get('text', '')}"
+        for f in feedback
+    )
+    prompt = f"""You help a document owner turn stakeholder feedback into exact edits to a controlled document.
+Your edits are applied by a deterministic find-and-replace, so quotes MUST be exact.
+
+Document title: {doc.get('Title', 'Unknown')}
+Document type: {doc.get('DocumentType', 'Unknown')}
+
+Stakeholder feedback:
+{feedback_text}
+
+Document text:
+---
+{doc_context}
+---
+
+For each piece of feedback that implies a concrete change, produce an amendment. Two kinds:
+  • To reword/fix existing text → action "replace":
+      "find" = the exact text to change, quoted VERBATIM from the document above
+      "text" = the exact replacement
+  • To add new content that is missing → action "insert_after" (or "insert_before"):
+      "find" = the exact existing sentence to attach near, quoted VERBATIM
+      "text" = the new sentence/paragraph to insert
+Only quote text that appears VERBATIM in the document. If feedback is vague or you
+cannot tie it to exact text, omit it (do not invent a quote).
+
+Return ONLY a JSON array; each item:
+{{"action":"replace|insert_after|insert_before","find":"<verbatim>","text":"<new/replacement text>","reason":"<short neutral reason>","based_on_feedback_from":"<stakeholder>"}}
+Maximum 12 amendments. Return [] if none apply."""
+    try:
+        response = await llm_generate(prompt, tier="light", temperature=0.2)
+        data = json.loads(_extract_json_payload(response))
+        return data if isinstance(data, list) else []
+    except Exception as exc:
+        logger.warning(f"Amendment proposal failed to parse: {exc}")
+        return []
+
+
+def _merge_amendment_summary(doc: dict, applied: list) -> list[dict]:
+    """Append neutral change notes to any existing AmendmentSummary on the doc."""
+    existing: list[dict] = []
+    raw = doc.get("AmendmentSummary", "")
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                existing = parsed
+        except Exception:
+            existing = []
+    for a in applied:
+        note = a.summary or a.text or ""
+        existing.append({
+            "action":  a.action,
+            "summary": (note[:200] if note else "Document updated."),
+        })
+    return existing
+
+
+async def _audit_amendments(item_id: str, doc: dict, user: CurrentUser, applied: list) -> None:
+    """One Audit Log record per applied amendment. Never raises."""
+    if not settings.is_list_configured(settings.audit_log_list_id):
+        return
+    for o in applied:
+        try:
+            await create_list_item(settings.audit_log_list_id, "Audit Log", {
+                "Title":              f"Sensitisation Amendment — {doc.get('DocumentCode', '')}",
+                "Action":             "Feedback Amendment",
+                "ReviewerEntraId":    user.oid,
+                "ReviewerName":       user.name,
+                "Decision":           "Applied",
+                "SourceDocumentCode": doc.get("DocumentCode", ""),
+                "ControlStatement":   (f"{o.check_id}: {o.after[:300]}")[:500],
+                "Timestamp":          datetime.now(timezone.utc).isoformat(),
+            })
+        except Exception as exc:
+            logger.error(f"AUDIT GAP — amendment {o.fix_id} on {item_id} not logged: {exc}")
+
+
 @router.post("/documents/{item_id}/feedback/ai-suggestions")
 async def feedback_ai_suggestions(
     item_id: str,
@@ -2064,71 +2349,83 @@ async def ai_assessment(
     user: CurrentUser = Depends(get_current_user),
 ) -> dict:
     """
-    Generate an AI assessment of the document for the approver review page.
-    Checks whether stakeholder feedback concerns appear to be addressed in the document.
-    Returns structured assessment with coverage analysis.
+    Approval brief for the approver page. The approver does NOT see stakeholder
+    comments — only a brief on the document's own merits (purpose, scope,
+    standards, CDI, key controls, readiness) plus a NEUTRAL summary of what was
+    changed during sensitisation (no attribution to individuals).
     """
     try:
         item = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
         doc  = await _sp_to_doc(item)
 
-        feedback_list: list[dict] = []
-        if doc.get("SensitisationFeedback"):
+        doc_text    = await _get_document_text(doc)
+        doc_context = (doc_text[:4500] + "...") if len(doc_text) > 4500 else doc_text
+
+        # Prefer the recorded amendment summary; fall back to a neutral derivation.
+        recorded_changes: list[str] = []
+        raw = doc.get("AmendmentSummary", "")
+        if raw:
             try:
-                parsed = json.loads(doc["SensitisationFeedback"])
-                if isinstance(parsed, list):
-                    feedback_list = parsed
+                for c in (json.loads(raw) or []):
+                    if isinstance(c, dict) and c.get("summary"):
+                        recorded_changes.append(str(c["summary"]))
             except Exception:
                 pass
 
-        doc_text    = await _get_document_text(doc)
-        doc_context = (doc_text[:4000] + "...") if len(doc_text) > 4000 else doc_text
+        changes_block = (
+            "Recorded amendments made during sensitisation (already neutral):\n"
+            + "\n".join(f"- {c}" for c in recorded_changes)
+            if recorded_changes else
+            "No amendment log recorded. If the document was revised during "
+            "sensitisation, summarise the visible improvements neutrally."
+        )
 
-        feedback_summary = "\n".join(
-            f"- [{f.get('category', 'General')}] {f.get('submittedBy', 'Unknown')}: {f.get('text', '')}"
-            for f in feedback_list
-        ) or "No stakeholder feedback recorded."
-
-        prompt = f"""You are a document compliance assessor. A document has been through stakeholder review and is now at the approval stage. Assess whether it is ready for approval.
+        prompt = f"""You are preparing an approval brief for a document approver.
+The approver decides on the document's own merits. Do NOT mention individual
+stakeholders, who said what, or raw feedback — keep everything neutral.
 
 Document title: {doc.get('Title', 'Unknown')}
 Document type: {doc.get('DocumentType', 'Unknown')}
 Standards mapped to: {doc.get('StandardsMapping', 'Not specified')}
 CDI status: {doc.get('CDIStatus', 'Unknown')}
-Rejection count: {doc.get('RejectionCount', 0)}
 
-Stakeholder feedback received:
-{feedback_summary}
+{changes_block}
 
-Document excerpt (first 4000 characters):
+Document text (first 4500 characters):
+---
 {doc_context}
+---
 
-Provide an approval readiness assessment. Return a JSON object with:
-- "ready_for_approval": true or false
-- "confidence": "High" | "Medium" | "Low"
-- "cdi_note": brief note on CDI status
-- "standards_coverage": brief note on whether the document appears to address the mapped standards
-- "feedback_addressed": array of objects with "concern" and "addressed" (true/false) and "note" for each concern raised
-- "unresolved_concerns": array of concern strings not reflected in the document
-- "approver_note": a one or two sentence summary for the approver
+Return ONLY a JSON object:
+- "purpose": one sentence — what this document is for
+- "scope": one sentence — who/what it applies to
+- "standards_coverage": brief note on how it addresses the mapped standards
+- "cdi_note": brief note on document-quality/CDI status
+- "key_controls": array of up to 5 short strings — the main obligations/controls it establishes
+- "change_summary": array of short neutral strings — what changed during sensitisation (from the recorded amendments if given, else what appears improved). Empty array if nothing changed.
+- "readiness": "Ready for approval" | "Review recommended"
+- "readiness_note": one or two neutral sentences for the approver
 
 Return only the JSON object, no other text."""
 
         response_text = await llm_generate(prompt, tier="heavy", temperature=0.2)
 
-        assessment = {}
+        brief = {}
         try:
-            assessment = json.loads(response_text)
-            if not isinstance(assessment, dict):
-                assessment = {}
+            brief = json.loads(_extract_json_payload(response_text))
+            if not isinstance(brief, dict):
+                brief = {}
         except Exception:
-            assessment = {"approver_note": response_text} if response_text else {}
+            brief = {"readiness_note": response_text} if response_text else {}
+
+        # Ensure the recorded changes always surface even if the model omitted them.
+        if recorded_changes and not brief.get("change_summary"):
+            brief["change_summary"] = recorded_changes
 
         return {
-            "document_id":    item_id,
-            "title":          doc.get("Title", ""),
-            "feedback_count": len(feedback_list),
-            "assessment":     assessment,
+            "document_id": item_id,
+            "title":       doc.get("Title", ""),
+            "brief":       brief,
         }
 
     except HTTPException:

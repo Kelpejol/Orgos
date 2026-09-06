@@ -32,6 +32,7 @@ from dataclasses import dataclass, field
 from typing import Iterable, Optional
 
 from docx import Document
+from docx.oxml import OxmlElement
 from docx.text.paragraph import Paragraph
 
 logger = logging.getLogger(__name__)
@@ -344,3 +345,83 @@ def preview_locations(docx_bytes: bytes, findings: list[dict]) -> dict[str, Loca
         find = f.get("find", "") or ""
         out[fid] = locate(doc, find) if find.strip() else LocateResult("not_found")
     return out
+
+
+# =============================================================================
+#  Amendments — replace AND insert
+#
+#  Stakeholder feedback often means ADDING content (a missing sentence, a new
+#  clause), not only rewording. `apply_amendments` extends the replace engine
+#  with located inserts: it finds an anchor paragraph and drops a new paragraph
+#  immediately before/after it, inheriting the anchor's style. Same safety
+#  contract — located, verified, fail-safe, no LLM.
+# =============================================================================
+
+def _insert_paragraph(anchor: Paragraph, text: str, *, after: bool) -> Paragraph:
+    """Insert a new paragraph with `text` before/after `anchor`, sharing its style."""
+    new_p = OxmlElement("w:p")
+    if after:
+        anchor._p.addnext(new_p)
+    else:
+        anchor._p.addprevious(new_p)
+    para = Paragraph(new_p, anchor._parent)
+    try:
+        para.style = anchor.style
+    except Exception:
+        pass
+    para.add_run(text)
+    return para
+
+
+def _apply_amendment(doc: Document, amend: dict) -> FixOutcome:
+    amend_id = str(amend.get("amend_id", ""))
+    action = (amend.get("action") or "replace").lower()
+    find = amend.get("find", "") or ""
+    text = amend.get("text", amend.get("replace", "")) or ""
+    occ_index = amend.get("occurrence_index")
+
+    if action == "replace":
+        return _apply_one(doc, amend_id, "replace", find, text, occ_index)
+
+    if action in ("insert_after", "insert_before"):
+        if not find.strip():
+            return FixOutcome(amend_id, action, "not_applicable",
+                              "No anchor text to attach the insertion to.")
+        if not text.strip():
+            return FixOutcome(amend_id, action, "no_replacement", "Nothing to insert.")
+        res = locate(doc, find)
+        if res.status == "not_found":
+            return FixOutcome(amend_id, action, "skipped_not_found",
+                              "Could not locate the anchor text — apply manually.")
+        if res.status == "ambiguous" and occ_index is None:
+            return FixOutcome(amend_id, action, "skipped_ambiguous",
+                              f"Anchor appears {len(res.occurrences)} times — choose which one.")
+        occ = res.occurrences[occ_index or 0] if res.status == "ambiguous" else res.occurrences[0]
+        _insert_paragraph(occ.para, text, after=(action == "insert_after"))
+        return FixOutcome(amend_id, action, "applied", "Insertion applied.",
+                          before="", after=text)
+
+    return FixOutcome(amend_id, action, "not_applicable", f"Unknown action '{action}'.")
+
+
+def apply_amendments(docx_bytes: bytes, amendments: list[dict]) -> tuple[bytes, list[FixOutcome]]:
+    """
+    Apply owner-confirmed amendments (replace + insert) to a .docx, sequentially,
+    re-locating before each. Each amendment dict:
+      {amend_id, action: "replace"|"insert_after"|"insert_before",
+       find, text (or replace), occurrence_index?}
+    Returns (new_docx_bytes, [FixOutcome, ...]).
+    """
+    doc = Document(io.BytesIO(docx_bytes))
+    outcomes: list[FixOutcome] = []
+    for amend in amendments:
+        try:
+            outcomes.append(_apply_amendment(doc, amend))
+        except Exception as exc:
+            logger.warning(f"Amendment {amend.get('amend_id')} raised: {exc}")
+            outcomes.append(FixOutcome(
+                str(amend.get("amend_id", "")), str(amend.get("action", "")),
+                "verify_failed", f"Internal error applying amendment: {exc}"))
+    out = io.BytesIO()
+    doc.save(out)
+    return out.getvalue(), outcomes

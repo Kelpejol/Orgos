@@ -83,7 +83,7 @@ function LoginGate() {
         </div>
         <p style={{ fontSize: 13, color: "#444", marginBottom: 28, lineHeight: 1.6 }}>
           You've been designated as the approver for a document. Sign in to review
-          the document and stakeholder feedback.
+          the document and its AI approval brief.
         </p>
         <button
           onClick={() => instance.loginPopup(loginRequest)}
@@ -373,173 +373,111 @@ export default function LifecycleApprove() {
             )}
           </div>
 
-          {/* Stakeholder feedback */}
-          <div style={{
-            background: "#fff", border: "1px solid #E0E0E0", borderRadius: 12,
-            padding: 20,
-          }}>
-            <div style={{
-              display: "flex", justifyContent: "space-between", alignItems: "center",
-              marginBottom: 14,
-            }}>
-              <div style={{ fontSize: 13, fontWeight: 600 }}>
-                Stakeholder feedback
-              </div>
-              <span style={{
-                fontSize: 11, padding: "2px 8px", borderRadius: 10,
-                background: "#F0F0F0", color: "#666",
-              }}>
-                {feedbackList.length} {feedbackList.length === 1 ? "comment" : "comments"}
-              </span>
-            </div>
-
-            {feedbackList.length === 0 ? (
+          {/* AI approval brief — document merits + neutral change summary.
+              The approver does NOT see raw stakeholder comments. */}
+          {(() => {
+            const brief = aiAssessmentHook.suggestion?.brief || {};
+            const ready = brief.readiness === "Ready for approval";
+            return (
               <div style={{
-                textAlign: "center", padding: "32px 0", color: "#AAA", fontSize: 12,
+                background: "#fff", border: "1px solid #E0E0E0", borderRadius: 12, padding: 20,
               }}>
-                No feedback submitted during sensitisation.
-              </div>
-            ) : (
-              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-                {feedbackList.map((f, i) => (
-                  <div key={i} style={{
-                    border: "1px solid #EEE", borderRadius: 10,
-                    padding: "12px 14px", background: "#FAFAFA",
-                  }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
-                      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                        <div style={{
-                          width: 28, height: 28, borderRadius: "50%", background: "#E6F1FB",
-                          display: "flex", alignItems: "center", justifyContent: "center",
-                          fontSize: 12, fontWeight: 600, color: "#0C447C", flexShrink: 0,
-                        }}>
-                          {(f.submittedBy || "?")[0].toUpperCase()}
-                        </div>
-                        <div>
-                          <div style={{ fontSize: 12, fontWeight: 500 }}>
-                            {f.submittedBy || "Unknown"}
-                          </div>
-                          <div style={{ fontSize: 10, color: "#999" }}>
-                            {formatDatetime(f.submittedAt)}
-                          </div>
-                        </div>
-                      </div>
-                      <CategoryBadge cat={f.category || "General"} />
-                    </div>
-                    <div style={{ fontSize: 12, color: "#333", lineHeight: 1.5 }}>
-                      {f.text}
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Right column: AI assessment + decision */}
-        <div>
-          {/* AI assessment */}
-          <div style={{
-            background: "#fff", border: "1px solid #E0E0E0", borderRadius: 12,
-            padding: 20, marginBottom: 16,
-          }}>
-            <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 10 }}>AI assessment</div>
-            {!aiAssessmentHook.hasSuggestion && !aiAssessmentHook.loading && (
-              <>
-                <div style={{ fontSize: 12, color: "#666", lineHeight: 1.6, marginBottom: 12 }}>
-                  Get an AI analysis of whether the document appears to address
-                  stakeholder concerns and is ready for approval.
-                </div>
-                <button
-                  onClick={loadAiAssessment}
-                  style={{
-                    width: "100%", padding: "9px", fontSize: 12, fontWeight: 500,
-                    borderRadius: 8, border: "1px solid #C0C0C0", background: "#fff",
-                    cursor: "pointer", color: "#333",
-                  }}
-                >
-                  Run AI assessment
-                </button>
-              </>
-            )}
-            {aiAssessmentHook.loading && (
-              <div style={{ textAlign: "center", padding: "20px 0", color: "#888", fontSize: 12 }}>
-                Analysing document…
-              </div>
-            )}
-            {aiAssessmentHook.hasSuggestion && !aiAssessmentHook.suggestion?.error && (
-              <div>
-                <div style={{
-                  display: "flex", gap: 8, alignItems: "center", marginBottom: 12,
-                }}>
-                  <span style={{
-                    fontSize: 11, padding: "2px 8px", borderRadius: 4,
-                    background: aiAssessmentHook.suggestion?.assessment?.ready_for_approval ? "#E1F5EE" : "#FCEBEB",
-                    color: aiAssessmentHook.suggestion?.assessment?.ready_for_approval ? "#085041" : "#791F1F",
-                    border: `0.5px solid ${aiAssessmentHook.suggestion?.assessment?.ready_for_approval ? "#5DCAA5" : "#F09595"}`,
-                  }}>
-                    {aiAssessmentHook.suggestion?.assessment?.ready_for_approval ? "Ready for approval" : "Not yet ready"}
-                  </span>
-                  {aiAssessmentHook.suggestion?.assessment?.confidence && (
-                    <span style={{ fontSize: 11, color: "#888" }}>
-                      {aiAssessmentHook.suggestion.assessment.confidence} confidence
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>AI approval brief</div>
+                  {aiAssessmentHook.hasSuggestion && !aiAssessmentHook.suggestion?.error && (
+                    <span style={{ fontSize: 11, padding: "2px 10px", borderRadius: 20,
+                      background: ready ? "#E1F5EE" : "#FDF3E2", color: ready ? "#085041" : "#8A5A00",
+                      border: `0.5px solid ${ready ? "#5DCAA5" : "#F0CE94"}`, fontWeight: 600 }}>
+                      {brief.readiness || (ready ? "Ready for approval" : "Review recommended")}
                     </span>
                   )}
-                  {aiAssessmentHook.isFromCache && (
-                    <span style={{ fontSize: 10, color: "#9ca3af" }}>(cached)</span>
-                  )}
                 </div>
-                {aiAssessmentHook.suggestion?.assessment?.approver_note && (
-                  <div style={{
-                    fontSize: 12, color: "#333", lineHeight: 1.6, marginBottom: 10,
-                    padding: "10px 12px", background: "#F8F8F8", borderRadius: 8,
-                  }}>
-                    {aiAssessmentHook.suggestion.assessment.approver_note}
+
+                {!aiAssessmentHook.hasSuggestion && !aiAssessmentHook.loading && (
+                  <>
+                    <div style={{ fontSize: 12, color: "#666", lineHeight: 1.6, marginBottom: 12 }}>
+                      Generate a neutral brief on this document — its purpose, scope, standards
+                      coverage, CDI status, key controls, and what changed during sensitisation.
+                    </div>
+                    <button onClick={loadAiAssessment} style={{
+                      width: "100%", padding: "9px", fontSize: 12, fontWeight: 500, borderRadius: 8,
+                      border: "1px solid #C0C0C0", background: "#fff", cursor: "pointer", color: "#333" }}>
+                      Generate approval brief
+                    </button>
+                  </>
+                )}
+                {aiAssessmentHook.loading && (
+                  <div style={{ textAlign: "center", padding: "24px 0", color: "#888", fontSize: 12 }}>
+                    Preparing the brief…
                   </div>
                 )}
-                {aiAssessmentHook.suggestion?.assessment?.unresolved_concerns?.length > 0 && (
-                  <div style={{ marginBottom: 10 }}>
-                    <div style={{ fontSize: 11, fontWeight: 600, color: "#791F1F", marginBottom: 6 }}>
-                      Unresolved concerns
-                    </div>
-                    {aiAssessmentHook.suggestion.assessment.unresolved_concerns.map((c, i) => (
-                      <div key={i} style={{
-                        fontSize: 11, color: "#791F1F", padding: "3px 0",
-                        borderBottom: "0.5px solid #F0F0F0",
-                      }}>
-                        · {c}
+                {aiAssessmentHook.hasSuggestion && !aiAssessmentHook.suggestion?.error && (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                    {brief.readiness_note && (
+                      <div style={{ fontSize: 12.5, color: "#333", lineHeight: 1.6,
+                        padding: "10px 12px", background: "#F8F8F8", borderRadius: 8 }}>
+                        {brief.readiness_note}
+                      </div>
+                    )}
+                    {[["Purpose", brief.purpose], ["Scope", brief.scope],
+                      ["Standards", brief.standards_coverage], ["Document quality", brief.cdi_note]]
+                      .filter(([, v]) => v).map(([l, v]) => (
+                      <div key={l}>
+                        <div style={{ fontSize: 10.5, fontWeight: 700, color: "#999",
+                          textTransform: "uppercase", letterSpacing: "0.4px", marginBottom: 3 }}>{l}</div>
+                        <div style={{ fontSize: 12.5, color: "#333", lineHeight: 1.5 }}>{v}</div>
                       </div>
                     ))}
+                    {brief.key_controls?.length > 0 && (
+                      <div>
+                        <div style={{ fontSize: 10.5, fontWeight: 700, color: "#999",
+                          textTransform: "uppercase", letterSpacing: "0.4px", marginBottom: 5 }}>Key controls</div>
+                        <ul style={{ margin: 0, paddingLeft: 18 }}>
+                          {brief.key_controls.map((c, i) => (
+                            <li key={i} style={{ fontSize: 12.5, color: "#333", lineHeight: 1.5, marginBottom: 2 }}>{c}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    <div>
+                      <div style={{ fontSize: 10.5, fontWeight: 700, color: "#085041",
+                        textTransform: "uppercase", letterSpacing: "0.4px", marginBottom: 5 }}>
+                        Changed during sensitisation
+                      </div>
+                      {brief.change_summary?.length > 0 ? (
+                        <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                          {brief.change_summary.map((c, i) => (
+                            <div key={i} style={{ fontSize: 12, color: "#0B5C48", lineHeight: 1.5,
+                              padding: "6px 10px", background: "#E7F5F0", borderRadius: 8,
+                              border: "0.5px solid #9FD9C8" }}>{c}</div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div style={{ fontSize: 12, color: "#999" }}>No amendments recorded.</div>
+                      )}
+                    </div>
+                    <button onClick={loadAiAssessment} style={{ fontSize: 11, color: "#888",
+                      background: "none", border: "none", cursor: "pointer", padding: 0,
+                      textDecoration: "underline", alignSelf: "flex-start" }}>
+                      Re-generate brief
+                    </button>
                   </div>
                 )}
-                <button
-                  onClick={loadAiAssessment}
-                  style={{
-                    fontSize: 11, color: "#888", background: "none", border: "none",
-                    cursor: "pointer", padding: 0, textDecoration: "underline",
-                  }}
-                >
-                  Re-run assessment
-                </button>
+                {aiAssessmentHook.suggestion?.error && (
+                  <div style={{ fontSize: 12, color: "#888" }}>
+                    {aiAssessmentHook.suggestion.error}
+                    <button onClick={loadAiAssessment} style={{ display: "block", marginTop: 6,
+                      fontSize: 11, color: "#888", background: "none", border: "none",
+                      cursor: "pointer", padding: 0, textDecoration: "underline" }}>Try again</button>
+                  </div>
+                )}
               </div>
-            )}
-            {aiAssessmentHook.suggestion?.error && (
-              <div style={{ fontSize: 12, color: "#888" }}>
-                {aiAssessmentHook.suggestion.error}
-                <button
-                  onClick={loadAiAssessment}
-                  style={{
-                    display: "block", marginTop: 6, fontSize: 11, color: "#888",
-                    background: "none", border: "none", cursor: "pointer",
-                    padding: 0, textDecoration: "underline",
-                  }}
-                >
-                  Try again
-                </button>
-              </div>
-            )}
-          </div>
+            );
+          })()}
+        </div>
 
+        {/* Right column: decision */}
+        <div>
           {/* Decision panel */}
           {canDecide && (
             <div style={{

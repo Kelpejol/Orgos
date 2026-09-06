@@ -120,3 +120,40 @@ def test_locate_case_insensitive_fallback():
     d = Document(io.BytesIO(b))
     res = locate(d, "should endeavour")
     assert res.status == "located"
+
+
+# ── amendments (replace + insert) ─────────────────────────────────────────────
+from agents.cdi_checker.fixer import apply_amendments
+
+
+def _texts(b):
+    return [p.text for p in Document(io.BytesIO(b)).paragraphs]
+
+
+def test_amend_insert_after():
+    b = _build(["Purpose: sets the rules.", "Scope: applies to all staff."])
+    nb, out = apply_amendments(b, [{"amend_id": "a1", "action": "insert_after",
+        "find": "Scope: applies to all staff.", "text": "Exceptions need ISMS Lead approval."}])
+    assert out[0].status == "applied"
+    assert _texts(nb)[-1] == "Exceptions need ISMS Lead approval."
+
+
+def test_amend_insert_before():
+    b = _build(["Responsibilities", "All staff comply."])
+    nb, out = apply_amendments(b, [{"amend_id": "a2", "action": "insert_before",
+        "find": "All staff comply.", "text": "The DPO owns this section."}])
+    assert out[0].status == "applied"
+    assert _texts(nb)[1] == "The DPO owns this section."
+
+
+def test_amend_replace_and_missing_anchor():
+    b = _build(["The team should endeavour to review quarterly."])
+    nb, out = apply_amendments(b, [{"amend_id": "a3", "action": "replace",
+        "find": "should endeavour to review", "text": "shall review"}])
+    assert out[0].status == "applied"
+    assert "shall review quarterly" in _texts(nb)[0]
+
+    nb, out = apply_amendments(b, [{"amend_id": "a4", "action": "insert_after",
+        "find": "text that is not present", "text": "new line"}])
+    assert out[0].status == "skipped_not_found"
+    assert _texts(nb) == _texts(b)

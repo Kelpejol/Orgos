@@ -408,6 +408,10 @@ export const lifecycleApi = {
     apiClient.get(`/api/v1/lifecycle/documents/${id}/cdi-fix/plan`),
   cdiFixApply: (id, fixes) =>
     apiClient.post(`/api/v1/lifecycle/documents/${id}/cdi-fix/apply`, { fixes }),
+  amendPlan: (id) =>
+    apiClient.post(`/api/v1/lifecycle/documents/${id}/amend/plan`),
+  amendApply: (id, amendments) =>
+    apiClient.post(`/api/v1/lifecycle/documents/${id}/amend/apply`, { amendments }),
   feedbackAiSuggestions: (id) =>
     apiClient.post(`/api/v1/lifecycle/documents/${id}/feedback/ai-suggestions`),
   aiAssessment: (id) =>

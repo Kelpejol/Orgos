@@ -17,6 +17,7 @@ import UserSearchField from "../../components/shared/UserSearchField.jsx";
 import { CascadeImpactPreview } from "../../components/shared/CascadeImpactModal.jsx";
 import ReviseDocumentModal from "../../components/shared/ReviseDocumentModal.jsx";
 import CdiFixPanel from "../../components/shared/CdiFixPanel.jsx";
+import FeedbackAmendPanel from "../../components/shared/FeedbackAmendPanel.jsx";
 import apiClient from "../../api/grcApi.js";
 import { useAiSuggestion } from "../../hooks/useAiSuggestion.js";
 
@@ -1196,6 +1197,7 @@ const LifecycleCard = ({
   const [claiming,        setClaiming]        = useState(false);
   const [claimError,      setClaimError]      = useState("");
   const [showCdiFix,      setShowCdiFix]      = useState(false);
+  const [showAmend,       setShowAmend]       = useState(false);
   const qc = useQueryClient();
 
   const isOwner         = doc.OwnerEntraId === currentUserOid;
@@ -1299,6 +1301,10 @@ const LifecycleCard = ({
     {showCdiFix && (
       <CdiFixPanel docId={doc.id} docCode={doc.DocumentCode}
         onClose={() => setShowCdiFix(false)} />
+    )}
+    {showAmend && (
+      <FeedbackAmendPanel docId={doc.id} docCode={doc.DocumentCode}
+        onClose={() => setShowAmend(false)} />
     )}
     <div style={{
       background: "var(--color-background-primary)",
@@ -1570,6 +1576,16 @@ const LifecycleCard = ({
                 <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                   {feedbackEntries.map((f, i) => <FeedbackEntry key={i} entry={f} />)}
                 </div>
+              )}
+              {/* Owner: AI-assisted amendment from the feedback */}
+              {isOwner && feedbackEntries.length > 0 && (
+                <button onClick={() => setShowAmend(true)} style={{
+                  marginTop: 8, width: "100%", padding: "8px", fontSize: 11.5, fontWeight: 600,
+                  borderRadius: 8, border: "1.5px solid #9FD9C8", background: "#E7F5F0",
+                  color: "#085041", cursor: "pointer",
+                }}>
+                  Amend from feedback with AI
+                </button>
               )}
             </div>
           )}
