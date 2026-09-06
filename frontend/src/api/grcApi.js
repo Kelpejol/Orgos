@@ -384,3 +384,19 @@ export const orgRolesApi = {
   // Distinct real job titles — the role vocabulary for control ownership.
   jobTitles: () => apiClient.get("/api/v1/org-roles/job-titles").then((r) => r.data),
 };
+
+// =============================================================================
+//  Groups — OrgOS-managed people groups usable as owners in documents.
+// =============================================================================
+
+export const groupsApi = {
+  list:   () => apiClient.get("/api/v1/groups").then((r) => r.data),
+  names:  () => apiClient.get("/api/v1/groups/names").then((r) => r.data),
+  create: (body) => apiClient.post("/api/v1/groups", body).then((r) => r.data),
+  update: (id, body) => apiClient.patch(`/api/v1/groups/${id}`, body).then((r) => r.data),
+  addMembers: (id, members) =>
+    apiClient.post(`/api/v1/groups/${id}/members`, { members }).then((r) => r.data),
+  removeMember: (id, oid) =>
+    apiClient.delete(`/api/v1/groups/${id}/members/${oid}`).then((r) => r.data),
+  remove: (id) => apiClient.delete(`/api/v1/groups/${id}`).then((r) => r.data),
+};

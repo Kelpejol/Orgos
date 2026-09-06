@@ -11,6 +11,7 @@ import {
   contractsApi,
   documentsApi,
   orgRolesApi,
+  groupsApi,
 } from "../api/grcApi.js";
 
 // Re-export for convenience in pages that need raw API access
@@ -276,5 +277,23 @@ export const useJobTitles = () =>
     queryKey: ["job-titles"],
     queryFn: () => orgRolesApi.jobTitles(),
     staleTime: 600_000,
+  });
+
+/** OrgOS-managed people groups (full objects with members). */
+export const useGroups = () =>
+  useQuery({
+    queryKey: ["groups"],
+    queryFn: () => groupsApi.list(),
+    staleTime: 60_000,
+  });
+
+/** Active group names — the group contribution to the owner vocabulary. */
+export const useGroupNames = () =>
+  useQuery({
+    queryKey: ["group-names"],
+    queryFn: () => groupsApi.names(),
+    staleTime: 120_000,
+    // Groups are optional; never surface an error if the list isn't provisioned.
+    retry: false,
   });
 

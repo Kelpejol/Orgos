@@ -10,6 +10,7 @@ import { useMemo, useState } from "react";
 import { useOrgRoles } from "../../hooks/useGrc.js";
 import { TableSkeleton, ErrorState, EmptyState } from "../../components/shared/LoadingState.jsx";
 import ReadOnlyBanner from "../../components/shared/ReadOnlyBanner.jsx";
+import GroupsPanel from "../../components/shared/GroupsPanel.jsx";
 
 const OrgRoleChip = ({ role }) => (
   <span
@@ -64,6 +65,7 @@ const TextCell = ({ value, muted }) => {
 
 export default function OrgRoles() {
   const [search, setSearch] = useState("");
+  const [tab, setTab] = useState("people");
   const { data: users = [], isLoading, error, refetch } = useOrgRoles();
 
   const filtered = useMemo(() => {
@@ -81,16 +83,31 @@ export default function OrgRoles() {
 
   return (
     <>
-      <ReadOnlyBanner message="Org roles are read live from Entra ID. Assignment is managed exclusively in the Dragnet ERP admin panel." />
       <div style={{ marginBottom: 12 }}>
         <div style={{ fontSize: 17, fontWeight: 600, marginBottom: 3 }}>
-          Org roles
+          Org roles &amp; groups
         </div>
         <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>
-          Every Dragnet user with an org_role, with their job title and department
-          (job title is the role used in control ownership and extraction).
+          People with their job title and department, and the groups you can assign as owners.
         </div>
       </div>
+
+      <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+        {[["people", "People"], ["groups", "Groups"]].map(([k, label]) => (
+          <button key={k} onClick={() => setTab(k)} style={{
+            padding: "7px 14px", fontSize: 12.5, fontWeight: 600, borderRadius: 8, cursor: "pointer",
+            border: tab === k ? "1.5px solid var(--color-text-primary)" : "1.5px solid var(--color-border-tertiary)",
+            background: tab === k ? "var(--color-text-primary)" : "transparent",
+            color: tab === k ? "var(--color-background-primary)" : "var(--color-text-secondary)",
+          }}>{label}</button>
+        ))}
+      </div>
+
+      {tab === "groups" && <GroupsPanel />}
+
+      {tab === "people" && (
+        <>
+      <ReadOnlyBanner message="Org roles are read live from Entra ID. Assignment is managed exclusively in the Dragnet ERP admin panel." />
 
       <input
         type="text"
@@ -189,6 +206,8 @@ export default function OrgRoles() {
           <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginTop: 6 }}>
             {filtered.length} of {users.length}
           </div>
+        </>
+      )}
         </>
       )}
     </>

@@ -32,6 +32,7 @@ from agents.policy_drafter.router import router as policy_drafter_router
 from agents.gap_analyzer.router   import router as gap_analyzer_router
 from agents.nl_search.router      import router as nl_search_router
 from org_roles.router             import router as org_roles_router
+from groups.router                import router as groups_router
 
 
 # Configure logging before anything else
@@ -127,6 +128,7 @@ app.include_router(policy_drafter_router)
 app.include_router(gap_analyzer_router)
 app.include_router(nl_search_router)
 app.include_router(org_roles_router)
+app.include_router(groups_router)
 
 # =============================================================================
 #  Health endpoints (no auth required — for monitoring)
