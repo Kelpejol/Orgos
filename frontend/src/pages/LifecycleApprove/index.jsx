@@ -330,7 +330,13 @@ export default function LifecycleApprove() {
           {/* AI approval brief — document merits + neutral change summary.
               The approver does NOT see raw stakeholder comments. */}
           {(() => {
-            const brief = aiAssessmentHook.suggestion?.brief || {};
+            // Robust to shape: {brief}, the brief itself, or a JSON string.
+            let s = aiAssessmentHook.suggestion;
+            if (typeof s === "string") { try { s = JSON.parse(s); } catch { s = null; } }
+            const brief =
+              (s && s.brief) ||
+              (s && (s.purpose || s.readiness || s.key_controls) ? s : {}) ||
+              {};
             const ready = brief.readiness === "Ready for approval";
             return (
               <div style={{
