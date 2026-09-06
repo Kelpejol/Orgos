@@ -12,6 +12,7 @@ import StatusBadge from "../../components/shared/StatusBadge.jsx";
 import { Field } from "../../components/shared/Forms.jsx";
 import { LoadingState, ErrorState, EmptyState } from "../../components/shared/LoadingState.jsx";
 import { useCurrentUserRole } from "../../hooks/useCurrentUserRole.js";
+import { useGroups } from "../../hooks/useGrc.js";
 import { useAlert } from "../../components/shared/AlertModal.jsx";
 import JobTitleInput from "../../components/shared/JobTitleInput.jsx";
 import apiClient from "../../api/grcApi.js";
@@ -344,7 +345,7 @@ const VerifyPanel = ({ item, onVerify, onClose, isPending }) => {
 //  Evidence card
 // =============================================================================
 
-const EvidenceCard = ({ item, currentOid, isCompliance, onSubmit, onSubmitLink, onVerify, onReassignOwner, actionItemId }) => {
+const EvidenceCard = ({ item, currentOid, isCompliance, onSubmit, onSubmitLink, onVerify, onReassignOwner, isGroupOwner, actionItemId }) => {
   const [expanded, setExpanded]     = useState(false);
   const [showSubmit, setShowSubmit] = useState(false);
   const [showVerify, setShowVerify] = useState(false);
@@ -352,8 +353,10 @@ const EvidenceCard = ({ item, currentOid, isCompliance, onSubmit, onSubmitLink, 
   const [newOwner, setNewOwner]     = useState("");
 
   const ss = STATUS_STYLES[item.Status] || STATUS_STYLES["Pending"];
-  const isOwner     = item.OwnerEntraId === currentOid;
-  const canSubmit   = isOwner && ["Pending", "Due Soon", "Overdue", "Rejected"].includes(item.Status);
+  // Any member of the owner group can act, not only the named person owner.
+  const canAct      = item.OwnerEntraId === currentOid || isGroupOwner;
+  const isOwner      = canAct;
+  const canSubmit   = canAct && ["Pending", "Due Soon", "Overdue", "Rejected"].includes(item.Status);
   const canVerify   = isCompliance && item.Status === "Submitted";
   const isPending   = actionItemId === item.id;
 
@@ -410,7 +413,16 @@ const EvidenceCard = ({ item, currentOid, isCompliance, onSubmit, onSubmitLink, 
 
         <div style={{ display: "flex", justifyContent: "space-between",
                       fontSize: 11, color: "var(--color-text-secondary)" }}>
-          <span>{item.OwnerRole || "No owner"} · {item.Frequency || "No frequency"}</span>
+          <span>
+            {item.OwnerRole || "No owner"}
+            {isGroupOwner && (
+              <span title="You are a member of this group"
+                style={{ marginLeft: 5, fontSize: 9, fontWeight: 700, color: "#085041",
+                         background: "#E7F5F0", border: "0.5px solid #9FD9C8", borderRadius: 20,
+                         padding: "1px 6px" }}>YOUR GROUP</span>
+            )}
+            {" · "}{item.Frequency || "No frequency"}
+          </span>
           {item.LinkedControlId && (
             <span style={{ color: "var(--color-text-tertiary)" }}>
               CTL-{item.LinkedControlId.slice(-4)}
@@ -568,13 +580,26 @@ export default function EvidenceTracker() {
   const { notify } = useAlert();
   const qc = useQueryClient();
   const { data: all = [], isLoading, error, refetch } = useEvidence();
+  const { data: groups = [] } = useGroups();
+
+  // Group names the current user belongs to — an item owned by one of these is
+  // "mine" and I can act on it, even if I'm not the named person owner.
+  const myGroupNames = useMemo(
+    () => new Set(
+      groups
+        .filter(g => (g.members || []).some(m => m.oid === oid))
+        .map(g => (g.name || "").toLowerCase())
+    ),
+    [groups, oid],
+  );
+  const ownsViaGroup = (item) => myGroupNames.has((item.OwnerRole || "").toLowerCase());
 
   const views = useMemo(() => {
-    const mine     = all.filter(e => e.OwnerEntraId === oid);
+    const mine     = all.filter(e => e.OwnerEntraId === oid || ownsViaGroup(e));
     const overdue  = all.filter(e => e.Status === "Overdue");
     const submitted = all.filter(e => e.Status === "Submitted");
     return { mine, overdue, submitted };
-  }, [all, oid]);
+  }, [all, oid, myGroupNames]);
 
   const activeItems = useMemo(() => {
     let list = view === "mine"      ? views.mine
@@ -733,6 +758,7 @@ export default function EvidenceTracker() {
               onSubmitLink={handleSubmitLink}
               onVerify={handleVerify}
               onReassignOwner={handleReassignOwner}
+              isGroupOwner={ownsViaGroup(item)}
               actionItemId={actionItemId}
             />
           ))}
