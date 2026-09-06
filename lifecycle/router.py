@@ -2111,9 +2111,8 @@ async def amend_apply(
 
         file_url = await _upload_to_sharepoint(item_id, filename, new_bytes)
 
-        role_titles = await _role_register_titles()
         doc_code = item.get("fields", {}).get("DocumentCode", "")
-        recheck = await run_cdi_check(new_bytes, filename, doc_code, role_titles)
+        recheck = await run_cdi_check(new_bytes, filename, doc_code)
         cdi_status, cdi_failures = _cdi_result_to_storage(recheck)
 
         # Neutral change summary for the approver (no stakeholder names).
