@@ -180,7 +180,18 @@ PROMPTS = {
 #  Core extraction
 # =============================================================================
 
-def _build_prompt(doc_type: DocumentType, text: str, doc_code: str) -> str:
+# Document types whose "o" field is a Dragnet role owner (so it should map to a
+# real job title). JD → the title IS from the JD; REGULATORY → authority;
+# AUDIT → severity — those must NOT be coerced to a job title.
+_ROLE_OWNER_TYPES = {DocumentType.POLICY, DocumentType.CONTRACT}
+
+
+def _build_prompt(
+    doc_type: DocumentType,
+    text: str,
+    doc_code: str,
+    job_titles: Optional[list[str]] = None,
+) -> str:
     system = PROMPTS.get(doc_type)
     if not system:
         raise ValueError(f"No prompt for {doc_type}")
@@ -191,8 +202,19 @@ def _build_prompt(doc_type: DocumentType, text: str, doc_code: str) -> str:
         text = text[:MAX_CHUNK_CHARS]
         logger.warning(f"{doc_code}: chunk truncated to {MAX_CHUNK_CHARS} chars")
 
+    role_guidance = ""
+    if job_titles and doc_type in _ROLE_OWNER_TYPES:
+        titles_block = "; ".join(job_titles[:120])
+        role_guidance = (
+            "\n\nFor the \"o\" (responsible role) field, choose the CLOSEST matching "
+            "job title from this list of real Dragnet job titles:\n"
+            f"{titles_block}\n"
+            "Return the single best-fitting title exactly as written above. Only if "
+            "none is a reasonable fit, use the role as written in the document.\n"
+        )
+
     return (
-        f"{system}\n\n"
+        f"{system}{role_guidance}\n\n"
         f"Document: {doc_code}\n\n"
         f"===BEGIN===\n{text}\n===END===\n\n"
         f"JSON array:"
@@ -234,6 +256,7 @@ async def run_extraction(
     document_text: str,
     doc_code: str,
     document_type: DocumentType = DocumentType.POLICY,
+    job_titles: Optional[list[str]] = None,
 ) -> list[dict]:
     if document_type in NON_EXTRACTION_TYPES:
         return []
@@ -264,7 +287,7 @@ async def run_extraction(
             # raise_on_failure=True so a real LLM outage is distinguishable from
             # "the model found nothing" (an empty completion still returns "").
             raw = await llm_generate(
-                _build_prompt(document_type, chunk, doc_code),
+                _build_prompt(document_type, chunk, doc_code, job_titles),
                 tier="heavy",
                 max_tokens=4000,
                 temperature=0.1,

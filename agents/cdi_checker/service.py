@@ -607,12 +607,21 @@ def check_15_version_number(text: str) -> dict:
 #  Fallback: improved regex patterns used when Ollama is unavailable.
 # =============================================================================
 
-def _build_ai_prompt(text: str) -> str:
+def _build_ai_prompt(text: str, job_titles: Optional[list[str]] = None) -> str:
     # Truncate long documents for the AI call
     text_for_ai = (
         text[:_AI_MAX_TEXT_CHARS] + "\n\n[... document truncated for length ...]"
         if len(text) > _AI_MAX_TEXT_CHARS
         else text
+    )
+    # The replacement role for a vague reference must be a real Dragnet job title.
+    roles_block = (
+        ("\nReplace the vague term with the CLOSEST matching job title from this "
+         "list of real Dragnet job titles — use one of these EXACTLY as written:\n"
+         + "; ".join(job_titles[:120]) + "\n")
+        if job_titles else
+        "\nSuggest the most specific role name that plausibly holds this "
+        "responsibility, based on context in the document.\n"
     )
     return f"""You are a CDI (Controlled Document Interface) compliance checker for Dragnet Solutions Limited.
 Analyse the document text and identify violations of three quality rules.
@@ -658,8 +667,7 @@ Flag ONLY when the vague term IS the grammatical subject performing an obligatio
   OK:  "...information security management system...", "...risk management framework..."
   OK:  "...as part of the change management process..."
 
-For each violation, suggest the most specific role name that plausibly holds this
-responsibility, based on context in the document (e.g. department mentioned nearby).
+For each violation, propose the replacement role as follows:{roles_block}
 
 === RULE CDI-08: VAGUE EVIDENCE REFERENCES ===
 Statements requiring evidence/records must specify an Evidence Taxonomy type code.
@@ -747,13 +755,15 @@ def _parse_llm_json(raw: str) -> Optional[dict]:
     return None
 
 
-async def _call_ollama_language_checks(text: str) -> Optional[dict]:
+async def _call_ollama_language_checks(
+    text: str, job_titles: Optional[list[str]] = None
+) -> Optional[dict]:
     """
     Single Ollama call for CDI-06/07/08.
     Returns parsed dict or None (triggers fallback).
     qwen2.5:7b at temperature=0 — deterministic, semantic understanding.
     """
-    prompt = _build_ai_prompt(text)
+    prompt = _build_ai_prompt(text, job_titles)
     try:
         raw = await llm_generate(
             prompt,
@@ -1076,7 +1086,14 @@ async def run_cdi_check(
     checks.append(check_05_responsibilities_section(text))
 
     # ── Stage 2: Language quality — try AI, fall back to patterns ─────────────
-    ai_result = await _call_ollama_language_checks(text)
+    # Vague-role fixes (CDI-07) suggest a real Dragnet job title as the owner.
+    job_titles: list[str] = []
+    try:
+        from graph.client import list_all_job_titles
+        job_titles = await list_all_job_titles()
+    except Exception as exc:
+        logger.debug(f"Job titles unavailable for CDI-07 ({exc})")
+    ai_result = await _call_ollama_language_checks(text, job_titles)
     used_ai = ai_result is not None
 
     if used_ai:

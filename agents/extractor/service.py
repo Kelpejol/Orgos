@@ -772,7 +772,16 @@ async def run_extraction_from_text(
             procedural_steps_indexed=0,
         )
 
-    raw_items = await run_extraction(text, doc_code, doc_type)
+    # Everyone's job titles are the role vocabulary — the model maps each
+    # control's responsible party to the closest real Dragnet job title.
+    job_titles: list[str] = []
+    try:
+        from graph.client import list_all_job_titles
+        job_titles = await list_all_job_titles()
+    except Exception as exc:
+        logger.debug(f"Job titles unavailable for extraction ({exc}); using document wording")
+
+    raw_items = await run_extraction(text, doc_code, doc_type, job_titles)
     items     = _validate_items(raw_items, doc_type, doc_code)
 
     complete  = sum(1 for i in items if i.get("completeness_flag") == "COMPLETE")

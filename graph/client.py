@@ -831,6 +831,69 @@ async def list_users_with_org_roles() -> list[dict]:
     return results
 
 
+# Distinct job titles across the tenant — the canonical role vocabulary used for
+# control ownership (extraction) and CDI role checks. Cached in-process (job
+# titles change rarely); refreshed hourly.
+_job_titles_cache: dict = {"titles": None, "expires_at": 0.0}
+
+
+async def list_all_job_titles(force: bool = False) -> list[str]:
+    """
+    Every distinct, non-empty job title held by an enabled Entra user, sorted.
+    This is the single source of truth for the role a control can be owned by.
+    Cached for one hour; on a Graph failure the last good list is reused.
+    """
+    import time
+    now = time.time()
+    cached = _job_titles_cache.get("titles")
+    if not force and cached is not None and now < _job_titles_cache.get("expires_at", 0):
+        return cached
+
+    titles: set[str] = set()
+    url = f"{settings.graph_base_url}/users"
+    params: Optional[dict] = {
+        "$select": "jobTitle",
+        "$filter": "accountEnabled eq true and jobTitle ne null",
+        "$count": "true",
+        "$top": "999",
+    }
+    try:
+        while url:
+            data = await _request(
+                "GET", url, params=params,
+                extra_headers={"ConsistencyLevel": "eventual"},
+                context="List all job titles",
+            )
+            if not data:
+                break
+            for u in data.get("value", []):
+                t = (u.get("jobTitle") or "").strip()
+                if t:
+                    titles.add(t)
+            url = data.get("@odata.nextLink")
+            params = None
+    except Exception as exc:
+        logger.warning(f"Could not list job titles: {exc}")
+        if cached is not None:
+            return cached
+        return []
+
+    # Collapse case-only duplicates (e.g. "Graphic Designer" vs "GRAPHIC
+    # DESIGNER"), preferring a mixed-case variant over an all-caps/all-lower one.
+    best: dict[str, str] = {}
+    for t in titles:
+        key = t.lower()
+        cur = best.get(key)
+        if cur is None:
+            best[key] = t
+        elif (cur == cur.upper() or cur == cur.lower()) and not (t == t.upper() or t == t.lower()):
+            best[key] = t
+    result = sorted(best.values(), key=str.lower)
+    _job_titles_cache["titles"] = result
+    _job_titles_cache["expires_at"] = now + 3600
+    return result
+
+
 # Simple in-memory cache for SP user lookup IDs (email → int)
 _sp_user_id_cache: dict = {}
 
