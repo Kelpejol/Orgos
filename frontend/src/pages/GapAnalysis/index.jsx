@@ -679,7 +679,7 @@ export default function GapAnalysis() {
           <div style={{ marginTop: 8, padding: "8px 12px", background: "#FAEEDA",
                         borderRadius: 8, fontSize: 12, color: "#633806",
                         border: "0.5px solid #FAC775" }}>
-            View only — Compliance Lead role required to take action on gaps.
+            View only — Compliance role required to take action on gaps.
           </div>
         )}
       </div>

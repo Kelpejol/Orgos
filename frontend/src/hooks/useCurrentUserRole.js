@@ -1,39 +1,32 @@
 // =============================================================================
 // hooks/useCurrentUserRole.js
 // Single source of truth for role detection across the entire OrgOS frontend.
-// Reads Entra ID app roles from the MSAL token claims.
+// Reads org_roles from the session established at boot via AuthContext
+// (sourced from GET /api/auth/session, which validates the erp_auth cookie).
 //
 // Three roles:
-//   Standard User  — no Entra app role assigned
-//   Compliance     — Compliance.Lead role
-//   Admin          — OrgOS.Admin role (superset of Compliance)
+//   Standard User  — no org_role assigned
+//   Compliance     — "compliance" org_role
+//   Admin          — "orgos-admin" org_role (superset of Compliance)
 //
 // Usage:
 //   const { isAdmin, isCompliance, isStandard, oid, name, email, roleLabel } =
 //     useCurrentUserRole();
 // =============================================================================
 
-import { useMsal } from "@azure/msal-react";
+import { useAuth } from "../context/AuthContext.jsx";
 
 export function useCurrentUserRole() {
-  const { accounts } = useMsal();
-  const account = accounts[0];
-  const claims  = account?.idTokenClaims || {};
-  const roles   = Array.isArray(claims.roles) ? claims.roles : [];
+  const { roles, userName, userEmail, userOid } = useAuth();
 
-  const isAdmin      = roles.includes("OrgOS.Admin");
-  const isCompliance = roles.includes("Compliance.Lead") || isAdmin;
+  const isAdmin      = roles.includes("orgos-admin");
+  const isCompliance = roles.includes("compliance") || isAdmin;
   const isStandard   = !isAdmin && !isCompliance;
 
-  // Stable Entra OID — use as identity key, never changes
-  const oid   = claims.oid || account?.localAccountId || account?.homeAccountId || "";
-  const name  = account?.name || "";
-  const email = account?.username || "";
-
   return {
-    oid,
-    name,
-    email,
+    oid: userOid,
+    name: userName,
+    email: userEmail,
     roles,
     isAdmin,
     isCompliance,

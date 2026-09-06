@@ -19,7 +19,7 @@ def override_auth():
         name="Test User",
         email="test@dragnet.com.ng",
         tenant_id="test-tenant",
-        roles=["OrgOS.Admin"],
+        roles=["orgos-admin"],
     )
 
 app.dependency_overrides[get_current_user] = override_auth

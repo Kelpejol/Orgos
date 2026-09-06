@@ -73,28 +73,6 @@ def mock_document_list_response(mock_document_item) -> dict:
 
 
 @pytest.fixture
-def mock_role_item() -> dict:
-    """A single Role Register item as returned by Graph API."""
-    return {
-        "id": "2",
-        "createdDateTime": "2026-01-10T09:00:00Z",
-        "lastModifiedDateTime": "2026-02-15T11:00:00Z",
-        "fields": {
-            "id": "2",
-            "Title": "ISMS Lead",
-            "Department": "ISMS",
-            "JDReference": "DRG-JD-ISMS-IL-01",
-            "CurrentHolder": "Daniel Iwuagwu",
-            "CurrentHolderId": "aaa-111-bbb",
-            "CurrentHolderEmail": "daniel@dragnet.com.ng",
-            "CurrentHolderEntraId": "aaa-111-bbb",
-            "SourceSystem": "Entra ID",
-            "VariantTerms": "ISMS Manager, Security Lead",
-        },
-    }
-
-
-@pytest.fixture
 def mock_obligation_item_overdue() -> dict:
     """A Compliance Calendar item with a past due date (Overdue)."""
     return {
@@ -212,5 +190,5 @@ def mock_current_user():
         name="Test User",
         email="test@dragnet.com.ng",
         tenant_id="test-tenant-id",
-        roles=["OrgOS.Admin"],
+        roles=["orgos-admin"],
     )

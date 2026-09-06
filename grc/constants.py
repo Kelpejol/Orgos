@@ -13,14 +13,12 @@ from config import settings
 
 LIST_IDS = {
     "document_register": settings.document_register_list_id,
-    "role_register":     settings.role_register_list_id,
     "compliance_calendar": settings.compliance_calendar_list_id,
     "contract_register": settings.contract_register_list_id,
 }
 
 LIST_NAMES = {
     "document_register":   "Document Register",
-    "role_register":       "Role Register",
     "compliance_calendar": "Compliance Calendar",
     "contract_register":   "Contract Register",
 }
@@ -55,24 +53,6 @@ DOC_FIELDS = {
 DOC_TYPE_CHOICES    = ["Policy", "Procedure", "SOP", "Form", "Guidelines"]
 DOC_STATUS_CHOICES  = ["Active", "Under Review", "Superseded", "Withdrawn"]
 DOC_STANDARDS_CHOICES = ["ISO 9001", "ISO 27001", "NDPA", "Internal"]
-
-# =============================================================================
-#  Role Register — SharePoint field names
-# =============================================================================
-
-ROLE_FIELDS = {
-    "role_title":        "Title",
-    "department":        "Department",
-    "jd_reference":      "JDReference",
-    "current_holder":    "CurrentHolder",
-    "current_holder_id": "CurrentHolderId",
-    "source_system":     "SourceSystem",
-    "variant_terms":     "VariantTerms",
-    "assignment_status": "AssignmentStatus",
-}
-
-ROLE_ASSIGNMENT_CHOICES = ["Assigned", "Unassigned"]
-ROLE_SOURCE_CHOICES     = ["Entra ID", "SeamlessHR", "BitWiseFlow", "Manual"]
 
 # =============================================================================
 #  Compliance Calendar — SharePoint field names

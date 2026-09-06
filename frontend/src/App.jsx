@@ -1,16 +1,14 @@
 // =============================================================================
 // App.jsx — OrgOS main application shell
-// Handles: auth state (MSAL), navigation, layout, screen routing.
+// Handles: navigation, layout, screen routing. Auth is resolved once at boot
+// by main.jsx (Dragnet ERP session cookie) before this component ever renders.
 // Tier 1 screens: fully wired to FastAPI backend via React Query.
 // Tier 2–4 screens: prototype components kept intact (will be wired in later tiers).
 // =============================================================================
 
 import { useState } from "react";
 import { Routes, Route } from "react-router-dom";
-import { useIsAuthenticated, useMsal } from "@azure/msal-react";
-import { loginRequest } from "./authConfig.js";
-import Sidebar from "./components/layout/Sidebar.jsx";
-import TopBar from "./components/layout/TopBar.jsx";
+import Navbar from "./components/layout/Navbar.jsx";
 import { useCurrentUserRole } from "./hooks/useCurrentUserRole.js";
 import { AlertProvider } from "./components/shared/AlertModal.jsx";
 import AccessDenied from "./pages/shared/AccessDenied.jsx";
@@ -21,7 +19,6 @@ import ChatPanel from "./components/chat/ChatPanel.jsx";
 
 // Tier 1 — wired pages
 import DocumentRegister from "./pages/DocumentRegister/index.jsx";
-import RoleRegister from "./pages/RoleRegister/index.jsx";
 import ComplianceCalendar from "./pages/ComplianceCalendar/index.jsx";
 import ContractRegister from "./pages/ContractRegister/index.jsx";
 import DocumentLifecycle from "./pages/DocumentLifecycle/index.jsx";
@@ -34,6 +31,7 @@ import Harmonisation from "./pages/Harmonisation/index.jsx";
 import StrategicRisks from "./pages/StrategicRisks/index.jsx";
 import StandardsMap from "./pages/StandardsMap/index.jsx";
 import GapAnalysis from "./pages/GapAnalysis/index.jsx";
+import OrgRoles from "./pages/OrgRoles/index.jsx";
 
 const SC = {
   Overdue: { bg: "#FCEBEB", tx: "#791F1F", bd: "#F09595" },
@@ -304,86 +302,13 @@ const Risks = () => {
 
 // Simple table register for standards map
 
-// ── Login screen ─────────────────────────────────────────────────────────────
-function LoginScreen() {
-  const { instance } = useMsal();
-  return (
-    <div
-      style={{
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        minHeight: "100vh",
-        background: "#f3f4f6",
-        fontFamily: "var(--font-sans)",
-      }}
-    >
-      <div
-        style={{
-          background: "#fff",
-          padding: "48px 40px",
-          borderRadius: 16,
-          border: "1px solid #E0E0E0",
-          textAlign: "center",
-          maxWidth: 360,
-          width: "100%",
-        }}
-      >
-        <div
-          style={{
-            fontSize: 24,
-            fontWeight: 700,
-            letterSpacing: "-0.5px",
-            marginBottom: 4,
-          }}
-        >
-          OrgOS
-        </div>
-        <div
-          style={{
-            fontSize: 13,
-            color: "var(--color-text-secondary)",
-            marginBottom: 32,
-          }}
-        >
-          Dragnet Solutions · GRC Platform
-        </div>
-        <button
-          onClick={() => instance.loginPopup(loginRequest)}
-          style={{
-            width: "100%",
-            padding: "12px",
-            fontSize: 13,
-            fontWeight: 600,
-            borderRadius: 10,
-            border: "none",
-            background: "#1F4E79",
-            color: "#fff",
-            cursor: "pointer",
-          }}
-        >
-          Sign in with Microsoft 365
-        </button>
-        <div
-          style={{
-            fontSize: 11,
-            color: "var(--color-text-tertiary)",
-            marginTop: 16,
-          }}
-        >
-          Use your Dragnet Microsoft 365 account
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// Routes that require at minimum the Compliance.Lead role
+// Routes that require at minimum the Compliance role
 const COMPLIANCE_ONLY_ROUTES = new Set([
   "lifecycle",
   "extraction",
   "assignment",
   "harmonisation",
+  "org-roles",
 ]);
 
 // Human-readable names for AccessDenied screen
@@ -392,20 +317,14 @@ const ROUTE_NAMES = {
   extraction:    "Extraction Review",
   assignment:    "Assignment & Ownership",
   harmonisation: "Harmonisation",
+  "org-roles":   "Org Roles",
 };
 
 // ── Main app shell (all state-nav screens) ───────────────────────────────────
 function OrgOSShell() {
-  const isAuthenticated = useIsAuthenticated();
   const [nav, setNav] = useState("workhub");
-  const [collapsed, setCollapsed] = useState(
-    typeof window !== "undefined" && window.innerWidth < 768,
-  );
 
-  // Must be called unconditionally — hook runs regardless of auth state
   const { isCompliance } = useCurrentUserRole();
-
-  if (!isAuthenticated) return <LoginScreen />;
 
   const go = (id) => setNav(id);
 
@@ -426,8 +345,6 @@ function OrgOSShell() {
         return <WorkHub go={go} />;
       case "doc":
         return <DocumentRegister go={go} />;
-      case "role":
-        return <RoleRegister />;
       case "cal":
         return <ComplianceCalendar />;
       case "contract":
@@ -450,6 +367,8 @@ function OrgOSShell() {
         return <StandardsMap />;
       case "gap":
         return <GapAnalysis />;
+      case "org-roles":
+        return <OrgRoles />;
       default:
         return null;
     }
@@ -458,33 +377,26 @@ function OrgOSShell() {
   return (
     <div
       style={{
-        display: "flex",
-        flexDirection: "column",
-        height: "100vh",
-        fontFamily: "var(--font-sans)",
+        fontFamily: "var(--font-ui)",
         color: "var(--color-text-primary)",
         fontSize: 13,
       }}
     >
-      <TopBar currentScreen={nav} />
-      <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
-        <Sidebar
-          nav={nav}
-          setNav={go}
-          collapsed={collapsed}
-          setCollapsed={setCollapsed}
-        />
-        <div
-          style={{
-            flex: 1,
-            padding: "16px 20px",
-            overflowY: "auto",
-            overflowX: "auto",
-          }}
-        >
-          {renderScreen()}
-        </div>
-      </div>
+      <Navbar nav={nav} setNav={go} />
+      <main
+        style={{
+          minHeight: "100vh",
+          width: "100%",
+          maxWidth: "var(--page-max-7xl)",
+          margin: "0 auto",
+          padding: "16px 20px",
+          paddingTop: "calc(var(--navbar-height) + 16px)",
+          boxSizing: "border-box",
+          overflowX: "auto",
+        }}
+      >
+        {renderScreen()}
+      </main>
     </div>
   );
 }
@@ -492,7 +404,6 @@ function OrgOSShell() {
 // ── Root — wires URL routes then falls back to the shell ─────────────────────
 export default function OrgOS() {
   const [chatOpen, setChatOpen] = useState(false);
-  const isAuthenticated = useIsAuthenticated();
 
   return (
     <AlertProvider>
@@ -504,13 +415,9 @@ export default function OrgOS() {
         <Route path="*" element={<OrgOSShell />} />
       </Routes>
 
-      {/* Global AI chat — visible on all pages when authenticated */}
-      {isAuthenticated && (
-        <>
-          <ChatButton onClick={() => setChatOpen(true)} />
-          <ChatPanel isOpen={chatOpen} onClose={() => setChatOpen(false)} />
-        </>
-      )}
+      {/* Global AI chat — visible on all pages (session is already resolved by main.jsx) */}
+      <ChatButton onClick={() => setChatOpen(true)} />
+      <ChatPanel isOpen={chatOpen} onClose={() => setChatOpen(false)} />
     </AlertProvider>
   );
 }

@@ -14,7 +14,7 @@ import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
-from auth.validator import CurrentUser, get_current_user
+from auth.validator import CurrentUser, get_current_user, require_compliance_lead
 from config import settings
 from graph.auth import get_graph_access_token
 from graph.client import (
@@ -31,15 +31,10 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Evidence Tracker"])
 
 _LIST_NAME = "Evidence Tracker"
-_RR_LIST_NAME = "Role Register"
 
 
 def _list_id() -> str:
     return settings.evidence_tracker_list_id
-
-
-def _rr_list_id() -> str:
-    return settings.role_register_list_id
 
 
 def _handle(exc: Exception, ctx: str):
@@ -84,87 +79,6 @@ def _sp_to_evd(item: dict) -> dict:
 #  Endpoints
 # =============================================================================
 
-def _split_terms(value: str) -> list[str]:
-    terms: list[str] = []
-    for raw in (value or "").replace("\n", ",").split(","):
-        term = raw.strip()
-        if term and term.lower() not in {t.lower() for t in terms}:
-            terms.append(term)
-    return terms
-
-
-async def _role_owner_map() -> dict[str, dict]:
-    """Return normalised role/variant term -> canonical title and holder Entra ID."""
-    try:
-        roles = await get_list_items(_rr_list_id(), _RR_LIST_NAME)
-    except Exception as exc:
-        logger.warning(f"Could not fetch Role Register for evidence owner sync: {exc}")
-        return {}
-
-    owners: dict[str, dict] = {}
-    for role in roles:
-        fields = role.get("fields", {})
-        title = fields.get("Title", "")
-        if not title:
-            continue
-        holder_oid = (
-            fields.get("CurrentHolderEntraId", "")
-            or fields.get("CurrentHolderId", "")
-            or ""
-        )
-        owner = {"title": title, "holder_oid": holder_oid}
-        owners[" ".join(title.strip().lower().split())] = owner
-        for term in _split_terms(fields.get("VariantTerms", "")):
-            owners[" ".join(term.strip().lower().split())] = owner
-    return owners
-
-
-async def _sync_evidence_owner_ids(items: list[dict]) -> list[dict]:
-    """
-    Repair stale Evidence Tracker ownership after role harmonisation.
-    Evidence Status is workflow state, so only OwnerRole/OwnerEntraId are synced.
-    """
-    role_owners = await _role_owner_map()
-    if not role_owners:
-        return items
-
-    synced: list[dict] = []
-    for item in items:
-        fields = dict(item.get("fields", {}))
-        owner_role = fields.get("OwnerRole", "")
-        if not owner_role:
-            synced.append(item)
-            continue
-
-        role_owner = role_owners.get(" ".join(owner_role.strip().lower().split()))
-        if not role_owner:
-            synced.append(item)
-            continue
-
-        canonical_role = role_owner["title"]
-        holder_oid = role_owner["holder_oid"]
-        updates = {}
-        if fields.get("OwnerRole", "") != canonical_role:
-            updates["OwnerRole"] = canonical_role
-        if fields.get("OwnerEntraId", "") != holder_oid:
-            updates["OwnerEntraId"] = holder_oid
-
-        if updates:
-            try:
-                await update_list_item(
-                    _list_id(),
-                    _LIST_NAME,
-                    str(item["id"]),
-                    updates,
-                )
-                fields.update(updates)
-                item = {**item, "fields": fields}
-            except Exception as exc:
-                logger.warning(f"Could not sync owner for evidence {item.get('id')}: {exc}")
-
-        synced.append(item)
-    return synced
-
 @router.get("/api/v1/evidence")
 async def list_evidence(
     owner_oid:  Optional[str] = None,
@@ -177,7 +91,6 @@ async def list_evidence(
     """
     try:
         items = await get_list_items(_list_id(), _LIST_NAME)
-        items = await _sync_evidence_owner_ids(items)
         evds  = [_sp_to_evd(i) for i in items]
 
         if owner_oid:
@@ -205,7 +118,6 @@ async def get_evidence(
 ) -> dict:
     try:
         item = await get_list_item(_list_id(), _LIST_NAME, item_id)
-        item = (await _sync_evidence_owner_ids([item]))[0]
         return _sp_to_evd(item)
     except Exception as exc:
         _handle(exc, f"get evidence {item_id}")
@@ -276,8 +188,8 @@ async def submit_evidence(
         if ((current.get("fields", {}) or {}).get("Status", "") or "") == "Accepted":
             raise HTTPException(
                 status_code=409,
-                detail="This evidence is already Accepted. A Compliance Lead must reopen it "
-                       "(reject) before new evidence can be submitted.",
+                detail="This evidence is already Accepted. Someone with the Compliance role "
+                       "must reopen it (reject) before new evidence can be submitted.",
             )
 
         fields: dict = {
@@ -326,8 +238,8 @@ async def upload_evidence(
         if ((current.get("fields", {}) or {}).get("Status", "") or "") == "Accepted":
             raise HTTPException(
                 status_code=409,
-                detail="This evidence is already Accepted. A Compliance Lead must reopen it "
-                       "(reject) before new evidence can be uploaded.",
+                detail="This evidence is already Accepted. Someone with the Compliance role "
+                       "must reopen it (reject) before new evidence can be uploaded.",
             )
 
         fields: dict = {
@@ -352,19 +264,13 @@ async def upload_evidence(
 async def verify_evidence(
     item_id: str,
     body: VerifyEvidence,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(require_compliance_lead),
 ) -> dict:
     """
     Compliance team verifies a submitted evidence item.
     Accept → status becomes Accepted.
     Reject → status returns to Pending with rejection note visible to owner.
     """
-    if "Compliance.Lead" not in user.roles and "OrgOS.Admin" not in user.roles:
-        raise HTTPException(
-            status_code=403,
-            detail="Compliance Lead or OrgOS Admin required to verify evidence.",
-        )
-
     if not body.accepted and not body.rejection_note:
         raise HTTPException(
             status_code=422,

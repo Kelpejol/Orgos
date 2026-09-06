@@ -32,7 +32,6 @@ from grc.constants import (
     DOC_FIELDS,
     LIST_IDS,
     LIST_NAMES,
-    ROLE_FIELDS,
 )
 from grc.schemas import (
     CompleteObligation,
@@ -50,29 +49,9 @@ from grc.schemas import (
     ObligationStatus,
     ObligationUpdate,
     PersonRef,
-    RoleCreate,
-    RoleRead,
-    RoleUpdate,
 )
 
 logger = logging.getLogger(__name__)
-
-
-# =============================================================================
-#  Text helpers
-# =============================================================================
-
-def _normalise_variant_terms(value: Optional[str]) -> str:
-    """Store Role Register variant terms as one term per line."""
-    terms: list[str] = []
-    seen: set[str] = set()
-    for raw in re.split(r"[\n,]+", value or ""):
-        term = raw.strip()
-        key = term.lower()
-        if term and key not in seen:
-            terms.append(term)
-            seen.add(key)
-    return "\n".join(terms)
 
 
 # =============================================================================
@@ -281,30 +260,6 @@ async def _sp_item_to_doc(item: dict) -> DocumentRead:
         linked_controls_count=_parse_int(fields.get(DOC_FIELDS["linked_controls_count"])) or 0,
         sharepoint_url=fields.get(DOC_FIELDS["sharepoint_url"]) or None,
         status=fields.get(DOC_FIELDS["status"]) or "Active",
-        created=_parse_datetime(item.get("createdDateTime")),
-        modified=_parse_datetime(item.get("lastModifiedDateTime")),
-    )
-
-
-async def _sp_item_to_role(item: dict) -> RoleRead:
-    fields = item.get("fields", {})
-
-    holder_oid = (
-        fields.get(ROLE_FIELDS["current_holder_id"], "")
-        or fields.get("CurrentHolderEntraId", "")
-    )
-    raw_status = fields.get(ROLE_FIELDS["assignment_status"], "")
-    assignment_status = raw_status if raw_status else ("Assigned" if holder_oid else "Unassigned")
-
-    return RoleRead(
-        id=str(item["id"]),
-        role_title=fields.get(ROLE_FIELDS["role_title"], ""),
-        department=fields.get(ROLE_FIELDS["department"], ""),
-        jd_reference=fields.get(ROLE_FIELDS["jd_reference"], ""),
-        current_holder=await _build_person_ref(fields, "CurrentHolder"),
-        source_system=fields.get(ROLE_FIELDS["source_system"], "Entra ID"),
-        variant_terms=fields.get(ROLE_FIELDS["variant_terms"]),
-        assignment_status=assignment_status,
         created=_parse_datetime(item.get("createdDateTime")),
         modified=_parse_datetime(item.get("lastModifiedDateTime")),
     )
@@ -1088,82 +1043,6 @@ async def withdraw_document(
     results["cascade_summary"] = cascade_summary
     logger.info(f"Document {doc.document_code} withdrawn by {user.oid}. {cascade_summary}")
     return results
-
-
-# =============================================================================
-#  Role Register
-# =============================================================================
-
-async def get_roles(department: Optional[str] = None) -> list[RoleRead]:
-    odata_filter = f"fields/Department eq '{department}'" if department else None
-    items = await get_list_items(
-        LIST_IDS["role_register"],
-        LIST_NAMES["role_register"],
-        odata_filter=odata_filter,
-    )
-    return [await _sp_item_to_role(item) for item in items]
-
-
-async def get_role(item_id: str) -> RoleRead:
-    item = await get_list_item(
-        LIST_IDS["role_register"], LIST_NAMES["role_register"], item_id
-    )
-    return await _sp_item_to_role(item)
-
-
-async def create_role(role: RoleCreate) -> RoleRead:
-    assignment_status = "Assigned" if role.current_holder_id else "Unassigned"
-    fields: dict = {
-        ROLE_FIELDS["role_title"]:        role.role_title,
-        ROLE_FIELDS["department"]:        role.department,
-        ROLE_FIELDS["jd_reference"]:      role.jd_reference,
-        ROLE_FIELDS["source_system"]:     role.source_system.value,
-        ROLE_FIELDS["assignment_status"]: assignment_status,
-    }
-    if role.variant_terms:
-        fields[ROLE_FIELDS["variant_terms"]] = _normalise_variant_terms(role.variant_terms)
-    if role.current_holder_id:
-        fields.update(_person_write_field("CurrentHolder", role.current_holder_id))
-
-    item = await create_list_item(
-        LIST_IDS["role_register"], LIST_NAMES["role_register"], fields
-    )
-    return await _sp_item_to_role(item)
-
-
-async def update_role(item_id: str, role: RoleUpdate) -> RoleRead:
-    fields: dict = {}
-    if role.role_title is not None:
-        fields[ROLE_FIELDS["role_title"]] = role.role_title
-    if role.department is not None:
-        fields[ROLE_FIELDS["department"]] = role.department
-    if role.jd_reference is not None:
-        fields[ROLE_FIELDS["jd_reference"]] = role.jd_reference
-    if role.source_system is not None:
-        fields[ROLE_FIELDS["source_system"]] = role.source_system.value
-    if role.variant_terms is not None:
-        fields[ROLE_FIELDS["variant_terms"]] = _normalise_variant_terms(role.variant_terms)
-    if role.current_holder_id is not None:
-        fields.update(_person_write_field("CurrentHolder", role.current_holder_id))
-
-    await update_list_item(
-        LIST_IDS["role_register"], LIST_NAMES["role_register"], item_id, fields
-    )
-    return await get_role(item_id)
-
-
-async def assign_role_holder(item_id: str, holder_id: str) -> RoleRead:
-    fields: dict = {ROLE_FIELDS["assignment_status"]: "Assigned"}
-    fields.update(_person_write_field("CurrentHolder", holder_id))
-    await update_list_item(
-        LIST_IDS["role_register"], LIST_NAMES["role_register"], item_id, fields
-    )
-    return await get_role(item_id)
-
-
-async def get_unassigned_roles() -> list[RoleRead]:
-    all_roles = await get_roles()
-    return [r for r in all_roles if r.assignment_status == "Unassigned"]
 
 
 # =============================================================================

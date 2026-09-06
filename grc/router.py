@@ -1,7 +1,7 @@
 # =============================================================================
 # grc/router.py — GRC module FastAPI router
-# All Tier 1 endpoints: Document Register, Role Register,
-# Compliance Calendar, Contract Register.
+# All Tier 1 endpoints: Document Register, Compliance Calendar,
+# Contract Register.
 # All routes require a valid Entra ID bearer token.
 # Depends on: grc/service.py, grc/schemas.py, auth/validator.py
 # =============================================================================
@@ -11,7 +11,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
-from auth.validator import CurrentUser, get_current_user, require_admin
+from auth.validator import CurrentUser, get_current_user, require_compliance_lead
 from graph.exceptions import (
     GraphAPIError,
     GraphNotFoundError,
@@ -221,7 +221,7 @@ async def get_withdrawal_impact(
 async def withdraw_document(
     item_id: str,
     body: schemas.DocumentWithdraw,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(require_compliance_lead),
 ) -> dict:
     """
     Withdraws the document and cascades to all dependent records:
@@ -233,15 +233,10 @@ async def withdraw_document(
     - Notes Compliance Calendar obligations referencing this document
     - Auto-creates Critical gap findings for Standards Map clauses that lose all coverage
 
-    Requires Compliance Lead or OrgOS Admin role.
+    Requires Compliance or OrgOS Admin role.
     Rationale must be at least 10 characters.
     If withdrawal_reason is Superseded, replaced_by_code must reference an existing document.
     """
-    if "Compliance.Lead" not in user.roles and "OrgOS.Admin" not in user.roles:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Compliance Lead or OrgOS Admin role required to withdraw documents.",
-        )
     try:
         return await service.withdraw_document(
             item_id=item_id,
@@ -273,102 +268,6 @@ async def delete_document_deprecated(
             "Use POST /api/v1/grc/documents/{id}/withdraw with a withdrawal reason and rationale."
         ),
     )
-
-
-# =============================================================================
-#  Role Register
-# =============================================================================
-
-@router.get(
-    "/roles",
-    response_model=list[schemas.RoleRead],
-    summary="List all organisational roles",
-)
-async def list_roles(
-    department: Optional[str] = Query(None),
-    user: CurrentUser = Depends(get_current_user),
-) -> list[schemas.RoleRead]:
-    try:
-        return await service.get_roles(department=department)
-    except Exception as exc:
-        _handle_graph_error(exc, "list roles")
-
-
-@router.post(
-    "/roles",
-    response_model=schemas.RoleRead,
-    status_code=status.HTTP_201_CREATED,
-    summary="Create a new role mapping",
-)
-async def create_role(
-    role: schemas.RoleCreate,
-    user: CurrentUser = Depends(get_current_user),
-) -> schemas.RoleRead:
-    try:
-        return await service.create_role(role)
-    except Exception as exc:
-        _handle_graph_error(exc, "create role")
-
-
-@router.patch(
-    "/roles/{item_id}",
-    response_model=schemas.RoleRead,
-    summary="Update a role",
-)
-async def update_role(
-    item_id: str,
-    role: schemas.RoleUpdate,
-    user: CurrentUser = Depends(get_current_user),
-) -> schemas.RoleRead:
-    try:
-        return await service.update_role(item_id, role)
-    except Exception as exc:
-        _handle_graph_error(exc, f"update role {item_id}")
-
-
-@router.patch(
-    "/roles/{item_id}/assign",
-    response_model=schemas.RoleRead,
-    summary="Assign a person to an unassigned role",
-)
-async def assign_role(
-    item_id: str,
-    assignment: schemas.RoleAssign,
-    user: CurrentUser = Depends(require_admin),
-) -> schemas.RoleRead:
-    try:
-        return await service.assign_role_holder(item_id, assignment.current_holder_id)
-    except Exception as exc:
-        _handle_graph_error(exc, f"assign role {item_id}")
-
-
-@router.get(
-    "/roles/unassigned",
-    response_model=list[schemas.RoleRead],
-    summary="Get all roles with no current holder",
-)
-async def list_unassigned_roles(
-    user: CurrentUser = Depends(get_current_user),
-) -> list[schemas.RoleRead]:
-    try:
-        return await service.get_unassigned_roles()
-    except Exception as exc:
-        _handle_graph_error(exc, "list unassigned roles")
-
-
-@router.get(
-    "/roles/{item_id}",
-    response_model=schemas.RoleRead,
-    summary="Get a single role",
-)
-async def get_role(
-    item_id: str,
-    user: CurrentUser = Depends(get_current_user),
-) -> schemas.RoleRead:
-    try:
-        return await service.get_role(item_id)
-    except Exception as exc:
-        _handle_graph_error(exc, f"get role {item_id}")
 
 
 # =============================================================================
@@ -506,18 +405,13 @@ async def complete_obligation(
 async def escalate_obligation(
     item_id: str,
     body: schemas.EscalateObligation,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(require_compliance_lead),
 ) -> dict:
     """
     Creates a Gap Analysis item (category = Obligation gap) and links the
     obligation to it. Idempotent — repeated calls return the existing gap ID.
-    Requires Compliance Lead or OrgOS Admin.
+    Requires Compliance or OrgOS Admin role.
     """
-    if "Compliance.Lead" not in user.roles and "OrgOS.Admin" not in user.roles:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Compliance Lead or Admin role required to escalate obligations",
-        )
     try:
         return await service.escalate_obligation(
             item_id,
@@ -638,17 +532,12 @@ async def update_contract(
 async def update_contract_lifecycle(
     item_id: str,
     lifecycle_status: schemas.ContractLifecycleStatus,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(require_compliance_lead),
 ) -> schemas.ContractRead:
     """
-    Dedicated endpoint for lifecycle transitions. Requires Compliance Lead.
+    Dedicated endpoint for lifecycle transitions. Requires Compliance role.
     lifecycle_status body is passed as a JSON string: "Terminated"
     """
-    if "Compliance.Lead" not in user.roles and "OrgOS.Admin" not in user.roles:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Compliance Lead or Admin role required to change contract lifecycle status",
-        )
     try:
         update = schemas.ContractUpdate(lifecycle_status=lifecycle_status)
         return await service.update_contract(item_id, update)

@@ -14,7 +14,7 @@ import control_register.router as cr
 from auth.validator import CurrentUser
 
 USER = CurrentUser(oid="oid-1", name="Reviewer", email="r@dragnet.com",
-                   tenant_id="t", roles=["OrgOS.Admin"])
+                   tenant_id="t", roles=["orgos-admin"])
 
 _ARGS = dict(item_id="42", item_type="Extraction", zone="1", ai_confidence=0.9,
              decision="Accept", rationale="looks good", cascade_result="Control Register: 5",

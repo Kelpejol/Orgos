@@ -1,18 +1,13 @@
 # =============================================================================
 # agents/classifier/service.py — Classifier Agent
-# Runs after every Extractor batch. Three jobs per DRG-QI-REF-DINT-01-26 Section 3:
+# Runs after every Extractor batch. Two jobs per DRG-QI-REF-DINT-01-26 Section 3:
 #
-# Job 1 — Role variant detection
-#   Compares extracted ProposedOwnerRole terms against Role Register.
-#   Flags terms that do not exactly match a role title as potential variants.
-#   Writes Zone 3 Harmonisation items.
-#
-# Job 2 — Near-duplicate control detection
+# Job 1 — Near-duplicate control detection
 #   Compares extracted ControlStatement values against each other and against
 #   the confirmed Control Register. Flags pairs with >80% similarity.
 #   Writes Zone 3 Harmonisation items.
 #
-# Job 3 — Conflict detection
+# Job 2 — Conflict detection
 #   Identifies controls from different documents that define contradictory
 #   requirements for the same obligation.
 #   Writes Zone 2 Orphan/Conflict items.
@@ -36,24 +31,12 @@ logger = logging.getLogger(__name__)
 
 _Q_LIST_NAME  = "AI Review Queue"
 _CR_LIST_NAME = "Control Register"
-_RR_LIST_NAME = "Role Register"
 _AL_LIST_NAME = "Audit Log"
 
 
 def _q_list_id()  -> str: return settings.ai_review_queue_list_id
 def _cr_list_id() -> str: return settings.control_register_list_id
-def _rr_list_id() -> str: return settings.role_register_list_id
 def _al_list_id() -> str: return settings.audit_log_list_id
-
-
-def _split_terms(value: str) -> list[str]:
-    """VariantTerms is multiline text; accept old comma-separated values too."""
-    terms: list[str] = []
-    for raw in (value or "").replace("\n", ",").split(","):
-        term = raw.strip()
-        if term and term.lower() not in {t.lower() for t in terms}:
-            terms.append(term)
-    return terms
 
 
 # =============================================================================
@@ -87,18 +70,6 @@ def _normalise_control(stmt: str) -> str:
 
 def _fallback_semantic(kind: str, candidate: dict) -> dict:
     """Deterministic fallback guidance when AI is unavailable or invalid."""
-    if kind == "role_variant":
-        best = candidate.get("best_match")
-        return {
-            "suggested_action": "Merge" if best else "Create new role or map manually",
-            "canonical_suggestion": best or "",
-            "reviewer_rationale": (
-                f"Role term '{candidate.get('role_term', '')}' was detected as "
-                f"{'similar to ' + best if best else 'unrecognised in the Role Register'}."
-            ),
-            "semantic_confidence": round(float(candidate.get("best_score") or 0), 2),
-            "key_difference": "Exact organisational meaning requires human confirmation.",
-        }
     if kind == "duplicate_control":
         return {
             "suggested_action": "Merge or standardise",
@@ -226,21 +197,6 @@ async def _fetch_all_queue_items() -> list[dict]:
     ]
 
 
-async def _fetch_role_register() -> list[dict]:
-    """Fetch all role titles from the Role Register."""
-    items = await get_list_items(_rr_list_id(), _RR_LIST_NAME)
-    return [
-        {
-            "id":         str(i["id"]),
-            "role_title": i.get("fields", {}).get("Title", ""),
-            "department": i.get("fields", {}).get("Department", ""),
-            "variant_terms": i.get("fields", {}).get("VariantTerms", ""),
-        }
-        for i in items
-        if i.get("fields", {}).get("Title")
-    ]
-
-
 async def _fetch_control_register() -> list[dict]:
     """Fetch confirmed controls from the Control Register."""
     items = await get_list_items(_cr_list_id(), _CR_LIST_NAME)
@@ -273,85 +229,7 @@ async def _log_classifier_run(summary: dict, triggered_by: str = "system") -> No
 
 
 # =============================================================================
-#  Job 1 — Role variant detection
-# =============================================================================
-
-async def detect_role_variants(
-    queue_items: list[dict],
-    role_register: list[dict],
-) -> list[dict]:
-    """
-    For each extracted ProposedOwnerRole, check if it exactly matches
-    a Role Register title. If not, find the closest match and flag it
-    as a Zone 3 Harmonisation item.
-
-    Returns list of variant findings to write to the queue.
-    """
-    findings = []
-    role_titles = {r["role_title"].strip().lower(): r for r in role_register}
-    known_terms: set[str] = set()
-    for role in role_register:
-        known_terms.add(_normalise_role(role["role_title"]))
-        for term in _split_terms(role.get("variant_terms") or ""):
-            known_terms.add(_normalise_role(term))
-
-    # Group queue items by their extracted owner role
-    role_groups: dict[str, list[dict]] = {}
-    for item in queue_items:
-        role = item.get("ProposedOwnerRole", "").strip()
-        if not role:
-            continue
-        key = _normalise_role(role)
-        if key not in role_groups:
-            role_groups[key] = []
-        role_groups[key].append(item)
-
-    for raw_role, items in role_groups.items():
-        canonical_role = items[0].get("ProposedOwnerRole", "").strip()
-
-        # Exact match — no issue
-        if canonical_role.lower() in role_titles or raw_role in known_terms:
-            continue
-
-        # Find best matching role in Role Register
-        best_match = None
-        best_score = 0.0
-        for title, role_data in role_titles.items():
-            score = _similarity(raw_role, title)
-            if score > best_score:
-                best_score = score
-                best_match = role_data["role_title"]
-
-        # Only flag if reasonably close (>0.5) or if completely unrecognised (flag as orphan candidate)
-        if best_score < 0.3:
-            # Completely unrecognised — might be a new role
-            logger.info(f"Unrecognised role term: '{canonical_role}' — no close match in Role Register")
-            finding = {
-                "role_term":     canonical_role,
-                "best_match":    None,
-                "best_score":    best_score,
-                "source_items":  len(items),
-                "source_docs":   list({i["SourceDocumentCode"] for i in items if i.get("SourceDocumentCode")}),
-                "type":          "unrecognised",
-            }
-        else:
-            finding = {
-                "role_term":     canonical_role,
-                "best_match":    best_match,
-                "best_score":    best_score,
-                "source_items":  len(items),
-                "source_docs":   list({i["SourceDocumentCode"] for i in items if i.get("SourceDocumentCode")}),
-                "type":          "variant",
-            }
-
-        findings.append(finding)
-
-    logger.info(f"Role variant detection: {len(findings)} findings")
-    return findings
-
-
-# =============================================================================
-#  Job 2 — Near-duplicate control detection
+#  Job 1 — Near-duplicate control detection
 # =============================================================================
 
 async def detect_near_duplicates(
@@ -521,17 +399,12 @@ def _scan_conflict_pairs(controls: list[dict], similarity_threshold: float) -> l
 #  Write Zone 3 items to queue
 # =============================================================================
 
-async def write_harmonisation_items(
-    role_variants:     list[dict],
-    near_duplicates:   list[dict],
-) -> dict:
+async def write_harmonisation_items(near_duplicates: list[dict]) -> dict:
     """
     Write Zone 3 Harmonisation items to the AI Review Queue.
     Returns counts of items written.
     """
-    written_variants    = 0
     written_duplicates  = 0
-    suppressed_variants = 0
     suppressed_duplicates = 0
     existing_items = await _fetch_all_queue_items()
 
@@ -579,45 +452,6 @@ async def write_harmonisation_items(
                 return True
         return False
 
-    # Role variant items
-    for v in role_variants:
-        if suppressed_by_decision(v["role_term"], v.get("best_match") or ""):
-            suppressed_variants += 1
-            continue
-        if already_harmonised(v["role_term"], v.get("best_match") or ""):
-            continue
-        guidance = await _semantic_assist("role_variant", v)
-        if v["type"] == "unrecognised":
-            title = f"Unrecognised role term: {v['role_term']}"
-            hint  = "This role term does not match any entry in the Role Register. Create a new role or map to an existing one."
-            canonical = guidance.get("canonical_suggestion") or ""
-        else:
-            title    = f"Role variant: '{v['role_term']}' may be '{v['best_match']}'"
-            hint     = f"Similarity score: {round(v['best_score'] * 100)}%. Confirm if these are the same role."
-            canonical = guidance.get("canonical_suggestion") or v["best_match"] or ""
-
-        variant_terms = f"{v['role_term']}"
-        if v["best_match"]:
-            variant_terms += f", {v['best_match']}"
-
-        try:
-            await create_list_item(_q_list_id(), _Q_LIST_NAME, {
-                "Title":            title[:255],
-                "ItemType":         "Harmonisation",
-                "CanonicalName":    canonical,
-                "VariantTerms":     variant_terms,
-                "VariantFrequency": (
-                    f"Found in {v['source_items']} item(s) across {len(v['source_docs'])} document(s). "
-                    f"{_guidance_text(guidance)}"
-                )[:500],
-                "ReviewStatus":     "Pending Review",
-                "ConfidenceScore":  _clamp_confidence(v["best_score"], guidance.get("semantic_confidence")),
-                "SourceDocumentCode": ", ".join(v["source_docs"][:3]),
-            })
-            written_variants += 1
-        except Exception as exc:
-            logger.error(f"Failed to write role variant item: {exc}")
-
     # Near-duplicate control items
     for dup in near_duplicates:
         if suppressed_by_decision(dup["source_a"], dup["source_b"], dup["control_a"][:40]):
@@ -647,11 +481,9 @@ async def write_harmonisation_items(
             logger.error(f"Failed to write near-duplicate item: {exc}")
 
     return {
-        "role_variants_written":   written_variants,
         "duplicates_written":      written_duplicates,
-        "role_variants_suppressed": suppressed_variants,
         "duplicates_suppressed":   suppressed_duplicates,
-        "total":                   written_variants + written_duplicates,
+        "total":                   written_duplicates,
     }
 
 
@@ -721,19 +553,17 @@ async def write_conflict_items(conflicts: list[dict]) -> dict:
 async def run_classifier(triggered_by: str = "system") -> dict:
     """
     Run the full Classifier pipeline.
-    Fetches queue items, role register, and confirmed controls.
-    Runs all three jobs and writes Zone 2/3 items.
+    Fetches queue items and confirmed controls.
+    Runs both jobs and writes Zone 2/3 items.
     Returns a summary of what was found and written.
     """
     logger.info("Classifier agent starting")
 
     queue_items        = await _fetch_queue_items()
-    role_register      = await _fetch_role_register()
     confirmed_controls = await _fetch_control_register()
 
     logger.info(
         f"Loaded: {len(queue_items)} queue items, "
-        f"{len(role_register)} roles, "
         f"{len(confirmed_controls)} confirmed controls"
     )
 
@@ -742,24 +572,19 @@ async def run_classifier(triggered_by: str = "system") -> dict:
         return {"status": "skipped", "reason": "No extraction items in queue"}
 
     # Job 1
-    role_variants   = await detect_role_variants(queue_items, role_register)
-
-    # Job 2
     near_duplicates = await detect_near_duplicates(queue_items, confirmed_controls)
 
-    # Job 3
+    # Job 2
     conflicts = await detect_conflicts(queue_items)
 
     # Write Zone 3 items
-    written = await write_harmonisation_items(role_variants, near_duplicates)
+    written = await write_harmonisation_items(near_duplicates)
     conflict_written = await write_conflict_items(conflicts)
 
     summary = {
         "status":              "complete",
         "queue_items_read":    len(queue_items),
-        "roles_compared":      len(role_register),
         "controls_compared":   len(confirmed_controls),
-        "role_variants_found": len(role_variants),
         "duplicates_found":    len(near_duplicates),
         "conflicts_found":     len(conflicts),
         **written,

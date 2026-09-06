@@ -32,7 +32,7 @@ OrgOS is Dragnet's compliance management platform. It replaces manual spreadshee
 | Capability | Description |
 |---|---|
 | **Document Register** | Track all policy/procedure documents — version, owner, status, review dates |
-| **Role Register** | Maintain role-to-control ownership across all departments |
+| **Org Roles** | Read-only directory of users and their `org_roles`, read live from Entra ID (assignment happens exclusively in the Dragnet ERP admin panel) |
 | **Compliance Calendar** | Track statutory, licensing, and regulatory deadlines per authority |
 | **Contract Register** | Monitor vendor contracts, expiry dates, and renewal obligations |
 | **AI Extractor** | Upload a PDF or DOCX — the AI extracts structured `{risk, control, evidence}` triplets |
@@ -52,14 +52,22 @@ OrgOS is Dragnet's compliance management platform. It replaces manual spreadshee
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                  Browser (React SPA)                     │
-│  MSAL auth → acquires Entra ID token → sends on every   │
-│  request as  Authorization: Bearer <token>              │
+│                  Dragnet ERP shell                        │
+│  Sole authority for login. Sets an erp_auth HttpOnly     │
+│  cookie on .dragnet.ng after the user signs in there.    │
 └────────────────────────┬────────────────────────────────┘
-                         │ HTTPS / Bearer token
+                         │ redirect / bounce-back (no token in URL)
+┌────────────────────────▼────────────────────────────────┐
+│            Browser — OrgOS React SPA (standalone)         │
+│  No login page, no MSAL. Boots by checking its own        │
+│  backend's session endpoint; the erp_auth cookie travels  │
+│  automatically on every request (credentials: include).   │
+└────────────────────────┬────────────────────────────────┘
+                         │ HTTPS + erp_auth cookie
 ┌────────────────────────▼────────────────────────────────┐
 │               FastAPI Backend (Python)                   │
-│  • Validates incoming Entra ID JWT (RS256)               │
+│  • Independently validates the erp_auth JWT (RS256/JWKS) │
+│  • Reads org_roles claim — never assigns it               │
 │  • Business logic + SharePoint field mapping             │
 │  • Calls Microsoft Graph API (client credentials)        │
 │  • Calls LLM gateway (GPT-4o-mini) for AI features       │
@@ -83,7 +91,9 @@ OrgOS is Dragnet's compliance management platform. It replaces manual spreadshee
 └──────────────────────────────────────┘
 ```
 
-**There is no relational database.** All application data lives in SharePoint Lists, accessed via the Microsoft Graph API. The backend is stateless — SharePoint is the single source of truth for all persistent state.
+**There is no relational database.** All application data lives in SharePoint Lists, accessed via the Microsoft Graph API. The backend is stateless — SharePoint is the single source of truth for all persistent state, except identity and roles, which live entirely in Entra ID / the Dragnet ERP (see [§9](#9-authentication--security)).
+
+OrgOS is a **Tier-1 standalone module** of the Dragnet ERP (own `*.dragnet.ng` subdomain, not Module Federation). It owns no login screen, no app registration, and no role-assignment UI of its own — see `docs.local/orgos_notes.md` and `docs.local/ERP_*.md` for the full integration reference.
 
 ---
 
@@ -111,11 +121,12 @@ OrgOS is Dragnet's compliance management platform. It replaces manual spreadshee
 |---|---|---|
 | Framework | React 18 | Hooks only, no class components |
 | Build tool | Vite 5 | ESM, fast HMR |
-| Auth | @azure/msal-browser v3 | MSAL v3 API, `sessionStorage` cache |
+| Auth | None (no MSAL) | Session is the ERP's `erp_auth` HttpOnly cookie — OrgOS never talks to Azure AD directly. See [§9](#9-authentication--security). |
 | Server state | @tanstack/react-query v5 | All backend data — caching, stale time, invalidation |
-| HTTP | axios | MSAL interceptor attaches Bearer token on every request |
+| HTTP | axios | `withCredentials: true` — the session cookie travels automatically, no manual token header |
 | Routing | react-router-dom v6 | Client-side navigation |
-| Icons | lucide-react | SVG icon library |
+| Icons | lucide-react + Font Awesome | `@fortawesome/react-fontawesome` for the navbar (parity with the ERP shell's icon set); lucide-react elsewhere (chat, dropdown chevrons) |
+| Fonts | Plus Jakarta Sans (Google Fonts) | Loaded in `index.html` — matches the Dragnet ERP shell's typography |
 | Chat persistence | IndexedDB (idb) | Chat sessions survive page refresh |
 
 ---
@@ -137,11 +148,18 @@ Orgos/
 │   └── exceptions.py               ← GraphAPIError hierarchy
 │
 ├── auth/
-│   └── validator.py                ← JWT decode, JWKS cache, CurrentUser dataclass
+│   ├── validator.py                 ← JWT decode, JWKS cache, CurrentUser dataclass, org_roles parsing
+│   └── router.py                    ← /api/auth/session, /api/auth/revoke — NOT under /api/v1
+│                                       (session endpoints only ever read/clear the ERP's
+│                                        erp_auth cookie; OrgOS never sets it)
 │
-├── grc/                            ← Tier 1 GRC registers
+├── org_roles/                       ← Read-only org_roles directory (Entra ID via Graph,
+│   └── router.py                       not SharePoint) — /api/v1/org-roles
+│
+├── grc/                            ← Tier 1 GRC registers (Document, Compliance Calendar,
+│   │                                   Contract — the Role Register was retired, see below)
 │   ├── constants.py                ← SharePoint column name mappings + enum values
-│   ├── schemas.py                  ← Pydantic v2 models for all four registers
+│   ├── schemas.py                  ← Pydantic v2 models for the three registers
 │   ├── service.py                  ← Business logic, SP ↔ schema mapping
 │   └── router.py                   ← /api/v1/grc/*
 │
@@ -180,31 +198,33 @@ Orgos/
 │
 ├── scripts/
 │   ├── bulk_extract.py             ← Batch extraction with checkpoint/resume
-│   ├── sync_roles.py               ← Sync roles from Entra ID / HR systems
 │   └── cdi_triage.py               ← Pre-validate docs against CDI standard
 │
 └── frontend/
     ├── package.json
     ├── vite.config.js
-    ├── index.html
+    ├── index.html                  ← Plus Jakarta Sans Google Fonts link
+    ├── public/dragnet-logo.png     ← Navbar brand logo
     ├── .env.local                  ← Frontend secrets (gitignored)
     └── src/
-        ├── main.jsx                ← MSAL + React Query setup
+        ├── main.jsx                ← Boot: verifySession() → render, or redirect to the ERP shell
         ├── App.jsx                 ← Shell + routing
-        ├── authConfig.js           ← MSAL config, scope definitions
-        ├── api/grcApi.js           ← Axios client with MSAL interceptor, all API calls
+        ├── auth/authBridge.js      ← verifySession / redirectToShell / logoutToShell
+        ├── context/AuthContext.jsx ← Session identity, populated once at boot
+        ├── api/grcApi.js           ← Axios client (withCredentials: true), all API calls
         ├── hooks/
         │   ├── useGrc.js           ← React Query hooks for every register + action
-        │   └── useCurrentUser.js   ← User profile from MSAL token (no API call)
+        │   ├── useCurrentUser.js   ← User identity from AuthContext (same shape as before)
+        │   └── useCurrentUserRole.js ← isAdmin/isCompliance from the org_roles claim
         ├── services/aiDb.js        ← IndexedDB: chat sessions, message history
         ├── components/
-        │   ├── layout/             ← Sidebar, TopBar, Layout
+        │   ├── layout/             ← Navbar.jsx (fixed top nav, replaces Sidebar + TopBar), Layout
         │   ├── shared/             ← StatusBadge, PersonPicker, Forms, LoadingState
         │   └── chat/               ← ChatPanel, ChatMessage, SourcesAccordion, ChatButton
         └── pages/
             ├── WorkHub/            ← Dashboard with summary cards and quick actions
             ├── DocumentRegister/
-            ├── RoleRegister/
+            ├── OrgRoles/           ← Read-only org_roles directory (Compliance/OrgOS Admin only)
             ├── ComplianceCalendar/
             ├── ContractRegister/
             ├── AIReviewQueue/      ← Zone 1/2/3 decision interface
@@ -235,7 +255,8 @@ Every call to SharePoint goes through here. Three files:
   - `create_list_item(list_id, list_name, fields)` — create; returns item with auto-assigned ID
   - `update_list_item(list_id, list_name, item_id, fields)` — partial update (PATCH)
   - `soft_delete_list_item(list_id, list_name, item_id)` — sets `Status = "Withdrawn"`, never hard-deletes
-  - `resolve_user(entra_oid)` — Entra OID → `{display_name, email}` via Graph `/users/{oid}`, cached per process
+  - `resolve_user(entra_oid)` — Entra OID → `{display_name, email, org_roles}` via Graph `/users/{oid}` in a single call, cached per process for 5 minutes
+  - `list_users_with_org_roles()` — lists every user with an `org_roles` value set, via a Graph advanced query (`ConsistencyLevel: eventual`) on `onPremisesExtensionAttributes.extensionAttribute1` — backs the Org Roles directory page, no SharePoint involved
   - `upload_file_to_sharepoint(file_bytes, filename, folder)` — PUT to SharePoint drive
   - `download_file_from_sharepoint(web_url)` — downloads via `/shares/u!{base64url}`
 
@@ -243,25 +264,29 @@ Every call to SharePoint goes through here. Three files:
 
 ---
 
-### auth/ — Token Validation
+### auth/ — Session Validation
 
-Validates incoming bearer tokens from the React frontend (Entra ID JWTs, RS256 signed).
+Validates the Dragnet ERP's session — a JWT carried in the `erp_auth` HttpOnly cookie (cookie-first; `Authorization: Bearer` header remains a fallback for tooling/tests). OrgOS never issues, signs, or sets this cookie — only the ERP backend does; OrgOS independently validates it and reads it or clears it locally.
 
-- JWKS keys fetched from Microsoft and cached 2 hours. On `kid` not found, auto-refreshes once (handles key rotation).
-- Validates `iss`, `aud`, `tid` claims. Returns `CurrentUser(oid, name, email, tenant_id, roles)`.
-- `get_current_user` — FastAPI `Depends()` used on all protected endpoints.
-- `require_compliance_lead` — additional role check; enforces `"Compliance.Lead"` or `"OrgOS.Admin"` for agent trigger endpoints.
-- `SKIP_AUTH=true` in `.env` bypasses validation entirely (dev only — returns a hardcoded admin user).
+- **`validator.py`** — JWKS keys fetched from Microsoft and cached 2 hours. On `kid` not found, auto-refreshes once (handles key rotation). Validates `iss`, `aud`, `tid` claims. Roles come from the `org_roles` claim — a comma-separated, lowercase string (e.g. `"compliance,coo,exco"`) — not the old Entra App Roles array. Returns `CurrentUser(oid, name, email, tenant_id, roles, exp)`.
+  - `get_current_user` — FastAPI `Depends()` used on all protected endpoints; reads the cookie first, header second.
+  - `require_compliance_lead` / `require_admin` — role-gate dependencies; check for `"compliance"`/`"orgos-admin"` in `org_roles`. Every router uses these — no inline role-string duplication.
+  - `SKIP_AUTH=true` in `.env` bypasses validation entirely (dev only — returns a hardcoded `orgos-admin` user, no cookie or Entra token needed).
+- **`router.py`** — `/api/auth/session` (GET validates the cookie and returns `{name, email, roles, oid, expiresOn}`; DELETE clears it locally) and `/api/auth/revoke` (POST, called by the ERP when a user's roles change — shared-secret gated via `REVOKE_SECRET`, blocks that user's next session check once). Mounted **without** the `/api/v1` prefix — these are infra/session routes, not versioned business API. See `docs.local/orgos_notes.md` for the full auth migration writeup.
+
+---
+
+### org_roles/ — Org Roles Directory
+
+`GET /api/v1/org-roles` (Compliance/OrgOS Admin only) — a read-only list of every user with an `org_roles` value set, read live from Entra ID via `graph.client.list_users_with_org_roles()`. No SharePoint list backs this; assignment happens exclusively in the Dragnet ERP admin panel.
 
 ---
 
 ### grc/ — Tier 1 GRC Registers
 
-The four core registers. All have the same pattern: schemas → service → router.
+Three core registers (the Role Register was retired — see `docs.local/orgos_notes.md`). All follow the same pattern: schemas → service → router.
 
 **Document Register** — Tracks every policy, procedure, SOP, form, and guideline. Document codes follow `DRG-[DEPT]-[TYPE]-[REF]-[YY]`. Status: Active / Under Review / Superseded / Withdrawn.
-
-**Role Register** — Maps job roles to control ownership across departments. Roles sourced from Entra ID, SeamlessHR, or manual entry. Tracks current holder (Entra OID). Unassigned roles are explicitly surfaced.
 
 **Compliance Calendar** — Statutory, licensing, certification, and regulatory obligations with due dates and authorities. Status (Overdue / Due Soon / Upcoming / Completed) is calculated from `due_date` vs today — never stored.
 
@@ -309,7 +334,11 @@ Accepts a PDF, DOCX, or TXT file and produces structured GRC data.
 
 ### agents/classifier/ — Harmonisation & Dedup
 
-Runs after extraction. Reads all Zone 1 items from the AI Review Queue, compares control statements using `variant_terms` from the Role Register, and identifies semantic duplicates. Writes decisions to Zone 2 (orphan handling) and Zone 3 (harmonisation queue).
+Runs after extraction. Two jobs (a third, role-variant dedup against the now-retired Role Register, was removed):
+1. **Near-duplicate control detection** — compares extracted `ControlStatement` values against each other and the confirmed Control Register, flags pairs above a similarity threshold.
+2. **Conflict detection** — identifies controls from different documents that define contradictory requirements for the same obligation.
+
+Writes decisions to Zone 2 (orphan/conflict handling) and Zone 3 (harmonisation queue).
 
 ---
 
@@ -327,9 +356,9 @@ Generates CDI-compliant policy documents and uploads them to SharePoint.
 
 ### agents/gap_analyzer/ — Gap Analysis Agent
 
-Reads the Control Register, Evidence Tracker, and Role Register. Builds a coverage map of which ISO 27001/9001/NDPA clauses have controls, accepted evidence, and assigned owners. For each uncovered or partially covered clause, writes a Gap Analysis item with:
+Reads the Control Register and Evidence Tracker. Builds a coverage map of which ISO 27001/9001/NDPA clauses have controls and accepted evidence. For each uncovered or partially covered clause, writes a Gap Analysis item with:
 - Severity: Critical (no control) / Major (no evidence) / Minor (evidence pending)
-- Proposed remediation: full JSON package with suggested controls, evidence types, owner roles, timeline
+- Proposed remediation: full JSON package with suggested controls, evidence types, a freely-proposed owner role name (no fixed pick-list — the Role Register that used to seed one was retired), and timeline
 
 ---
 
@@ -445,7 +474,7 @@ Browse the SharePoint Compliance document library (the configured starting folde
 
 ```
 1. POST /api/v1/agents/gap-analysis/run (Compliance Lead)
-   → Reads Control Register + Evidence Tracker + Role Register
+   → Reads Control Register + Evidence Tracker
    → Compares against full standard clause list
    → Writes Gap Analysis items (Critical/Major/Minor + remediation package)
 
@@ -590,33 +619,53 @@ Incremental indexing happens automatically — when a Zone 1 control is accepted
 
 ## 9. Authentication & Security
 
-### Frontend → Backend (Entra ID JWTs)
+OrgOS is a **Tier-1 standalone module** of the Dragnet ERP. It has no login
+page, no MSAL, and no app registration of its own — the ERP is the sole
+authority for authentication and role assignment across every Dragnet
+module. Full write-up: `docs.local/orgos_notes.md`.
 
-1. User signs in via MSAL (`loginRequest` scopes: `openid profile email OrgOS.ReadWrite`)
-2. Tokens cached in `sessionStorage`
-3. Every API call: Axios interceptor calls `acquireTokenSilent` → fresh access token with scope `api://{CLIENT_ID}/OrgOS.ReadWrite`
-4. Token attached as `Authorization: Bearer {token}`
-5. FastAPI validates token: fetches Microsoft JWKS (cached 2h), decodes RS256 JWT, validates `iss`/`aud`/`tid` claims
-6. Returns `CurrentUser(oid, name, email, roles)` — used in every protected route
+### Session flow (ERP shell → OrgOS)
 
-### Backend → Graph API (Client Credentials)
+1. User is not authenticated → OrgOS's frontend (`main.jsx`) calls `GET /api/auth/session` on its own backend; that fails, so it redirects to the ERP shell (`VITE_ERP_URL`) with `?redirect=<current-url>`.
+2. The ERP shell authenticates the user (its own concern entirely) and sets an `erp_auth` HttpOnly cookie on `.dragnet.ng`, then redirects back — no token ever appears in the URL.
+3. Back on OrgOS, `GET /api/auth/session` now succeeds — the frontend renders with `{name, email, roles, oid}` from that response.
+4. Every subsequent API call sends `credentials: "include"` (axios `withCredentials: true`) — the cookie travels automatically. There is no `Authorization` header logic anywhere in the frontend.
+5. OrgOS's own backend (`auth/validator.py`) independently validates the JWT inside that cookie: fetches Microsoft JWKS (cached 2h), decodes RS256, validates `iss`/`aud`/`tid`. Cookie is checked first; an `Authorization: Bearer` header remains a fallback for tooling/tests/direct API clients.
+6. Returns `CurrentUser(oid, name, email, tenant_id, roles, exp)` — used in every protected route via `Depends(get_current_user)`.
 
-1. Backend acquires its own token using client credentials grant (`client_id` + `client_secret`)
-2. Cached in-process, refreshed 60s before expiry
-3. On 401: token cache invalidated + one retry
-4. Never touches the user's token — separate auth flow
+**OrgOS's backend never constructs, signs, or sets the `erp_auth` cookie** — only the ERP backend does. OrgOS only ever reads it (`GET /api/auth/session`) or clears it locally (`DELETE /api/auth/session`, and defensively on validation failure).
 
-### Application Roles
+### Sign out
 
-| Role | Access |
+`logoutToShell()` (`frontend/src/auth/authBridge.js`) — clears the session locally (`DELETE /api/auth/session`) then redirects to `${VITE_ERP_URL}/logout`, ending the session across every other Dragnet module too.
+
+### Session revocation
+
+`POST /api/auth/revoke` — called by the ERP when a user's `org_roles` change. Body `{email, secret}`, `secret` must match `REVOKE_SECRET`. Adds the user to an in-memory blocklist that blocks their *next* session check once (2h auto-expiry) — the cookie itself isn't invalidated, only the following check catches it.
+
+### Backend → Graph API (Client Credentials) — unchanged
+
+1. Backend acquires its own token using client credentials grant (`client_id` + `client_secret` — now the **shared Dragnet ERP app registration's** values, see §13).
+2. Cached in-process, refreshed 60s before expiry.
+3. On 401: token cache invalidated + one retry.
+4. Completely separate from the user's session — this flow never touches the `erp_auth` cookie.
+
+### org_roles (replaces the old Entra App Roles)
+
+Roles come from the `org_roles` JWT claim — a comma-separated, lowercase string (e.g. `"compliance,coo,marketing"`) — assigned exclusively via the Dragnet ERP admin panel. OrgOS only acts on two of them; everything else is display-only (see the Org Roles directory, §5).
+
+| org_role | Access |
 |---|---|
-| `OrgOS.Admin` | Full access including agent triggers, verification, all admin operations |
-| `Compliance.Lead` | Agent triggers (extraction, gap analysis, classification) + evidence verification |
-| Standard user | Read/write registers, submit evidence, use chatbot |
+| `orgos-admin` | Full access including agent triggers, verification, all admin operations |
+| `compliance` | Agent triggers (extraction, gap analysis, classification) + evidence verification |
+| (any other value) | No special access in OrgOS — visible in the Org Roles directory only |
+| (none of the above) | Read/write registers, submit evidence, use chatbot |
+
+**OrgOS never assigns `org_roles`.** There is no write path anywhere in the codebase for it — role assignment is exclusively an ERP admin panel action.
 
 ### Development Bypass
 
-`SKIP_AUTH=true` in `.env` bypasses JWT validation. Backend returns `CurrentUser(oid="dev-bypass-oid", roles=["OrgOS.Admin"])` for every request. **Never set in production.**
+`SKIP_AUTH=true` in `.env` (with `ENVIRONMENT=development`) bypasses JWT validation on **both** `get_current_user()` and `GET /api/auth/session` — the backend returns a fixed `CurrentUser(oid="dev-bypass-oid", roles=["orgos-admin"])` / session response for every request. This means the entire app (backend *and* frontend) can boot and be fully clickable with no real Entra token, ERP instance, or cookie at all. **Never set in production.**
 
 ---
 
@@ -646,9 +695,12 @@ pip install -r requirements.txt
 
 # 3. Environment file
 cp .env.example .env
-# Edit .env — fill in TENANT_ID, CLIENT_ID, CLIENT_SECRET, SHAREPOINT_SITE_ID
+# Edit .env — fill in TENANT_ID, CLIENT_ID, CLIENT_SECRET (the SHARED Dragnet
+# ERP app registration — get these from the ERP team, not a new Azure app
+# registration), SHAREPOINT_SITE_ID, and REVOKE_SECRET (also from the ERP team)
 # Set CHAT_API_URL, EMBED_API_URL, INFERENCE_API_KEY for the LLM gateway
 # Leave List IDs as "placeholder" until SharePoint lists are provisioned
+# For pure local dev with no real ERP: set SKIP_AUTH=true — see §9
 
 # 4. Run (development)
 uvicorn main:app --reload --host 0.0.0.0 --port 8000
@@ -677,9 +729,11 @@ cd frontend
 npm install
 
 cp .env.local.example .env.local
-# Edit .env.local — fill in VITE_AZURE_CLIENT_ID, VITE_AZURE_TENANT_ID
+# Edit .env.local — fill in VITE_ERP_URL (the Dragnet ERP shell's URL,
+# from the ERP team). No Azure/MSAL values needed — OrgOS never calls
+# Entra ID directly from the frontend.
 
-npm run dev       # development: http://localhost:5173
+npm run dev       # development: http://localhost:3000 (see frontend/vite.config.js)
 
 npm run build     # production build → frontend/dist/
 ```
@@ -691,10 +745,16 @@ npm run build     # production build → frontend/dist/
 ### Backend `.env`
 
 ```bash
-# ── Microsoft Entra ID ───────────────────────────────────────────
+# ── Microsoft Entra ID — the SHARED Dragnet ERP app registration ──
+# OrgOS has no login of its own; get these three from the ERP team,
+# not a dedicated OrgOS app registration.
 TENANT_ID=                              # Azure AD directory (tenant) ID
-CLIENT_ID=                              # OrgOS app registration client ID
-CLIENT_SECRET=                          # Client secret value
+CLIENT_ID=                              # Shared ERP app registration client ID
+CLIENT_SECRET=                          # Shared ERP app registration client secret
+
+# Shared secret the ERP calls POST /api/auth/revoke with when a user's
+# org_roles change. Get from the ERP team. Empty = revocation disabled.
+REVOKE_SECRET=
 
 # ── SharePoint ───────────────────────────────────────────────────
 SHAREPOINT_SITE_ID=                     # Site ID from Graph API (see section 14)
@@ -704,8 +764,9 @@ COMPLIANCE_LIBRARY_NAME=ORGOS LIBRARY
 COMPLIANCE_STARTING_FOLDER=Policies, Procedures, Manuals, Guidelines, Frameworks, Handbook, SOP
 
 # ── SharePoint List IDs (fill after creating lists in SharePoint) ─
+# No ROLE_REGISTER_LIST_ID — the Role Register was retired entirely,
+# see docs.local/orgos_notes.md. Do not re-add it.
 DOCUMENT_REGISTER_LIST_ID=placeholder
-ROLE_REGISTER_LIST_ID=placeholder
 COMPLIANCE_CALENDAR_LIST_ID=placeholder
 CONTRACT_REGISTER_LIST_ID=placeholder
 AI_REVIEW_QUEUE_LIST_ID=placeholder
@@ -732,10 +793,12 @@ CHROMA_PERSIST_DIR=./chroma_db
 
 # ── Application ──────────────────────────────────────────────────
 ENVIRONMENT=development
-ALLOWED_ORIGINS=http://localhost:5173   # comma-separated in production
+ALLOWED_ORIGINS=http://localhost:3000   # comma-separated in production — must include
+                                         # the OrgOS frontend's real origin for the
+                                         # erp_auth cookie's CORS to work
 APP_PORT=8000
 LOG_LEVEL=DEBUG
-SKIP_AUTH=false                         # NEVER true in production
+SKIP_AUTH=false                         # true only for local dev with no real ERP — see §9
 
 # ── Graph Search (NL Search optional enhancement) ────────────────
 GRAPH_SEARCH_REGION=EUR                 # NAM | EUR | APC — match your tenant region
@@ -744,35 +807,31 @@ GRAPH_SEARCH_REGION=EUR                 # NAM | EUR | APC — match your tenant 
 ### Frontend `.env.local`
 
 ```bash
-VITE_AZURE_CLIENT_ID=                   # Same as CLIENT_ID in backend .env
-VITE_AZURE_TENANT_ID=                   # Same as TENANT_ID in backend .env
-VITE_AZURE_REDIRECT_URI=http://localhost:5173
 VITE_API_BASE_URL=http://localhost:8000
+
+# Dragnet ERP shell URL — where unauthenticated visitors are redirected to
+# sign in, and where sign-out sends them back to. Get the real value from
+# the ERP team for staging/production.
+VITE_ERP_URL=http://localhost:5173
 ```
+
+No `VITE_AZURE_*` variables — OrgOS's frontend never calls Entra ID or MSAL directly.
 
 ---
 
 ## 13. Azure App Registration
 
-One-time setup. Do this before running the app.
+**There is no OrgOS-specific app registration to create.** `TENANT_ID` / `CLIENT_ID` / `CLIENT_SECRET` above are the **shared Dragnet ERP app registration's** values — request them from the ERP team. What to confirm with them:
 
-1. **Azure Portal** → Microsoft Entra ID → App registrations → New registration
-2. Name: `OrgOS`, Account type: Single tenant, Redirect URI: `http://localhost:5173` (type: SPA)
-3. Overview page — note:
-   - **Application (client) ID** → `CLIENT_ID`
-   - **Directory (tenant) ID** → `TENANT_ID`
-4. **Certificates & secrets** → New client secret → copy the **Value** → `CLIENT_SECRET`
-5. **API permissions** → Add permission → Microsoft Graph → Application permissions:
-   - `Sites.ReadWrite.All`
-   - `User.Read.All`
-   - Click **Grant admin consent**
-6. **Expose an API** → Set Application ID URI → Add scope:
-   - Scope name: `OrgOS.ReadWrite`
-   - Who can consent: Admins and users
-7. **App roles** → Create application role → add:
-   - `OrgOS.Admin` (display name: OrgOS Administrator)
-   - `Compliance.Lead` (display name: Compliance Lead)
-8. Assign roles to users/groups in **Enterprise applications → OrgOS → Users and groups**
+1. The three values themselves (`TENANT_ID`, `CLIENT_ID`, `CLIENT_SECRET`).
+2. `REVOKE_SECRET` for `POST /api/auth/revoke`.
+3. That the shared app registration retains the Graph API application permissions OrgOS needs:
+   - `Sites.ReadWrite.All` (SharePoint list/file access)
+   - `User.Read.All` (person resolution + the Org Roles directory)
+4. OrgOS registered in the ERP admin panel as a Tier-1 module (`*.dragnet.ng` subdomain) — required for the redirect flow's origin checks to pass in production.
+5. The real `VITE_ERP_URL` for staging/production.
+
+Role assignment (`org_roles`, e.g. `orgos-admin`/`compliance`) happens exclusively in the ERP admin panel — there is nothing to configure on OrgOS's side for it. See [§9](#9-authentication--security) and `docs.local/orgos_notes.md`.
 
 ---
 
@@ -819,7 +878,6 @@ pytest -v
 
 # Specific register
 pytest tests/grc/test_document_register.py -v
-pytest tests/grc/test_role_register.py -v
 pytest tests/grc/test_compliance_calendar.py -v
 pytest tests/grc/test_contract_register.py -v
 
@@ -833,7 +891,7 @@ pytest --cov=grc --cov=graph --cov-report=term-missing
 pytest tests/test_graph_client.py::test_token_cache_hit -v
 ```
 
-**Test coverage:** Graph API token caching and error types, all four Tier 1 registers (CRUD, status calculation, person resolution, schema validation). Agent modules, review queue, lifecycle, and Tier 2+ modules have no automated tests yet.
+**Test coverage:** Graph API token caching and error types, the three remaining Tier 1 registers (CRUD, status calculation, person resolution, schema validation). Agent modules, review queue, lifecycle, and Tier 2+ modules have no automated tests yet.
 
 ---
 
@@ -849,10 +907,6 @@ python scripts/bulk_extract.py --folder "Policies"    # Single subfolder only
 python scripts/bulk_extract.py                        # All folders
 python scripts/bulk_extract.py --reset                # Clear checkpoint, start fresh
 ```
-
-### `scripts/sync_roles.py` — Role Sync
-
-Fetches current roles from Entra ID, SeamlessHR, or BitWiseFlow and syncs them into the Role Register. Sets `SourceSystem` to indicate provenance.
 
 ### `scripts/cdi_triage.py` — CDI Pre-Validation
 
@@ -883,3 +937,7 @@ These rules apply to every module and must never be broken.
 **Document codes follow the format `DRG-[DEPT]-[TYPE]-[REF]-[YY]`.** Role JD references follow `DRG-JD-[DEPT]-[CODE]-[NN]`. Evidence type codes are the 16 fixed codes from DRG-QI-REF-EVTX-01-26. No free-text alternatives.
 
 **All Graph API calls go through `graph/client.py`.** Never call `httpx` directly in routers or services for Graph operations. The client handles token acquisition, retry on 401, and exception mapping.
+
+**OrgOS never handles login, and never assigns `org_roles`.** The Dragnet ERP is the sole authority for both. OrgOS's backend only ever *reads* or *clears* the `erp_auth` cookie — never constructs or signs it. If a task seems to call for a login screen, an app registration, or a role-assignment UI inside OrgOS, that's a sign the task is misunderstood — those belong to the ERP, not here.
+
+**No SharePoint-backed Role Register.** It was retired intentionally (see `docs.local/orgos_notes.md`) — do not re-introduce `ROLE_REGISTER_LIST_ID` or a Role Register list/page. Anything that needs to know "who has what role" reads `org_roles` live from Entra ID via `graph.client.resolve_user()` / `list_users_with_org_roles()`, never from SharePoint.

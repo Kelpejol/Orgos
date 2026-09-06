@@ -356,6 +356,7 @@
 import asyncio
 import logging
 import random
+import time
 from typing import Any, Optional
 
 import httpx
@@ -450,6 +451,7 @@ async def _request(
     params: Optional[dict] = None,
     context: str = "",
     retry_on_401: bool = True,
+    extra_headers: Optional[dict] = None,
 ) -> Any:
     """
     Internal request handler with:
@@ -466,6 +468,8 @@ async def _request(
 
     for attempt in range(1, _MAX_ATTEMPTS + 1):
         headers = await _get_headers()
+        if extra_headers:
+            headers.update(extra_headers)
         try:
             response = await client.request(
                 method=method, url=url, headers=headers, json=json, params=params
@@ -476,6 +480,8 @@ async def _request(
                 logger.warning("Graph API returned 401 — refreshing token and retrying once")
                 invalidate_token_cache()
                 headers = await _get_headers()
+                if extra_headers:
+                    headers.update(extra_headers)
                 response = await client.request(
                     method=method, url=url, headers=headers, json=json, params=params
                 )
@@ -724,41 +730,103 @@ async def check_graph_connectivity() -> dict:
 _user_cache: dict = {}
 
 
+# org_roles changes more often than name/email (a role change should show up
+# without a process restart), so the cache here uses a short TTL rather than
+# being indefinite.
+_USER_CACHE_TTL = 300.0  # 5 minutes
+
+
 async def resolve_user(entra_oid: str) -> dict:
     """
-    Resolve an Entra ID OID to display name and email.
-    Calls GET /users/{oid} via Graph API.
-    Results are cached in memory for the lifetime of the process.
+    Resolve an Entra ID OID to display name, email, and org_roles in a single
+    Graph call. org_roles is read from onPremisesExtensionAttributes.
+    extensionAttribute1 — the same attribute the Dragnet ERP writes to on
+    every role change (see ERP_Backend_Architecture.md's graphRoles.service.ts,
+    which calls this "quick lookup"). Comma-separated, lowercase-normalised.
+    OrgOS never assigns org_roles itself — this is read-only, for display.
+    Results are cached in memory for a few minutes per process.
 
     Args:
         entra_oid: The Entra ID object ID of the user
 
     Returns:
-        Dict with 'display_name' and 'email' keys.
-        Returns empty strings if resolution fails — never crashes.
+        Dict with 'display_name', 'email', and 'org_roles' keys.
+        Returns empty values if resolution fails — never crashes.
     """
     if not entra_oid or entra_oid == "dev-bypass-oid":
-        return {"display_name": "Dev User", "email": "dev@dragnet.com.ng"}
+        return {"display_name": "Dev User", "email": "dev@dragnet.com.ng", "org_roles": []}
 
-    if entra_oid in _user_cache:
-        return _user_cache[entra_oid]
+    now = time.time()
+    cached = _user_cache.get(entra_oid)
+    if cached and now - cached["fetched_at"] < _USER_CACHE_TTL:
+        return cached
 
     try:
         url = f"{settings.graph_base_url}/users/{entra_oid}"
         data = await _request(
             "GET",
             url,
+            params={"$select": "displayName,mail,userPrincipalName,onPremisesExtensionAttributes"},
             context=f"Resolve user {entra_oid}",
         )
+        raw_roles = (data.get("onPremisesExtensionAttributes") or {}).get("extensionAttribute1") or ""
         result = {
             "display_name": data.get("displayName", ""),
             "email": data.get("mail") or data.get("userPrincipalName", ""),
+            "org_roles": [r.strip().lower() for r in raw_roles.split(",") if r.strip()],
+            "fetched_at": now,
         }
         _user_cache[entra_oid] = result
         return result
     except Exception as exc:
         logger.warning(f"Could not resolve user {entra_oid}: {exc}")
-        return {"display_name": "", "email": ""}
+        return {"display_name": "", "email": "", "org_roles": []}
+
+
+async def list_users_with_org_roles() -> list[dict]:
+    """
+    Lists every Entra ID user who has at least one org_role assigned, read
+    live from onPremisesExtensionAttributes.extensionAttribute1 — the same
+    attribute the Dragnet ERP writes to on every role change (see
+    ERP_Backend_Architecture.md's graphRoles.service.ts). OrgOS never
+    assigns org_roles itself — this is read-only, for display.
+
+    Filtering on a directory extension attribute is an "advanced query" in
+    Graph and requires ConsistencyLevel: eventual plus $count=true.
+    """
+    results: list[dict] = []
+    url = f"{settings.graph_base_url}/users"
+    params: Optional[dict] = {
+        "$select": "id,displayName,mail,userPrincipalName,onPremisesExtensionAttributes",
+        "$filter": "onPremisesExtensionAttributes/extensionAttribute1 ne null",
+        "$count": "true",
+        "$top": "999",
+    }
+    try:
+        while url:
+            data = await _request(
+                "GET", url, params=params,
+                extra_headers={"ConsistencyLevel": "eventual"},
+                context="List users with org_roles",
+            )
+            if not data:
+                break
+            for u in data.get("value", []):
+                raw = (u.get("onPremisesExtensionAttributes") or {}).get("extensionAttribute1") or ""
+                roles = [r.strip().lower() for r in raw.split(",") if r.strip()]
+                if not roles:
+                    continue
+                results.append({
+                    "oid": u.get("id", ""),
+                    "display_name": u.get("displayName", ""),
+                    "email": u.get("mail") or u.get("userPrincipalName", ""),
+                    "org_roles": roles,
+                })
+            url = data.get("@odata.nextLink")
+            params = None  # nextLink already carries the query string
+    except Exception as exc:
+        logger.warning(f"Could not list users with org_roles: {exc}")
+    return results
 
 
 # Simple in-memory cache for SP user lookup IDs (email → int)

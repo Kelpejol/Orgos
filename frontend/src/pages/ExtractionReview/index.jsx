@@ -774,7 +774,7 @@ const ExtractionCard = ({ item, isCompliance, onDecide, onRequestSecondReview, i
                           borderRadius: 8, marginBottom: 12, fontSize: 12,
                           color: "var(--color-text-tertiary)",
                           border: "1px dashed var(--color-border-tertiary)" }}>
-              Compliance Lead role required to make decisions.
+              Compliance role required to make decisions.
             </div>
           )}
 
@@ -947,7 +947,7 @@ export default function ExtractionReview() {
           <div style={{ marginTop: 8, padding: "8px 12px", background: "#FAEEDA",
                         borderRadius: 8, fontSize: 12, color: "#633806",
                         border: "0.5px solid #FAC775" }}>
-            View only — Compliance Lead role required to make decisions.
+            View only — Compliance role required to make decisions.
           </div>
         )}
       </div>

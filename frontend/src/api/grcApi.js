@@ -1,54 +1,24 @@
 // =============================================================================
 // api/grcApi.js — OrgOS GRC API client
 // All HTTP calls to the FastAPI backend go through this module.
-// Automatically attaches the MSAL access token to every request.
-// Depends on: axios, authConfig.js, @azure/msal-browser
+// Auth is the erp_auth HttpOnly cookie (set by the Dragnet ERP backend) — it
+// travels automatically with every request; no token handling happens here.
+// Depends on: axios
 // =============================================================================
 
 import axios from "axios";
-import { msalInstance } from "../main.jsx";
-import { apiTokenRequest } from "../authConfig.js";
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
 // =============================================================================
-//  Axios instance with auth interceptor
+//  Axios instance
 // =============================================================================
 
 const apiClient = axios.create({
   baseURL: BASE_URL,
+  withCredentials: true, // send the erp_auth cookie on every request
   headers: { "Content-Type": "application/json" },
   timeout: 1200000, // default — extraction endpoints override this per-call
-});
-
-/**
- * Request interceptor — acquires a fresh MSAL access token before every request.
- * Uses acquireTokenSilent first (no popup), falls back to acquireTokenPopup.
- */
-apiClient.interceptors.request.use(async (config) => {
-  try {
-    const accounts = msalInstance.getAllAccounts();
-    if (accounts.length === 0) {
-      throw new Error("No authenticated account found. Please log in.");
-    }
-
-    const tokenResponse = await msalInstance.acquireTokenSilent({
-      ...apiTokenRequest,
-      account: accounts[0],
-    });
-
-    config.headers.Authorization = `Bearer ${tokenResponse.accessToken}`;
-    return config;
-  } catch (error) {
-    // Silent token acquisition failed — show login popup
-    if (error.name === "InteractionRequiredAuthError") {
-      const tokenResponse =
-        await msalInstance.acquireTokenPopup(apiTokenRequest);
-      config.headers.Authorization = `Bearer ${tokenResponse.accessToken}`;
-      return config;
-    }
-    throw error;
-  }
 });
 
 /**
@@ -99,39 +69,6 @@ export const documentsApi = {
   /** @param {string} id */
   softDelete: (id) =>
     apiClient.delete(`/api/v1/grc/documents/${id}`).then((r) => r.data),
-};
-
-// =============================================================================
-//  Role Register
-// =============================================================================
-
-export const rolesApi = {
-  /** @param {{ department?: string }} params */
-  list: (params = {}) =>
-    apiClient.get("/api/v1/grc/roles", { params }).then((r) => r.data),
-
-  /** @param {string} id */
-  get: (id) => apiClient.get(`/api/v1/grc/roles/${id}`).then((r) => r.data),
-
-  /** @param {Object} role */
-  create: (role) =>
-    apiClient.post("/api/v1/grc/roles", role).then((r) => r.data),
-
-  /**
-   * @param {string} id
-   * @param {Object} updates
-   */
-  update: (id, updates) =>
-    apiClient.patch(`/api/v1/grc/roles/${id}`, updates).then((r) => r.data),
-  listUnassigned: () =>
-    apiClient.get("/api/v1/grc/roles/unassigned").then((r) => r.data),
-
-  assign: (id, holderOid) =>
-    apiClient
-      .patch(`/api/v1/grc/roles/${id}/assign`, {
-        current_holder_id: holderOid,
-      })
-      .then((r) => r.data),
 };
 
 // =============================================================================
@@ -224,7 +161,7 @@ export const contractsApi = {
 
   /**
    * Update contract lifecycle status (Terminate, Under Review, Supersede).
-   * Requires Compliance Lead role.
+   * Requires Compliance role.
    * @param {string} id
    * @param {string} lifecycleStatus — "Active" | "Under Review" | "Terminated" | "Superseded"
    */
@@ -291,7 +228,7 @@ export const nlSearchApi = {
     axios.get(`${BASE_URL}/api/v1/nl-search/health`).then(r => r.data),
 
   /**
-   * Trigger a full index rebuild (Compliance Lead only).
+   * Trigger a full index rebuild (Compliance role only).
    */
   rebuildIndex: () =>
     apiClient
@@ -310,21 +247,6 @@ export const extractorApi = {
    * @param {string} sourceDocumentCode — e.g. DRG-ISMS-POL-ACP-01-25
    */
   extractFile: async (file, sourceDocumentCode) => {
-    const { msalInstance } = await import("../main.jsx");
-    const { apiTokenRequest } = await import("../authConfig.js");
-    const accounts = msalInstance.getAllAccounts();
-    if (accounts.length === 0) throw new Error("Not authenticated");
-
-    let tokenResponse;
-    try {
-      tokenResponse = await msalInstance.acquireTokenSilent({
-        ...apiTokenRequest,
-        account: accounts[0],
-      });
-    } catch {
-      tokenResponse = await msalInstance.acquireTokenPopup(apiTokenRequest);
-    }
-
     const formData = new FormData();
     formData.append("file", file);
     formData.append("source_document_code", sourceDocumentCode);
@@ -334,7 +256,7 @@ export const extractorApi = {
       import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
     const response = await fetch(`${BASE_URL}/api/v1/agents/extract/file`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${tokenResponse.accessToken}` },
+      credentials: "include",
       body: formData,
     });
 
@@ -417,16 +339,12 @@ export const lifecycleApi = {
   aiAssessment: (id) =>
     apiClient.post(`/api/v1/lifecycle/documents/${id}/ai-assessment`),
   upload: async (id, file) => {
-    const tokenResponse = await msalInstance.acquireTokenSilent({
-      ...apiTokenRequest,
-      account: msalInstance.getAllAccounts()[0],
-    });
     const formData = new FormData();
     formData.append("file", file);
     const BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
     const response = await fetch(`${BASE}/api/v1/lifecycle/documents/${id}/upload`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${tokenResponse.accessToken}` },
+      credentials: "include",
       body: formData,
     });
     if (!response.ok) {
@@ -454,4 +372,13 @@ export const sharePointApi = {
       : `/api/v1/sharepoint/browse`;
     return apiClient.get(url).then((r) => r.data);
   },
+};
+
+// =============================================================================
+//  Org Roles — read-only directory of users and their org_roles, sourced
+//  live from Entra ID. Compliance/OrgOS Admin only.
+// =============================================================================
+
+export const orgRolesApi = {
+  list: () => apiClient.get("/api/v1/org-roles").then((r) => r.data),
 };

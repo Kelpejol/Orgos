@@ -51,23 +51,13 @@ const lifecycleApi = {
       { owner_id: ownerId, owner_name: ownerName }).then(r => r.data),
 
   upload: async (id, file) => {
-    // File upload requires multipart form — use fetch directly with MSAL token
-    const { msalInstance } = await import("../../main.jsx");
-    const { apiTokenRequest } = await import("../../authConfig.js");
-    const accounts = msalInstance.getAllAccounts();
-    if (!accounts.length) throw new Error("Not authenticated");
-    let tokenResp;
-    try {
-      tokenResp = await msalInstance.acquireTokenSilent({ ...apiTokenRequest, account: accounts[0] });
-    } catch {
-      tokenResp = await msalInstance.acquireTokenPopup(apiTokenRequest);
-    }
+    // File upload requires multipart form — use fetch directly (cookie travels automatically)
     const form = new FormData();
     form.append("file", file);
     const BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
     const resp = await fetch(`${BASE}/api/v1/lifecycle/documents/${id}/upload`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${tokenResp.accessToken}` },
+      credentials: "include",
       body: form,
     });
     if (!resp.ok) {
@@ -95,26 +85,8 @@ const lifecycleApi = {
 
 
 async function authenticatedDownload(url, filename) {
-  const { msalInstance } = await import("../../main.jsx");
-  const { apiTokenRequest } = await import("../../authConfig.js");
- 
-  const accounts = msalInstance.getAllAccounts();
-  if (!accounts.length) throw new Error("Not authenticated — please sign in.");
- 
-  let tokenResp;
-  try {
-    tokenResp = await msalInstance.acquireTokenSilent({
-      ...apiTokenRequest,
-      account: accounts[0],
-    });
-  } catch {
-    tokenResp = await msalInstance.acquireTokenPopup(apiTokenRequest);
-  }
- 
-  const resp = await fetch(url, {
-    headers: { Authorization: `Bearer ${tokenResp.accessToken}` },
-  });
- 
+  const resp = await fetch(url, { credentials: "include" });
+
   if (!resp.ok) {
     let detail = `Download failed: ${resp.status}`;
     try { detail = (await resp.json()).detail || detail; } catch { /**/ }

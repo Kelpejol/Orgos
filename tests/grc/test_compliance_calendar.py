@@ -18,7 +18,7 @@ from grc.schemas import ObligationStatus
 def override_auth():
     return CurrentUser(
         oid="test-oid", name="Test", email="test@dragnet.com.ng",
-        tenant_id="test-tenant", roles=["OrgOS.Admin"],
+        tenant_id="test-tenant", roles=["orgos-admin"],
     )
 
 app.dependency_overrides[get_current_user] = override_auth

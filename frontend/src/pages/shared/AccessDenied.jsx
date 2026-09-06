@@ -62,9 +62,9 @@ export default function AccessDenied({ pageName, requiredRole = "Compliance", on
             lineHeight: 1.5,
           }}
         >
-          If you need access to this feature, contact your OrgOS Admin to have the{" "}
+          If you need access to this feature, contact your ERP administrator to have the{" "}
           <strong>
-            {requiredRole === "Admin" ? "OrgOS.Admin" : "Compliance.Lead"}
+            {requiredRole === "Admin" ? "OrgOS Admin" : "Compliance"}
           </strong>{" "}
           role assigned to your account.
         </div>

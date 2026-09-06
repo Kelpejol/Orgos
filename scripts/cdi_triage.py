@@ -148,14 +148,6 @@ async def download_file(drive_id: str, item_id: str) -> bytes:
         return resp.content
 
 
-async def fetch_role_titles() -> list[str]:
-    try:
-        items = await get_list_items(settings.role_register_list_id, "Role Register")
-        return [i.get("fields", {}).get("Title", "") for i in items if i.get("fields", {}).get("Title")]
-    except Exception:
-        return []
-
-
 async def resolve_owner_by_email(email: str) -> tuple[str, str]:
     """
     Resolve a Microsoft 365 email to (entra_oid, display_name) via Graph API.
@@ -286,8 +278,7 @@ async def run_triage(
     try:
         print("Connecting to Compliance SharePoint...")
         site_id, drive_id = await resolve_drive()
-        role_titles        = await fetch_role_titles()
-        print(f"Connected. {len(role_titles)} roles loaded from Role Register.\n")
+        print("Connected.\n")
 
         # Resolve the owner who triggered this triage run
         owner_oid, owner_name = await resolve_owner_by_email(owner_email or "")
@@ -346,7 +337,7 @@ async def run_triage(
 
             try:
                 file_bytes = await download_file(drive_id, file_id)
-                result     = await run_cdi_check(file_bytes, filename, doc_code, role_titles)
+                result     = await run_cdi_check(file_bytes, filename, doc_code)
 
                 if result.get("error"):
                     print(f"              → ERROR: {result['error']}")

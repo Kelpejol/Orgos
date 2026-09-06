@@ -9,7 +9,7 @@
 #            version number, dates, classification. Fast, 100% reproducible.
 #            AI adds zero benefit here; do not change these to AI.
 #
-#   Stage 2  CDI-06, 07, 08, 16  (4 checks)
+#   Stage 2  CDI-06, 07, 08  (3 checks)
 #            Language quality — requires semantic understanding to avoid false
 #            positives ("management system" ≠ vague role, "may be granted" ≠
 #            aspirational, etc.).  Single consolidated Ollama call using
@@ -127,27 +127,6 @@ _VAGUE_EVIDENCE_RES: list[re.Pattern] = [
     ),
 ]
 
-# -- CDI-16 fallback ----------------------------------------------------------
-
-_ROLE_SUBJECT_RE = re.compile(
-    r'\bthe\s+([A-Z][a-zA-Z]+(?:\s+[A-Z][a-zA-Z]+)+)\s+(?:shall|must)\b'
-)
-
-_NON_ROLE_SUBJECTS = {
-    "document", "policy", "procedure", "process", "system",
-    "organization", "company", "committee", "board",
-    # Collective / audience / distribution terms — legitimately used (e.g.
-    # "Distribution: All Staff") and NOT roles that need to be in the Role
-    # Register. CDI-16 must not flag these as unregistered roles.
-    "all staff", "staff", "staff members", "all staff members",
-    "members of staff", "member of staff", "all users", "users",
-    "all employees", "employees", "all personnel", "personnel",
-    "everyone", "all", "management", "leadership", "stakeholders",
-    "team", "the team", "administration", "responsible parties",
-    "relevant staff", "third party", "third parties",
-}
-
-
 # =============================================================================
 #  Check result builders
 # =============================================================================
@@ -161,7 +140,7 @@ _STRUCTURAL_CHECKS = {
 }
 # Language checks whose replacement needs a human decision (which role? which
 # evidence code?) before it becomes an exact swap.
-_CHOICE_CHECKS = {"CDI-07", "CDI-08", "CDI-16"}
+_CHOICE_CHECKS = {"CDI-07", "CDI-08"}
 
 
 def _classify_fixable(check_id: str, find: str, needs_choice: bool) -> str:
@@ -468,7 +447,7 @@ def check_05_responsibilities_section(text: str) -> dict:
         return _fail(
             "CDI-05", "Responsibilities section",
             "No Responsibilities section found.",
-            proposed_fix="Add a Responsibilities section assigning each control to a named Role Register title.",
+            proposed_fix="Add a Responsibilities section assigning each control to a named role.",
             fix_source="Document Creation Standards §2",
         )
     return _pass("CDI-05", "Responsibilities section")
@@ -551,7 +530,7 @@ def check_12_owner_identified(text: str) -> dict:
         return _fail(
             "CDI-12", "Document owner identified",
             "No document owner identified in the document metadata.",
-            proposed_fix="Add an owner field to the cover page specifying the role responsible. Must be a Role Register title.",
+            proposed_fix="Add an owner field to the cover page specifying the role responsible.",
             fix_source="Document Creation Standards §4",
         )
     return _pass("CDI-12", "Document owner identified")
@@ -628,12 +607,7 @@ def check_15_version_number(text: str) -> dict:
 #  Fallback: improved regex patterns used when Ollama is unavailable.
 # =============================================================================
 
-def _build_ai_prompt(text: str, role_register_titles: list[str]) -> str:
-    roles_section = (
-        "\n".join(f"  - {r}" for r in role_register_titles)
-        if role_register_titles
-        else "  (Role Register is empty — skip CDI-16)"
-    )
+def _build_ai_prompt(text: str) -> str:
     # Truncate long documents for the AI call
     text_for_ai = (
         text[:_AI_MAX_TEXT_CHARS] + "\n\n[... document truncated for length ...]"
@@ -641,12 +615,9 @@ def _build_ai_prompt(text: str, role_register_titles: list[str]) -> str:
         else text
     )
     return f"""You are a CDI (Controlled Document Interface) compliance checker for Dragnet Solutions Limited.
-Analyse the document text and identify violations of four quality rules.
+Analyse the document text and identify violations of three quality rules.
 Be PRECISE — only flag genuine violations. False positives damage trust in this tool.
 Return ONLY valid JSON, nothing else.
-
-ROLE REGISTER — the only permitted role titles for obligation statements:
-{roles_section}
 
 === RULE CDI-06: ASPIRATIONAL LANGUAGE ===
 Obligation statements must use directive language.
@@ -669,7 +640,7 @@ Do NOT flag:
 - Flag "may" only when it expresses optionality or uncertainty ("controls may be reviewed" = aspirational)
 
 === RULE CDI-07: VAGUE ROLE REFERENCES ===
-Obligation statements must name a specific role from the Role Register, not a generic group.
+Obligation statements must name a specific role, not a generic group.
 
 VAGUE (violation when used as the subject of an obligation):
 management, staff, employees, personnel, the team, administration,
@@ -687,7 +658,8 @@ Flag ONLY when the vague term IS the grammatical subject performing an obligatio
   OK:  "...information security management system...", "...risk management framework..."
   OK:  "...as part of the change management process..."
 
-For each violation, suggest the most relevant replacement from the Role Register.
+For each violation, suggest the most specific role name that plausibly holds this
+responsibility, based on context in the document (e.g. department mentioned nearby).
 
 === RULE CDI-08: VAGUE EVIDENCE REFERENCES ===
 Statements requiring evidence/records must specify an Evidence Taxonomy type code.
@@ -698,15 +670,6 @@ BAD: "records shall be maintained", "logs must be kept", "evidence shall be reta
 GOOD: "Evidence: REV — signed quarterly access review. Source: SharePoint. Frequency: quarterly."
 
 Flag lines that vaguely require evidence to be collected/maintained/retained WITHOUT specifying a code.
-
-=== RULE CDI-16: UNREGISTERED ROLE REFERENCES ===
-Named roles used in obligation statements must exist in the Role Register above.
-Only check roles used in obligations (not just mentioned in passing).
-A partial match counts as registered ("ISMS Lead (Acting)" matches "ISMS Lead" in the register).
-Skip this check if the Role Register is empty.
-Do NOT flag collective, audience or distribution terms — they are legitimate and
-are not roles: "All Staff", "staff", "all users", "all employees", "personnel",
-"everyone", "management", "leadership", "stakeholders", "the team", "third parties".
 
 === HOW TO PROPOSE A FIX (READ CAREFULLY — THIS DRIVES AN AUTOMATED EDIT) ===
 Your fix is applied to the real .docx by a deterministic find-and-replace. So it
@@ -744,19 +707,13 @@ Return ONLY this exact JSON structure. No preamble, no explanation, no markdown.
   "cdi_07": {{
     "passed": true,
     "findings": [
-      {{"anchor": "<verbatim sentence>", "term": "<vague term>", "find": "<verbatim minimal substring, e.g. the vague term>", "replace": "<a Role Register title>"}}
+      {{"anchor": "<verbatim sentence>", "term": "<vague term>", "find": "<verbatim minimal substring, e.g. the vague term>", "replace": "<a specific role name>"}}
     ]
   }},
   "cdi_08": {{
     "passed": true,
     "findings": [
       {{"anchor": "<verbatim sentence>", "find": "<verbatim minimal substring>", "replace": "Evidence: [TYPE_CODE] — [description]. Source: [system]. Frequency: [period]."}}
-    ]
-  }},
-  "cdi_16": {{
-    "passed": true,
-    "findings": [
-      {{"role": "<unregistered role name>", "anchor": "<verbatim sentence>", "find": "<verbatim role name as written>", "replace": "<a registered Role Register title>"}}
     ]
   }}
 }}
@@ -790,16 +747,13 @@ def _parse_llm_json(raw: str) -> Optional[dict]:
     return None
 
 
-async def _call_ollama_language_checks(
-    text: str,
-    role_register_titles: list[str],
-) -> Optional[dict]:
+async def _call_ollama_language_checks(text: str) -> Optional[dict]:
     """
-    Single Ollama call for CDI-06/07/08/16.
+    Single Ollama call for CDI-06/07/08.
     Returns parsed dict or None (triggers fallback).
     qwen2.5:7b at temperature=0 — deterministic, semantic understanding.
     """
-    prompt = _build_ai_prompt(text, role_register_titles)
+    prompt = _build_ai_prompt(text)
     try:
         raw = await llm_generate(
             prompt,
@@ -815,7 +769,7 @@ async def _call_ollama_language_checks(
         if result is None:
             logger.warning("CDI AI check: unparseable JSON from LLM")
             return None
-        if not all(k in result for k in ("cdi_06", "cdi_07", "cdi_08", "cdi_16")):
+        if not all(k in result for k in ("cdi_06", "cdi_07", "cdi_08")):
             logger.warning("CDI AI check: response missing expected keys")
             return None
         return result
@@ -849,13 +803,9 @@ def _verbatim_find(find: str, anchor: str) -> str:
     return ""
 
 
-def _ai_result_to_checks(
-    ai: dict,
-    role_register_titles: list[str],
-) -> list[dict]:
+def _ai_result_to_checks(ai: dict) -> list[dict]:
     """Convert the structured AI response into standard check result dicts."""
     checks: list[dict] = []
-    suggested = role_register_titles[0] if role_register_titles else "ISMS Lead"
 
     # CDI-06
     findings_06 = ai.get("cdi_06", {}).get("findings") or []
@@ -911,36 +861,6 @@ def _ai_result_to_checks(
     # else:
     #     checks.append(_pass("CDI-08", "Vague evidence reference"))
 
-    # CDI-16
-    findings_16 = ai.get("cdi_16", {}).get("findings") or []
-    # Drop collective/audience terms the LLM may return ("All Staff", etc.) —
-    # these are legitimate and not roles that belong in the Role Register.
-    findings_16 = [
-        f for f in findings_16
-        if (f.get("role", "") or "").lower().strip() not in _NON_ROLE_SUBJECTS
-    ]
-    if findings_16:
-        for f in findings_16[:3]:
-            role = f.get("role", "unknown role")
-            anchor = str(f.get("anchor") or f.get("text") or "")[:240]
-            find = _verbatim_find(str(f.get("find", "") or role), anchor)
-            replace = str(f.get("replace") or f.get("fix", ""))[:300]
-            checks.append(_fail(
-                "CDI-16", "Unregistered role reference",
-                f"'{role}' is used in an obligation but is not in the Role Register.",
-                proposed_fix=(f"Replace “{find}” with a registered role title."
-                              if find else
-                              f"Add '{role}' to the Role Register, or replace with a registered title."),
-                fix_source="Role Register cross-reference",
-                confidence=75,
-                anchor=anchor, find=find, replace=replace,
-                needs_choice=True, choices=list(role_register_titles),
-            ))
-    elif role_register_titles:
-        checks.append(_pass("CDI-16", "Role Register alignment"))
-    else:
-        checks.append(_pass("CDI-16", "Role Register alignment (skipped — register empty)"))
-
     return checks
 
 
@@ -975,10 +895,9 @@ def _fallback_cdi_06(text: str) -> list[dict]:
     return failures[:5]
 
 
-def _fallback_cdi_07(text: str, role_register_titles: list[str]) -> list[dict]:
+def _fallback_cdi_07(text: str) -> list[dict]:
     failures: list[dict] = []
     seen: set[str] = set()
-    suggested = role_register_titles[0] if role_register_titles else "ISMS Lead"
     for line in text.split("\n"):
         s = line.strip()
         if len(s) < 15 or s in seen:
@@ -994,10 +913,10 @@ def _fallback_cdi_07(text: str, role_register_titles: list[str]) -> list[dict]:
             seen.add(s)
             failures.append(_fail(
                 "CDI-07", "Vague role reference",
-                f"Vague term '{term}' as subject of an obligation — use a Role Register title.",
+                f"Vague term '{term}' as subject of an obligation — use a specific role name.",
                 current_text=s[:200],
-                proposed_fix=f"Replace '{term}' with a named role, e.g. '{suggested}'.",
-                fix_source="Role Register + Document Creation Standards §5.2",
+                proposed_fix=f"Replace '{term}' with a specific, named role.",
+                fix_source="Document Creation Standards §5.2",
                 confidence=80,
             ))
             break
@@ -1027,36 +946,7 @@ def _fallback_cdi_08(text: str) -> list[dict]:
     return failures[:5]
 
 
-def _fallback_cdi_16(text: str, role_register_titles: list[str]) -> list[dict]:
-    if not role_register_titles:
-        return []
-    role_titles_lower = {r.lower().strip() for r in role_register_titles}
-    failures: list[dict] = []
-    seen: set[str] = set()
-    for line in text.split("\n"):
-        for match in _ROLE_SUBJECT_RE.finditer(line):
-            extracted = match.group(1).strip()
-            el = extracted.lower()
-            if el in seen or el in _NON_ROLE_SUBJECTS:
-                continue
-            if not any(el == r or el in r or r in el for r in role_titles_lower):
-                seen.add(el)
-                failures.append(_fail(
-                    "CDI-16", "Unregistered role reference",
-                    f"'{extracted}' used in an obligation but not found in the Role Register.",
-                    proposed_fix=f"Replace '{extracted}' with a registered Role Register title, or add it to the register.",
-                    fix_source="Role Register cross-reference",
-                    confidence=62,
-                    anchor=line.strip()[:240], find=extracted, replace="",
-                    needs_choice=True, choices=list(role_register_titles),
-                ))
-    return failures[:3]
-
-
-def _run_fallback_language_checks(
-    text: str,
-    role_register_titles: list[str],
-) -> list[dict]:
+def _run_fallback_language_checks(text: str) -> list[dict]:
     """Run pattern-based language checks. Used when Ollama is unavailable."""
     checks: list[dict] = []
 
@@ -1064,19 +954,11 @@ def _run_fallback_language_checks(
     checks.extend(f06) if f06 else checks.append(_pass("CDI-06", "Aspirational language"))
 
     # CDI-07 & CDI-08 vague checks DISABLED for now — re-enable by uncommenting.
-    # f07 = _fallback_cdi_07(text, role_register_titles)
+    # f07 = _fallback_cdi_07(text)
     # checks.extend(f07) if f07 else checks.append(_pass("CDI-07", "Vague role reference"))
     #
     # f08 = _fallback_cdi_08(text)
     # checks.extend(f08) if f08 else checks.append(_pass("CDI-08", "Vague evidence reference"))
-
-    f16 = _fallback_cdi_16(text, role_register_titles)
-    if f16:
-        checks.extend(f16)
-    elif role_register_titles:
-        checks.append(_pass("CDI-16", "Role Register alignment"))
-    else:
-        checks.append(_pass("CDI-16", "Role Register alignment (skipped — register empty)"))
 
     return checks
 
@@ -1145,20 +1027,17 @@ async def run_cdi_check(
     file_bytes: bytes,
     filename: str,
     doc_code: str = "",
-    role_register_titles: Optional[list[str]] = None,
 ) -> dict:
     """
-    Run all 16 CDI checks against a document.
+    Run all CDI checks against a document.
 
     Checks CDI-01..05 and CDI-09..15 are deterministic (rules/regex).
-    Checks CDI-06, 07, 08, 16 use a single Ollama call (qwen2.5:7b, temp=0)
+    Checks CDI-06, 07, 08 use a single Ollama call (qwen2.5:7b, temp=0)
     for semantic accuracy, falling back to enhanced regex if Ollama is down.
 
     Returns a structured report with PASS/FAIL per check and proposed fixes.
     Every FAIL includes proposed_fix, current_text, fix_source, confidence.
     """
-    role_register_titles = role_register_titles or []
-
     try:
         text = extract_text(file_bytes, filename)
     except Exception as exc:
@@ -1197,15 +1076,15 @@ async def run_cdi_check(
     checks.append(check_05_responsibilities_section(text))
 
     # ── Stage 2: Language quality — try AI, fall back to patterns ─────────────
-    ai_result = await _call_ollama_language_checks(text, role_register_titles)
+    ai_result = await _call_ollama_language_checks(text)
     used_ai = ai_result is not None
 
     if used_ai:
         logger.info("CDI language checks: using AI (Ollama)")
-        language_checks = _ai_result_to_checks(ai_result, role_register_titles)
+        language_checks = _ai_result_to_checks(ai_result)
     else:
         logger.info("CDI language checks: Ollama unavailable — using pattern fallback")
-        language_checks = _run_fallback_language_checks(text, role_register_titles)
+        language_checks = _run_fallback_language_checks(text)
 
     checks.extend(language_checks)
 

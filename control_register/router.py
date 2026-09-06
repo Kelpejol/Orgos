@@ -2,10 +2,11 @@
 # control_register/router.py
 # GET  /api/v1/controls              — list all controls
 # GET  /api/v1/controls/{id}         — get single control
-# POST /api/v1/queue/items/{id}/accept-control  — Zone 1 accept cascade
 # POST /api/v1/queue/items/{id}/reject          — Zone 1 reject
-# POST /api/v1/queue/items/{id}/edit-accept     — Zone 1 edit and accept
-# Per DRG-QI-REF-DINT-01-26 Section 4.1 cascade spec
+# POST /api/v1/queue/items/{id}/request-second-review
+# The live Zone 1 accept cascade is review_queue/router.py's
+# PATCH /api/v1/queue/items/{id}/decide — this file's own accept-control
+# endpoint was dead/unused code and has been removed.
 # =============================================================================
 
 import logging
@@ -15,7 +16,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
-from auth.validator import CurrentUser, get_current_user
+from auth.validator import CurrentUser, get_current_user, require_compliance_lead
 from config import MIN_RATIONALE_CHARS, settings
 from graph.client import (
     create_list_item,
@@ -30,17 +31,13 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["Control Register"])
 
 _CR_LIST_NAME  = "Control Register"
-_EVD_LIST_NAME = "Evidence Tracker"
 _LOG_LIST_NAME = "Audit Log"
 _Q_LIST_NAME   = "AI Review Queue"
-_RR_LIST_NAME  = "Role Register"
 
 
 def _cr_list_id()  -> str: return settings.control_register_list_id
-def _evd_list_id() -> str: return settings.evidence_tracker_list_id
 def _log_list_id() -> str: return settings.audit_log_list_id
 def _q_list_id()   -> str: return settings.ai_review_queue_list_id
-def _rr_list_id()  -> str: return settings.role_register_list_id
 
 
 def _handle(exc: Exception, ctx: str):
@@ -78,67 +75,12 @@ def _sp_to_control(item: dict) -> dict:
 #  Control Register endpoints
 # =============================================================================
 
-async def _role_holder_map() -> dict[str, str]:
-    """Return normalised role title -> current holder Entra ID."""
-    try:
-        roles = await get_list_items(_rr_list_id(), _RR_LIST_NAME)
-    except Exception as exc:
-        logger.warning(f"Could not fetch Role Register for control owner sync: {exc}")
-        return {}
-
-    holders: dict[str, str] = {}
-    for role in roles:
-        fields = role.get("fields", {})
-        title = fields.get("Title", "")
-        if not title:
-            continue
-        holders[title.strip().lower()] = fields.get("CurrentHolderEntraId", "") or ""
-    return holders
-
-
-async def _sync_control_owner_statuses(items: list[dict]) -> list[dict]:
-    """
-    Repair stale Control Register ownership status after role harmonisation.
-    If OwnerRole points to an assigned Role Register entry, the control must be Active.
-    """
-    holders = await _role_holder_map()
-    if not holders:
-        return items
-
-    synced: list[dict] = []
-    for item in items:
-        fields = dict(item.get("fields", {}))
-        owner_role = fields.get("OwnerRole", "")
-        if not owner_role:
-            synced.append(item)
-            continue
-
-        holder_oid = holders.get(owner_role.strip().lower(), "")
-        expected_status = "Active" if holder_oid else "Blocked"
-        updates = {}
-        if fields.get("OwnerEntraId", "") != holder_oid:
-            updates["OwnerEntraId"] = holder_oid
-        if fields.get("Status", "") != expected_status:
-            updates["Status"] = expected_status
-
-        if updates:
-            try:
-                await update_list_item(_cr_list_id(), _CR_LIST_NAME, str(item["id"]), updates)
-                fields.update(updates)
-                item = {**item, "fields": fields}
-            except Exception as exc:
-                logger.warning(f"Could not sync owner status for control {item.get('id')}: {exc}")
-
-        synced.append(item)
-    return synced
-
 @router.get("/api/v1/controls")
 async def list_controls(
     user: CurrentUser = Depends(get_current_user),
 ) -> list[dict]:
     try:
         items = await get_list_items(_cr_list_id(), _CR_LIST_NAME)
-        items = await _sync_control_owner_statuses(items)
         controls = [_sp_to_control(i) for i in items]
         controls.sort(key=lambda c: c["created"], reverse=True)
         return controls
@@ -153,7 +95,6 @@ async def get_control(
 ) -> dict:
     try:
         item = await get_list_item(_cr_list_id(), _CR_LIST_NAME, item_id)
-        item = (await _sync_control_owner_statuses([item]))[0]
         return _sp_to_control(item)
     except Exception as exc:
         _handle(exc, f"get control {item_id}")
@@ -162,22 +103,6 @@ async def get_control(
 # =============================================================================
 #  Decision cascade schemas
 # =============================================================================
-
-class AcceptControl(BaseModel):
-    rationale: str
-    # Optional edits — if provided these override the AI-extracted values
-    control_statement: Optional[str] = None
-    control_type:      Optional[str] = None
-    iso_clause:        Optional[str] = None
-    owner_role:        Optional[str] = None
-    risk_implication:  Optional[str] = None
-    escalation_note:   Optional[str] = None
-    evidence_type:          Optional[str] = None
-    evidence_description:   Optional[str] = None
-    evidence_source_system: Optional[str] = None
-    evidence_format:        Optional[str] = None
-    evidence_frequency:     Optional[str] = None
-
 
 class RejectItem(BaseModel):
     rationale:   str
@@ -300,296 +225,6 @@ async def _mark_queue_cascade_failed(
     )
 
 
-async def _resolve_owner_entra_id(owner_role: str) -> str:
-    """
-    Look up the current holder of a role in the Role Register.
-    Returns the Entra ID OID of the current holder, or empty string if unassigned.
-    """
-    try:
-        from config import settings as s
-        items = await get_list_items(
-            s.role_register_list_id,
-            "Role Register",
-        )
-        for item in items:
-            f = item.get("fields", {})
-            title = f.get("Title", "").strip().lower()
-            if title == owner_role.strip().lower():
-                return f.get("CurrentHolderEntraId", "")
-        return ""
-    except Exception as exc:
-        logger.warning(f"Could not resolve owner for role '{owner_role}': {exc}")
-        return ""
-
-
-# =============================================================================
-#  Zone 1 — Accept Control (full cascade per DINT 4.1)
-# =============================================================================
-
-@router.post("/api/v1/queue/items/{item_id}/accept-control")
-async def accept_control(
-    item_id: str,
-    body: AcceptControl,
-    user: CurrentUser = Depends(get_current_user),
-) -> dict:
-    """
-    Zone 1 Accept cascade — per DRG-QI-REF-DINT-01-26 Section 4.1.
-    Steps:
-    1. Validate rationale (min 10 chars)
-    2. Fetch queue item
-    3. Resolve owner via Role Register
-    4. Create Control Register entry
-    5. Create Evidence Tracker entry linked to control
-    6. Update queue item status to Accepted
-    7. Write audit log
-    8. Return created control
-    """
-    # Permission check
-    if "Compliance.Lead" not in user.roles and "OrgOS.Admin" not in user.roles:
-        raise HTTPException(
-            status_code=403,
-            detail="Compliance Lead or OrgOS Admin role required.",
-        )
-
-    if len(body.rationale.strip()) < MIN_RATIONALE_CHARS:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Rationale must be at least {MIN_RATIONALE_CHARS} characters.",
-        )
-
-    try:
-        # Step 1 — fetch queue item
-        q_fields = await _get_queue_item(item_id)
-
-        # "Blocked" = a previous cascade failed (DINT §7.5) — retry is allowed.
-        if q_fields.get("ReviewStatus") not in (None, "", "Pending Review", "Blocked"):
-            raise HTTPException(
-                status_code=409,
-                detail=f"Item has already been reviewed: {q_fields.get('ReviewStatus')}",
-            )
-
-        # Use edited values if provided, otherwise use AI-extracted values
-        control_statement = body.control_statement or q_fields.get("ControlStatement", "")
-        control_type      = body.control_type      or q_fields.get("ControlType", "")
-        iso_clause        = body.iso_clause        or q_fields.get("ISOClause", "")
-        owner_role        = body.owner_role        or q_fields.get("ProposedOwnerRole", "")
-        risk_implication  = body.risk_implication  or q_fields.get("RiskStatement", "")
-        escalation_note   = body.escalation_note   or ""
-        source_document   = q_fields.get("SourceDocumentCode", "")
-        source_clause     = q_fields.get("SourceClause", "")
-        confidence        = float(q_fields.get("ConfidenceScore") or 0)
-
-        if not control_statement:
-            raise HTTPException(
-                status_code=422,
-                detail="Cannot accept — no control statement found in queue item.",
-            )
-
-        # Step 2 — resolve owner via Role Register
-        owner_oid = await _resolve_owner_entra_id(owner_role)
-        control_status = "Active" if owner_oid else "Blocked"
-        if not owner_oid:
-            logger.warning(
-                f"Owner role '{owner_role}' not found in Role Register — "
-                f"control will be created as Blocked."
-            )
-
-        # Step 3 — create Control Register entry
-        control_fields = {
-            "Title":            control_statement[:255],
-            "ControlStatement": control_statement,
-            "ControlType":      control_type,
-            "SourceDocument":   source_document,
-            "SourceClause":     source_clause,
-            "ISOClause":        iso_clause,
-            "OwnerRole":        owner_role,
-            "OwnerEntraId":     owner_oid,
-            "RiskImplication":  risk_implication,
-            "Status":           control_status,
-            "ConfidenceScore":  confidence,
-            "QueueItemId":      item_id,
-        }
-        if escalation_note:
-            control_fields["EscalationNote"] = escalation_note
-
-        control_item = await create_list_item(
-            _cr_list_id(), _CR_LIST_NAME, control_fields
-        )
-        control_id = str(control_item["id"])
-        logger.info(f"Control Register entry created: {control_id}")
-
-        # Step 4 — create Evidence Tracker entry (if evidence fields present)
-        evd_id = ""
-        evd_type   = body.evidence_type          or q_fields.get("EvidenceType", "")
-        evd_desc   = body.evidence_description   or q_fields.get("EvidenceDescription", "")
-        evd_sys    = body.evidence_source_system or q_fields.get("EvidenceSourceSystem", "")
-        evd_format = body.evidence_format        or q_fields.get("EvidenceFormat", "")
-        evd_freq   = body.evidence_frequency     or q_fields.get("EvidenceFrequency", "")
-        evd_method = q_fields.get("EvidenceCollectionMethod", "")
-        evd_owner  = q_fields.get("EvidenceOwnerRole", "") or owner_role
-        evd_crit   = q_fields.get("EvidenceValidationCriteria", "")
-        is_edit_accept = any([
-            body.control_statement,
-            body.control_type,
-            body.iso_clause,
-            body.owner_role,
-            body.risk_implication,
-            body.escalation_note,
-            body.evidence_type,
-            body.evidence_description,
-            body.evidence_source_system,
-            body.evidence_format,
-            body.evidence_frequency,
-        ])
-
-        if evd_type:
-            try:
-                evd_owner_oid = await _resolve_owner_entra_id(evd_owner)
-                evd_title = evd_desc[:255] if evd_desc else f"Evidence for: {control_statement[:200]}"
-                evd_fields = {
-                    "Title":               evd_title,
-                    "EvidenceDescription": evd_desc,
-                    "EvidenceType":        evd_type,
-                    "SourceSystem":        evd_sys,
-                    "EvidenceFormat":      evd_format,
-                    "Frequency":           evd_freq,
-                    "CollectionMethod":    evd_method,
-                    "OwnerRole":           evd_owner,
-                    "OwnerEntraId":        evd_owner_oid,
-                    "ValidationCriteria":  evd_crit,
-                    "Status":              "Pending",
-                    "LinkedControlId":     control_id,
-                }
-                evd_item = await create_list_item(
-                    _evd_list_id(), _EVD_LIST_NAME, evd_fields
-                )
-                evd_id = str(evd_item["id"])
-                logger.info(f"Evidence Tracker entry created: {evd_id}")
-            except Exception as exc:
-                logger.exception(f"Evidence Tracker cascade step failed for queue item {item_id}")
-                # Compensate — withdraw the just-created control so the
-                # registers don't hold a half-created chain.
-                completed = [f"Control Register: {control_id}"]
-                try:
-                    await update_list_item(_cr_list_id(), _CR_LIST_NAME, control_id, {
-                        "Status": "Withdrawn",
-                    })
-                    completed.append(f"Control Register {control_id}: rolled back (Withdrawn)")
-                except Exception as undo_exc:
-                    logger.error(f"Rollback of control {control_id} also failed: {undo_exc}")
-                await _mark_queue_cascade_failed(
-                    item_id, q_fields,
-                    "Edit and Accept" if is_edit_accept else "Accept",
-                    body.rationale, user,
-                    step="Evidence Tracker", error=exc, completed=completed,
-                )
-                raise HTTPException(
-                    status_code=502,
-                    detail=(
-                        "Cascade failed at step 'Evidence Tracker'. The control was rolled back "
-                        "and the queue item is marked Blocked — you can retry the decision."
-                    ),
-                )
-        else:
-            logger.info(
-                f"No evidence type on queue item {item_id} — "
-                "Evidence Tracker entry skipped."
-            )
-
-        # Step 5 — update queue item to Accepted
-        cascade_summary = (
-            f"Control Register: {control_id}"
-            + (f" | Evidence Tracker: {evd_id}" if evd_id else "")
-            + (f" | Status: Blocked — owner '{owner_role}' unassigned" if control_status == "Blocked" else "")
-        )
-
-        queue_updates = {
-            "ReviewStatus":    "Accepted",
-            "Decision":        "Edit and Accept" if is_edit_accept else "Accept",
-            "DecisionRationale": body.rationale,
-            "ReviewedByEntraId": user.oid,
-            "CascadeResult":   cascade_summary,
-        }
-        edited_field_updates = {
-            "ControlStatement": body.control_statement,
-            "ControlType": body.control_type,
-            "ISOClause": body.iso_clause,
-            "ProposedOwnerRole": body.owner_role,
-            "RiskStatement": body.risk_implication,
-            "EvidenceType": body.evidence_type,
-            "EvidenceDescription": body.evidence_description,
-            "EvidenceSourceSystem": body.evidence_source_system,
-            "EvidenceFormat": body.evidence_format,
-            "EvidenceFrequency": body.evidence_frequency,
-        }
-        queue_updates.update({
-            field: value
-            for field, value in edited_field_updates.items()
-            if value
-        })
-        if control_type and evd_type:
-            queue_updates["CompletenessFlag"] = "COMPLETE"
-            queue_updates["DeficiencyReason"] = ""
-            queue_updates["EvidenceUndefined"] = False
-
-        try:
-            await update_list_item(_q_list_id(), _Q_LIST_NAME, item_id, queue_updates)
-        except Exception as exc:
-            # Registers were written but the queue item still looks undecided —
-            # record the inconsistency so it can be repaired, then fail loudly.
-            logger.exception(f"Queue update failed after cascade for item {item_id}")
-            await _write_audit_log(
-                reviewer=user,
-                item_id=item_id,
-                item_type=q_fields.get("ItemType", "Extraction"),
-                zone="1",
-                ai_confidence=confidence,
-                decision=("Edit and Accept" if is_edit_accept else "Accept") + " (queue update failed)",
-                rationale=body.rationale,
-                cascade_result=f"{cascade_summary} | QUEUE UPDATE FAILED: {exc}",
-                state_from=q_fields.get("ReviewStatus") or "Pending Review",
-                state_to="Pending Review (stale)",
-            )
-            raise HTTPException(
-                status_code=502,
-                detail=(
-                    f"The control ({control_id}) and evidence were created, but the queue item "
-                    "could not be marked Accepted. Do NOT accept it again — refresh and check "
-                    "the Audit Log, or ask the System Admin to reconcile."
-                ),
-            )
-
-        # Step 6 — write audit log
-        await _write_audit_log(
-            reviewer=user,
-            item_id=item_id,
-            item_type=q_fields.get("ItemType", "Extraction"),
-            zone="1",
-            ai_confidence=confidence,
-            decision="Edit and Accept" if is_edit_accept else "Accept",
-            rationale=body.rationale,
-            cascade_result=cascade_summary,
-            state_from="Pending Review",
-            state_to="Accepted",
-        )
-
-        return {
-            "status":      "accepted",
-            "control_id":  control_id,
-            "evidence_id": evd_id,
-            "control_status": control_status,
-            "message": (
-                "Control created and is Active." if control_status == "Active"
-                else f"Control created but BLOCKED — role '{owner_role}' is unassigned in the Role Register. Assign the role to activate."
-            ),
-        }
-
-    except HTTPException:
-        raise
-    except Exception as exc:
-        _handle(exc, f"accept control {item_id}")
-
-
 # =============================================================================
 #  Zone 1 — Reject / Mark False Positive
 # =============================================================================
@@ -598,12 +233,9 @@ async def accept_control(
 async def reject_item(
     item_id: str,
     body: RejectItem,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(require_compliance_lead),
 ) -> dict:
     """Reject a queue item or mark it as a false positive."""
-    if "Compliance.Lead" not in user.roles and "OrgOS.Admin" not in user.roles:
-        raise HTTPException(status_code=403, detail="Compliance Lead or OrgOS Admin required.")
-
     if len(body.rationale.strip()) < MIN_RATIONALE_CHARS:
         raise HTTPException(status_code=422, detail=f"Rationale must be at least {MIN_RATIONALE_CHARS} characters.")
 
@@ -651,11 +283,8 @@ async def reject_item(
 async def request_second_review(
     item_id: str,
     body: RequestSecondReview,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(require_compliance_lead),
 ) -> dict:
-    if "Compliance.Lead" not in user.roles and "OrgOS.Admin" not in user.roles:
-        raise HTTPException(status_code=403, detail="Compliance Lead or OrgOS Admin required.")
-
     if len(body.rationale.strip()) < MIN_RATIONALE_CHARS:
         raise HTTPException(status_code=422, detail=f"Rationale must be at least {MIN_RATIONALE_CHARS} characters.")
 

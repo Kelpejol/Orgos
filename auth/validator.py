@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 import httpx
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
 
@@ -20,7 +20,13 @@ from graph.exceptions import GraphAuthError
 
 logger = logging.getLogger(__name__)
 
+# The two org_roles values that matter to OrgOS, assigned via the Dragnet ERP
+# admin panel and carried in the org_roles JWT claim (comma-separated, lowercase).
+ROLE_ADMIN = "orgos-admin"
+ROLE_COMPLIANCE = "compliance"
+
 # HTTP Bearer scheme — extracts token from Authorization: Bearer <token>
+# (fallback transport; the erp_auth cookie is the primary one — see get_current_user)
 _bearer_scheme = HTTPBearer(auto_error=False)
 
 # JWKS cache — Microsoft rotates keys infrequently; refresh every hour
@@ -31,18 +37,24 @@ _jwks_cache: dict = {
 }
 
 
+def _normalize_roles(raw: str) -> list[str]:
+    """Parse the org_roles claim: a comma-separated, lowercase-normalised string."""
+    return [r.strip().lower() for r in (raw or "").split(",") if r.strip()]
+
+
 @dataclass
 class CurrentUser:
     """
     Represents the authenticated Dragnet staff member.
-    Populated from validated Entra ID token claims.
+    Populated from a validated Dragnet ERP session token's claims.
     """
 
     oid: str         # Entra ID object ID — use this as the stable user identifier
     name: str        # Display name (e.g. "Bobby Ikazoboh")
     email: str       # UPN / email (e.g. "bobby@dragnet.com.ng")
     tenant_id: str   # Tenant ID — confirms this is a Dragnet account
-    roles: list[str] # App roles assigned in Entra ID (e.g. ["Compliance.Lead"])
+    roles: list[str] # org_roles assigned via the ERP admin panel (e.g. ["compliance"])
+    exp: int = 0     # Token expiry (unix seconds) — used for session expiresOn
 
 
 async def _get_jwks() -> list[dict]:
@@ -161,7 +173,8 @@ async def validate_entra_id_token(token: str) -> CurrentUser:
                 name=claims.get("name", claims.get("preferred_username", "Unknown")),
                 email=claims.get("preferred_username", claims.get("upn", "")),
                 tenant_id=tid,
-                roles=claims.get("roles", []),
+                roles=_normalize_roles(claims.get("org_roles", "")),
+                exp=claims.get("exp", 0),
             )
         except JWTError as exc:
             last_error = exc
@@ -173,6 +186,7 @@ async def validate_entra_id_token(token: str) -> CurrentUser:
         detail=f"Token invalid or expired: {last_error}",
     )
 async def get_current_user(
+    request: Request,
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(_bearer_scheme),
 ) -> CurrentUser:
     if settings.skip_auth and settings.is_development:
@@ -182,34 +196,40 @@ async def get_current_user(
             name="Dev User",
             email="dev@dragnet.com.ng",
             tenant_id=settings.tenant_id,
-            roles=["OrgOS.Admin"],
+            roles=[ROLE_ADMIN],
         )
-    if credentials is None:
+    # The erp_auth cookie (set by the Dragnet ERP backend) is the primary
+    # Tier-1 transport; the Authorization header remains a fallback for
+    # tooling, tests, and direct API clients.
+    token = request.cookies.get("erp_auth") or (
+        credentials.credentials if credentials else None
+    )
+    if token is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not authenticated",
         )
-    return await validate_entra_id_token(credentials.credentials)
+    return await validate_entra_id_token(token)
 def require_compliance_lead(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
     """
-    FastAPI dependency — requires the user to have the Compliance.Lead role.
+    FastAPI dependency — requires the user to have the "compliance" org_role.
     Use on endpoints that should only be accessible to compliance team members.
     """
-    if "Compliance.Lead" not in user.roles and "OrgOS.Admin" not in user.roles:
+    if ROLE_COMPLIANCE not in user.roles and ROLE_ADMIN not in user.roles:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Compliance Lead role required for this action",
+            detail="Compliance role required for this action",
         )
     return user
 
 
 def require_admin(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
     """
-    FastAPI dependency — requires the OrgOS.Admin role.
+    FastAPI dependency — requires the "orgos-admin" org_role.
     Use on high-impact endpoints: role assignment, contract termination,
     strategic risk creation, manual control creation.
     """
-    if "OrgOS.Admin" not in user.roles:
+    if ROLE_ADMIN not in user.roles:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="OrgOS Admin role required for this action. Contact your system administrator.",

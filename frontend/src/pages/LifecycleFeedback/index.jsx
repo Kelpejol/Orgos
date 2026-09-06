@@ -2,14 +2,13 @@
 // LifecycleFeedback/index.jsx — Stakeholder feedback submission page
 // Accessible at /lifecycle/feedback/:id
 // No sidebar — standalone page for Teams link recipients.
-// MSAL auth required. Enforces deadline if set.
+// Session is resolved globally by main.jsx before this page ever renders.
+// Enforces deadline if set.
 // =============================================================================
 
 import { useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { useIsAuthenticated, useMsal } from "@azure/msal-react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { loginRequest } from "../../authConfig.js";
 import { lifecycleApi } from "../../api/grcApi.js";
 
 // =============================================================================
@@ -55,52 +54,12 @@ const CATEGORIES = [
 ];
 
 // =============================================================================
-//  Login gate
-// =============================================================================
-
-function LoginGate() {
-  const { instance } = useMsal();
-  return (
-    <div style={{
-      minHeight: "100vh", display: "flex", alignItems: "center",
-      justifyContent: "center", background: "#F5F5F5",
-      fontFamily: "system-ui, -apple-system, sans-serif",
-    }}>
-      <div style={{
-        background: "#fff", padding: "40px 36px", borderRadius: 16,
-        border: "1px solid #E0E0E0", textAlign: "center", maxWidth: 380, width: "100%",
-      }}>
-        <div style={{ fontSize: 22, fontWeight: 700, marginBottom: 4 }}>OrgOS</div>
-        <div style={{ fontSize: 13, color: "#666", marginBottom: 24 }}>
-          Dragnet Solutions — Document Review
-        </div>
-        <p style={{ fontSize: 13, color: "#444", marginBottom: 28, lineHeight: 1.6 }}>
-          You've been invited to review a document. Sign in with your Dragnet Microsoft 365
-          account to submit your feedback.
-        </p>
-        <button
-          onClick={() => instance.loginPopup(loginRequest)}
-          style={{
-            width: "100%", padding: "12px", fontSize: 13, fontWeight: 600,
-            borderRadius: 10, border: "none", background: "#1F4E79",
-            color: "#fff", cursor: "pointer",
-          }}
-        >
-          Sign in with Microsoft 365
-        </button>
-      </div>
-    </div>
-  );
-}
-
-// =============================================================================
 //  Main page
 // =============================================================================
 
 export default function LifecycleFeedback() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const isAuthenticated = useIsAuthenticated();
   const queryClient = useQueryClient();
 
   const [text, setText] = useState("");
@@ -110,7 +69,7 @@ export default function LifecycleFeedback() {
   const { data: doc, isLoading, error } = useQuery({
     queryKey: ["lifecycle-doc", id],
     queryFn: () => lifecycleApi.get(id).then((r) => r.data),
-    enabled: isAuthenticated && !!id,
+    enabled: !!id,
   });
 
   const submitMutation = useMutation({
@@ -121,8 +80,6 @@ export default function LifecycleFeedback() {
       setSubmitted(true);
     },
   });
-
-  if (!isAuthenticated) return <LoginGate />;
 
   const shell = (children) => (
     <div style={{

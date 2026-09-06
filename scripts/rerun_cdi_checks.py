@@ -50,21 +50,6 @@ def cdi_failures_json(checks: list[dict]) -> str:
     return json.dumps(failed) if failed else ""
 
 
-async def fetch_role_titles() -> list[str]:
-    if not settings.is_list_configured(settings.role_register_list_id):
-        return []
-    try:
-        items = await get_list_items(settings.role_register_list_id, "Role Register")
-        return [
-            i["fields"]["Title"]
-            for i in items
-            if i.get("fields", {}).get("Title")
-        ]
-    except Exception as exc:
-        logger.warning(f"Could not load Role Register titles: {exc}")
-        return []
-
-
 async def resolve_drive(client: httpx.AsyncClient, headers: dict) -> str:
     url = settings.compliance_site_url.rstrip("/")
     hostname, _, path = url.replace("https://", "").partition("/")
@@ -87,9 +72,6 @@ def filename_from_url(url: str) -> str:
 async def main(dry_run: bool, only_failed: bool) -> None:
     await startup()
     try:
-        role_titles = await fetch_role_titles()
-        print(f"Role Register titles loaded: {len(role_titles)}")
-
         items = await get_list_items(settings.document_lifecycle_list_id, LIFECYCLE_LIST_NAME)
         print(f"Lifecycle items: {len(items)}")
 
@@ -134,7 +116,7 @@ async def main(dry_run: bool, only_failed: bool) -> None:
                     continue
 
                 result = await run_cdi_check(
-                    dl.content, filename, str(f.get("DocumentCode", "")), role_titles
+                    dl.content, filename, str(f.get("DocumentCode", ""))
                 )
                 if result.get("error"):
                     new_status = "Error"
