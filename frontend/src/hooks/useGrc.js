@@ -270,3 +270,11 @@ export const useOrgRoles = () =>
     staleTime: 120_000,
   });
 
+/** The distinct real Dragnet job titles — role vocabulary for control ownership. */
+export const useJobTitles = () =>
+  useQuery({
+    queryKey: ["job-titles"],
+    queryFn: () => orgRolesApi.jobTitles(),
+    staleTime: 600_000,
+  });
+

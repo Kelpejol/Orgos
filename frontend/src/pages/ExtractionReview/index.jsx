@@ -13,6 +13,7 @@ import StatusBadge from "../../components/shared/StatusBadge.jsx";
 import { Field } from "../../components/shared/Forms.jsx";
 import { LoadingState, ErrorState, EmptyState } from "../../components/shared/LoadingState.jsx";
 import UserSearchField from "../../components/shared/UserSearchField.jsx";
+import JobTitleInput from "../../components/shared/JobTitleInput.jsx";
 import { useAlert } from "../../components/shared/AlertModal.jsx";
 import { CascadeImpactModal } from "../../components/shared/CascadeImpactModal.jsx";
 import apiClient from "../../api/grcApi.js";
@@ -237,13 +238,15 @@ const DecisionPanel = ({ item, onDecide, onRequestSecondReview, isPending }) => 
       control_statement: prev.control_statement ?? item.ControlStatement ?? "",
       control_type:      prev.control_type      ?? item.ControlType ?? "",
       iso_clause:        prev.iso_clause        ?? item.ISOClause ?? "",
-      owner_role:        prev.owner_role        ?? item.ProposedOwnerRole ?? "",
+      // Backend override field is `proposed_owner` (not owner_role).
+      proposed_owner:    prev.proposed_owner    ?? item.ProposedOwnerRole ?? "",
       risk_implication:  prev.risk_implication  ?? item.RiskStatement ?? "",
       evidence_type: prev.evidence_type ?? item.EvidenceType ?? "",
       evidence_description: prev.evidence_description ?? item.EvidenceDescription ?? "",
       evidence_source_system: prev.evidence_source_system ?? item.EvidenceSourceSystem ?? "",
       evidence_format: prev.evidence_format ?? item.EvidenceFormat ?? "",
       evidence_frequency: prev.evidence_frequency ?? item.EvidenceFrequency ?? "",
+      evidence_owner_role: prev.evidence_owner_role ?? item.EvidenceOwnerRole ?? "",
     }));
   }, [editMode, item]);
 
@@ -326,15 +329,22 @@ const DecisionPanel = ({ item, onDecide, onRequestSecondReview, isPending }) => 
           {[
             ["control_statement", "Control statement", item.ControlStatement],
             ["iso_clause",        "ISO clause",        item.ISOClause],
-            ["owner_role",        "Owner role",        item.ProposedOwnerRole],
+            ["proposed_owner",    "Owner role",        item.ProposedOwnerRole],
             ["risk_implication",  "Risk implication",  item.RiskStatement],
           ].map(([key, label, placeholder]) => (
             <div key={key} style={{ marginBottom: 6 }}>
               <label style={labelStyle}>{label}</label>
-              <input type="text" value={edits[key] || ""}
-                onChange={editField(key)}
-                placeholder={placeholder || ""}
-                style={inputStyle} />
+              {key === "proposed_owner" ? (
+                <JobTitleInput value={edits[key]}
+                  onChange={editField(key)}
+                  placeholder={placeholder || ""}
+                  style={inputStyle} />
+              ) : (
+                <input type="text" value={edits[key] || ""}
+                  onChange={editField(key)}
+                  placeholder={placeholder || ""}
+                  style={inputStyle} />
+              )}
             </div>
           ))}
 
@@ -394,6 +404,13 @@ const DecisionPanel = ({ item, onDecide, onRequestSecondReview, isPending }) => 
               <input type="text" value={edits.evidence_description || ""}
                 onChange={editField("evidence_description")}
                 placeholder={item.EvidenceDescription || "Describe the artefact that proves the control operates"}
+                style={inputStyle} />
+            </div>
+            <div style={{ marginTop: 6 }}>
+              <label style={labelStyle}>Evidence owner role</label>
+              <JobTitleInput value={edits.evidence_owner_role}
+                onChange={editField("evidence_owner_role")}
+                placeholder={item.EvidenceOwnerRole || "Job title responsible for the evidence"}
                 style={inputStyle} />
             </div>
           </div>
