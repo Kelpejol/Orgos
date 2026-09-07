@@ -31,7 +31,11 @@ logger = logging.getLogger(__name__)
 
 _LIST_NAME = "OrgOS Groups"
 _list_id_cache: dict = {"id": None}
-_columns_ensured: set = set()
+# Which columns actually exist on the list. The app cannot create columns
+# (SharePoint returns 403), so writes must be filtered to columns that a human
+# has added. `_cols_known` = we successfully read the schema.
+_available_cols: set = set()
+_cols_known: bool = False
 
 
 class GroupsListNotProvisioned(RuntimeError):
@@ -42,11 +46,28 @@ class GroupsListNotProvisioned(RuntimeError):
 _GROUP_COLUMNS = [
     {"name": "Description",      "text": {"allowMultipleLines": True}},
     {"name": "Members",         "text": {"allowMultipleLines": True}},  # JSON array
+    {"name": "Aliases",         "text": {"allowMultipleLines": True}},  # JSON array of alt names
     {"name": "Category",        "text": {}},
     {"name": "CreatedByEntraId","text": {}},
     {"name": "CreatedByName",   "text": {}},
     {"name": "Status",          "text": {}},  # "Active" | "Withdrawn"
 ]
+
+# Cap on alternative names per group (Paul: 5–6 aliases per role/group).
+_MAX_ALIASES = 6
+
+
+def _clean_aliases(aliases) -> list[str]:
+    """Normalise a list of alias strings: trim, drop blanks/dupes, cap at 6."""
+    out: list[str] = []
+    seen: set = set()
+    for a in (aliases or []):
+        s = (a or "").strip()
+        key = s.lower()
+        if s and key not in seen:
+            seen.add(key)
+            out.append(s)
+    return out[:_MAX_ALIASES]
 
 
 async def _graph(method: str, url: str, **kw) -> dict:
@@ -60,9 +81,15 @@ async def _graph(method: str, url: str, **kw) -> dict:
 
 
 async def _ensure_columns(list_id: str) -> None:
-    """Best-effort: create any missing group columns on the list. The app can
-    create columns even though it can't create the list itself. Runs once."""
-    if list_id in _columns_ensured:
+    """
+    Read the list's columns and record which exist, so writes can be filtered to
+    real columns. Also *attempts* to create any missing ones — but the app is
+    typically not permitted to create columns (403), in which case an admin must
+    add them manually; the missing column just won't be written until then.
+    Runs once per process.
+    """
+    global _cols_known
+    if _cols_known:
         return
     base = settings.graph_base_url
     site = settings.sharepoint_site_id
@@ -74,12 +101,24 @@ async def _ensure_columns(list_id: str) -> None:
             if col["name"] not in have:
                 try:
                     await _graph("POST", f"{base}/sites/{site}/lists/{list_id}/columns", json=col)
+                    have.add(col["name"])
                     logger.info(f"Created column '{col['name']}' on '{_LIST_NAME}'")
                 except Exception as exc:
-                    logger.warning(f"Could not create column '{col['name']}' on '{_LIST_NAME}': {exc}")
+                    logger.info(
+                        f"Column '{col['name']}' missing on '{_LIST_NAME}' and could not be "
+                        f"auto-created (add it manually to enable): {exc}"
+                    )
+        _available_cols.clear()
+        _available_cols.update(have)
+        _cols_known = True
     except Exception as exc:
-        logger.warning(f"Could not verify columns on '{_LIST_NAME}': {exc}")
-    _columns_ensured.add(list_id)
+        logger.warning(f"Could not read columns on '{_LIST_NAME}': {exc}")
+
+
+def _has_col(name: str) -> bool:
+    """True if it's safe to write `name`. If we couldn't read the schema, fall
+    back to writing (preserves behaviour on the core columns that must exist)."""
+    return (not _cols_known) or (name in _available_cols)
 
 
 async def get_groups_list_id() -> str:
@@ -130,22 +169,26 @@ async def get_groups_list_id() -> str:
 
 # ── mapping ───────────────────────────────────────────────────────────────────
 
+def _parse_json_list(raw) -> list:
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+        return parsed if isinstance(parsed, list) else []
+    except Exception:
+        return []
+
+
 def _to_group(item: dict) -> dict:
     f = item.get("fields", {}) or {}
-    members: list[dict] = []
-    raw = f.get("Members", "")
-    if raw:
-        try:
-            parsed = json.loads(raw)
-            if isinstance(parsed, list):
-                members = parsed
-        except Exception:
-            members = []
+    members = _parse_json_list(f.get("Members", ""))
+    aliases = [str(a) for a in _parse_json_list(f.get("Aliases", "")) if str(a).strip()]
     return {
         "id":           str(item.get("id", "")),
         "name":         f.get("Title", ""),
         "description":  f.get("Description", ""),
         "category":     f.get("Category", ""),
+        "aliases":      aliases,
         "members":      members,
         "member_count": len(members),
         "created_by":   f.get("CreatedByName", ""),
@@ -185,12 +228,21 @@ async def group_names() -> list[str]:
     return [g["name"] for g in await list_groups() if g["name"]]
 
 
+def _all_names(group: dict) -> list[str]:
+    """A group's canonical name plus its aliases, lower-cased — for resolution."""
+    names = [(group.get("name") or "").strip().lower()]
+    names += [(a or "").strip().lower() for a in group.get("aliases", [])]
+    return [n for n in names if n]
+
+
 async def find_group_by_name(name: str) -> Optional[dict]:
+    """Resolve a name to a group by its canonical name OR any of its aliases,
+    so different wordings in documents map to the same group."""
     target = (name or "").strip().lower()
     if not target:
         return None
     for g in await list_groups():
-        if (g["name"] or "").strip().lower() == target:
+        if target in _all_names(g):
             return g
     return None
 
@@ -206,7 +258,8 @@ async def user_in_group(name: str, oid: str) -> bool:
 # ── writes ────────────────────────────────────────────────────────────────────
 
 async def create_group(name: str, description: str, category: str,
-                       members: list[dict], creator_oid: str, creator_name: str) -> dict:
+                       members: list[dict], creator_oid: str, creator_name: str,
+                       aliases: Optional[list[str]] = None) -> dict:
     name = (name or "").strip()
     if not name:
         raise ValueError("Group name is required.")
@@ -223,11 +276,14 @@ async def create_group(name: str, description: str, category: str,
         "CreatedByName":    creator_name or "",
         "Status":           "Active",
     }
+    if _has_col("Aliases"):
+        fields["Aliases"] = json.dumps(_clean_aliases(aliases))
     return _to_group(await create_list_item(lid, _LIST_NAME, fields))
 
 
 async def update_group(group_id: str, description: Optional[str],
-                       category: Optional[str], name: Optional[str]) -> dict:
+                       category: Optional[str], name: Optional[str],
+                       aliases: Optional[list[str]] = None) -> dict:
     lid = await get_groups_list_id()
     fields: dict = {}
     if name is not None:
@@ -242,6 +298,8 @@ async def update_group(group_id: str, description: Optional[str],
         fields["Description"] = description
     if category is not None:
         fields["Category"] = category
+    if aliases is not None and _has_col("Aliases"):
+        fields["Aliases"] = json.dumps(_clean_aliases(aliases))
     if fields:
         await update_list_item(lid, _LIST_NAME, group_id, fields)
     return await get_group(group_id)

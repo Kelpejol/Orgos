@@ -51,6 +51,7 @@ class CreateGroup(BaseModel):
     name: str
     description: Optional[str] = ""
     category: Optional[str] = ""
+    aliases: Optional[list[str]] = None
     members: Optional[list[Member]] = None
 
 
@@ -58,6 +59,7 @@ class UpdateGroup(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     category: Optional[str] = None
+    aliases: Optional[list[str]] = None
 
 
 class AddMembers(BaseModel):
@@ -101,6 +103,7 @@ async def create_group(
             members=[m.model_dump() for m in (body.members or [])],
             creator_oid=user.oid,
             creator_name=user.name or "",
+            aliases=body.aliases,
         )
     except Exception as exc:
         _handle(exc, "create group")
@@ -113,7 +116,7 @@ async def update_group(
     user: CurrentUser = Depends(require_compliance_lead),
 ) -> dict:
     try:
-        return await service.update_group(group_id, body.description, body.category, body.name)
+        return await service.update_group(group_id, body.description, body.category, body.name, body.aliases)
     except Exception as exc:
         _handle(exc, f"update group {group_id}")
 

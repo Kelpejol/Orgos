@@ -39,7 +39,33 @@ function GroupCard({ group, canEdit }) {
   const qc = useQueryClient();
   const { notify } = useAlert();
   const [busy, setBusy] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [form, setForm] = useState({ name: "", description: "", category: "", aliases: "" });
   const refresh = () => { qc.invalidateQueries({ queryKey: ["groups"] }); qc.invalidateQueries({ queryKey: ["group-names"] }); };
+
+  const startEdit = () => {
+    setForm({
+      name: group.name || "",
+      description: group.description || "",
+      category: group.category || "",
+      aliases: (group.aliases || []).join(", "),
+    });
+    setEditing(true);
+  };
+  const saveEdit = async () => {
+    if (!form.name.trim()) return;
+    setBusy(true);
+    try {
+      await groupsApi.update(group.id, {
+        name: form.name.trim(),
+        description: form.description,
+        category: form.category,
+        aliases: form.aliases.split(",").map((a) => a.trim()).filter(Boolean).slice(0, 6),
+      });
+      refresh(); setEditing(false);
+    } catch (e) { notify({ tone: "danger", title: "Save failed", message: e.response?.data?.detail || e.message }); }
+    finally { setBusy(false); }
+  };
 
   const addMember = async (user) => {
     if (!user) return;
@@ -62,13 +88,37 @@ function GroupCard({ group, canEdit }) {
     finally { setBusy(false); }
   };
 
+  const editInput = { width: "100%", padding: "7px 9px", fontSize: 12.5, borderRadius: 8,
+    border: "1.5px solid var(--color-border-tertiary)", boxSizing: "border-box", marginBottom: 6,
+    background: "var(--color-background-primary)", color: "var(--color-text-primary)" };
+
   return (
     <div style={{ border: "1px solid var(--color-border-tertiary)", borderRadius: 12, padding: "14px 16px" }}>
+      {editing ? (
+        <div>
+          <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Group name" style={editInput} />
+          <input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="Description" style={editInput} />
+          <input value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} placeholder="Category" style={editInput} />
+          <input value={form.aliases} onChange={(e) => setForm({ ...form, aliases: e.target.value })}
+            placeholder="Alternative names, comma-separated (up to 6)" style={editInput} />
+          <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+            <button onClick={saveEdit} disabled={busy || !form.name.trim()} style={btn(!form.name.trim() ? "#C9CCD1" : "#085041")}>
+              {busy ? "Saving…" : "Save"}
+            </button>
+            <button onClick={() => setEditing(false)} style={btn("transparent", "var(--color-text-secondary)", "1.5px solid var(--color-border-tertiary)")}>Cancel</button>
+          </div>
+        </div>
+      ) : (
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
         <div>
           <div style={{ fontSize: 14, fontWeight: 700 }}>{group.name}</div>
           {group.description && (
             <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 2 }}>{group.description}</div>
+          )}
+          {group.aliases?.length > 0 && (
+            <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginTop: 3 }}>
+              Also known as: {group.aliases.join(", ")}
+            </div>
           )}
           <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginTop: 3 }}>
             {group.member_count} member{group.member_count === 1 ? "" : "s"}
@@ -76,11 +126,17 @@ function GroupCard({ group, canEdit }) {
           </div>
         </div>
         {canEdit && (
-          <button onClick={del} disabled={busy} style={{ ...btn("transparent", "#A32D2D", "1.5px solid #F09595"), padding: "6px 12px" }}>
-            Delete
-          </button>
+          <div style={{ display: "flex", gap: 6 }}>
+            <button onClick={startEdit} disabled={busy} style={{ ...btn("transparent", "var(--color-text-secondary)", "1.5px solid var(--color-border-tertiary)"), padding: "6px 12px" }}>
+              Edit
+            </button>
+            <button onClick={del} disabled={busy} style={{ ...btn("transparent", "#A32D2D", "1.5px solid #F09595"), padding: "6px 12px" }}>
+              Delete
+            </button>
+          </div>
         )}
       </div>
+      )}
 
       <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 12 }}>
         {group.members.length === 0 && (
@@ -109,6 +165,7 @@ function CreateGroupForm({ onDone }) {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [category, setCategory] = useState("");
+  const [aliases, setAliases] = useState("");
   const [members, setMembers] = useState([]);
   const [busy, setBusy] = useState(false);
 
@@ -121,7 +178,8 @@ function CreateGroupForm({ onDone }) {
     if (!name.trim()) return;
     setBusy(true);
     try {
-      await groupsApi.create({ name: name.trim(), description, category, members });
+      const aliasList = aliases.split(",").map((a) => a.trim()).filter(Boolean).slice(0, 6);
+      await groupsApi.create({ name: name.trim(), description, category, aliases: aliasList, members });
       qc.invalidateQueries({ queryKey: ["groups"] });
       qc.invalidateQueries({ queryKey: ["group-names"] });
       notify({ tone: "success", title: "Group created", message: name.trim() });
@@ -139,6 +197,8 @@ function CreateGroupForm({ onDone }) {
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Group name (used in documents, e.g. Compliance Team)" style={inputStyle} />
         <input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Description (optional)" style={inputStyle} />
         <input value={category} onChange={(e) => setCategory(e.target.value)} placeholder="Category (optional, e.g. Compliance, Ops)" style={inputStyle} />
+        <input value={aliases} onChange={(e) => setAliases(e.target.value)}
+          placeholder="Alternative names, comma-separated (up to 6) — e.g. Compliance, Compliance Function" style={inputStyle} />
         <div>
           <div style={{ fontSize: 11, fontWeight: 600, color: "var(--color-text-secondary)", marginBottom: 4 }}>Members</div>
           {members.length > 0 && (

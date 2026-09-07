@@ -39,6 +39,31 @@ DOC_CODE_PATTERN = re.compile(
     r"^DRG-[A-Z]{2,6}-[A-Z]{2,3}-[A-Z0-9]{2,6}-\d{2}-\d{2}$"
 )
 
+# Combined policy-and-procedure documents carry a COMPOUND type segment
+# (e.g. DRG-QI-POL-PRO-CDI-01-26). They are legitimate — do not flag them.
+COMBINED_DOC_CODE_PATTERN = re.compile(
+    r"^DRG-[A-Z]{2,6}-[A-Z]{2,3}-[A-Z]{2,3}-[A-Z0-9]{2,6}-\d{2}-\d{2}$"
+)
+_COMBINED_DOC_RE = re.compile(
+    r"policies?\s*(?:and|&|/)\s*procedures?|\bpol[\s/\-]*pro\b",
+    re.IGNORECASE,
+)
+
+
+def is_combined_document(text: str, doc_code: str = "") -> bool:
+    """
+    A combined policy-and-procedure document (e.g. 'QMS/QIMS Policies and
+    Procedures (POL-PRO)'). Detected via the naming convention: a POL-PRO
+    compound type in the code, or 'Policies and Procedures' in the code/title.
+    Combined documents must not be flagged as malformed.
+    """
+    code = (doc_code or "").upper()
+    if "POL-PRO" in code or "POL/PRO" in code:
+        return True
+    if _COMBINED_DOC_RE.search(doc_code or ""):
+        return True
+    return bool(_COMBINED_DOC_RE.search((text or "")[:1000]))
+
 EVIDENCE_TYPE_CODES = {
     "LOG", "CFG", "APR", "FRM", "TRN", "ACK",
     "TST", "CRT", "MTG", "REV", "CHK", "CNT", "INV", "CHG", "INC", "RPT",
@@ -360,15 +385,22 @@ def check_01_document_code(text: str, doc_code: str) -> dict:
             proposed_fix="Generate a code: DRG-{DEPT}-{TYPE}-{SHORT}-{SERIAL}-{YEAR}. E.g. DRG-ISMS-POL-ACP-01-26.",
             fix_source="Document Creation Standards §1",
         )
-    if not DOC_CODE_PATTERN.match(doc_code.strip()):
-        return _fail(
-            "CDI-01", "Document code format",
-            f"Document code '{doc_code}' does not match the required format.",
-            current_text=doc_code,
-            proposed_fix="Correct format: DRG-{DEPT}-{TYPE}-{SHORT}-{SERIAL}-{YEAR}. E.g. DRG-ISMS-POL-ACP-01-26.",
-            fix_source="Document Creation Standards §1",
-        )
-    return _pass("CDI-01", "Document code format")
+    code = doc_code.strip()
+    if DOC_CODE_PATTERN.match(code):
+        return _pass("CDI-01", "Document code format")
+    # Combined policy-and-procedure documents use a compound type (POL-PRO) —
+    # accept their format rather than flagging it as malformed.
+    if is_combined_document(text, doc_code) and COMBINED_DOC_CODE_PATTERN.match(code):
+        result = _pass("CDI-01", "Document code format")
+        result["note"] = "Combined policy-and-procedure document — compound type accepted."
+        return result
+    return _fail(
+        "CDI-01", "Document code format",
+        f"Document code '{doc_code}' does not match the required format.",
+        current_text=doc_code,
+        proposed_fix="Correct format: DRG-{DEPT}-{TYPE}-{SHORT}-{SERIAL}-{YEAR}. E.g. DRG-ISMS-POL-ACP-01-26.",
+        fix_source="Document Creation Standards §1",
+    )
 
 
 def check_02_revision_history(text: str) -> dict:
