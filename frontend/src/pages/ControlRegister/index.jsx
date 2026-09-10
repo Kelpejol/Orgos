@@ -5,13 +5,17 @@
 // =============================================================================
 
 import { useState, useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import StatusBadge from "../../components/shared/StatusBadge.jsx";
 import { Field } from "../../components/shared/Forms.jsx";
 import { LoadingState, ErrorState, EmptyState } from "../../components/shared/LoadingState.jsx";
 import apiClient from "../../api/grcApi.js";
+import JobTitleInput from "../../components/shared/JobTitleInput.jsx";
+import { useCurrentUserRole } from "../../hooks/useCurrentUserRole.js";
 
 const controlApi = {
+  reassignOwner: (id, ownerRole) =>
+    apiClient.patch(`/api/v1/controls/${id}/reassign-owner`, { owner_role: ownerRole }).then(r => r.data),
   list: () => apiClient.get("/api/v1/controls").then(r => r.data),
 };
 
@@ -34,6 +38,12 @@ export default function ControlRegister() {
   const [search, setSearch]   = useState("");
   const [selected, setSelected] = useState(null);
   const [typeFilter, setTypeFilter] = useState("All");
+  const [reassigning, setReassigning] = useState(false);
+  const [newOwner, setNewOwner] = useState("");
+  const [savingOwner, setSavingOwner] = useState(false);
+  const [ownerError, setOwnerError] = useState("");
+  const { isCompliance } = useCurrentUserRole();
+  const qc = useQueryClient();
 
   const { data: controls = [], isLoading, error, refetch } = useControls();
 
@@ -94,6 +104,54 @@ export default function ControlRegister() {
         <Field l="Source document" v={selected.SourceDocument} />
         {selected.SourceClause && <Field l="Source clause"  v={selected.SourceClause} />}
         <Field l="Owner role"      v={selected.OwnerRole} />
+        {isCompliance && (
+          reassigning ? (
+            <div style={{ margin: "6px 0 10px", padding: "10px 12px", borderRadius: 8,
+                          background: "var(--color-background-secondary)",
+                          border: "1px solid var(--color-border-tertiary)" }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: "var(--color-text-secondary)", marginBottom: 4 }}>
+                New owner role (job title or group)
+              </div>
+              <JobTitleInput value={newOwner} onChange={(e) => setNewOwner(e.target.value)}
+                placeholder={selected.OwnerRole || "Job title or group"}
+                style={{ width: "100%", padding: "8px 10px", fontSize: 12.5, borderRadius: 8,
+                         border: "1.5px solid var(--color-border-tertiary)", boxSizing: "border-box",
+                         background: "var(--color-background-primary)", color: "var(--color-text-primary)" }} />
+              {ownerError && <div style={{ fontSize: 11, color: "#A32D2D", marginTop: 5 }}>{ownerError}</div>}
+              <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                <button
+                  disabled={savingOwner || !newOwner.trim() || newOwner.trim() === (selected.OwnerRole || "")}
+                  onClick={async () => {
+                    setSavingOwner(true); setOwnerError("");
+                    try {
+                      const updated = await controlApi.reassignOwner(selected.id, newOwner.trim());
+                      setSelected(updated);
+                      qc.invalidateQueries({ queryKey: ["controls"] });
+                      setReassigning(false);
+                    } catch (err) {
+                      setOwnerError(err.response?.data?.detail || err.message || "Could not reassign.");
+                    } finally { setSavingOwner(false); }
+                  }}
+                  style={{ flex: 1, padding: "8px", fontSize: 12, fontWeight: 600, borderRadius: 8,
+                           border: "none", color: "#fff", cursor: "pointer",
+                           background: !newOwner.trim() ? "#9FBAAF" : "#085041" }}>
+                  {savingOwner ? "Saving…" : "Save owner"}
+                </button>
+                <button onClick={() => { setReassigning(false); setOwnerError(""); }}
+                  style={{ padding: "8px 14px", fontSize: 12, borderRadius: 8, cursor: "pointer",
+                           border: "1.5px solid var(--color-border-tertiary)", background: "transparent",
+                           color: "var(--color-text-secondary)" }}>Cancel</button>
+              </div>
+            </div>
+          ) : (
+            <button onClick={() => { setNewOwner(selected.OwnerRole || ""); setReassigning(true); }}
+              style={{ margin: "2px 0 10px", padding: "5px 12px", fontSize: 11, borderRadius: 7,
+                       cursor: "pointer", border: "1.5px solid var(--color-border-tertiary)",
+                       background: "transparent", color: "var(--color-text-secondary)" }}>
+              Reassign owner
+            </button>
+          )
+        )}
         {selected.RiskImplication && <Field l="Risk if fails" v={selected.RiskImplication} color="#A32D2D" />}
         {selected.EscalationNote  && <Field l="Escalation"   v={selected.EscalationNote} />}
         <Field l="Status"          v={selected.Status || "Active"} />
