@@ -347,6 +347,26 @@ LISTS: dict[str, dict] = {
             "AcceptedDate":        (DATE,   None),
         },
     },
+
+    # ─── 12. OrgOS Groups ────────────────────────────────────────────────────
+    # People groups usable as owners in documents. Resolved by NAME (no .env
+    # list ID). NOTE: the app cannot create SharePoint columns (403), so these
+    # must be added manually — this entry documents the exact schema and lets
+    # the script report which are present/missing. Title (built-in) = group name.
+    "orgos_groups": {
+        "list_id_attr": None,
+        "resolve_by_name": True,
+        "display_name": "OrgOS Groups",
+        "columns": {
+            "Description":      (NOTE, None),   # Multiple lines of text
+            "Members":          (NOTE, None),   # Multiple lines of text (JSON)
+            "Aliases":          (NOTE, None),   # Multiple lines of text (JSON)
+            "Category":         (TEXT, None),
+            "CreatedByEntraId": (TEXT, None),
+            "CreatedByName":    (TEXT, None),
+            "Status":           (TEXT, None),
+        },
+    },
 }
 
 # =============================================================================
@@ -385,6 +405,21 @@ async def _get_existing_columns(
     resp.raise_for_status()
     data = resp.json()
     return {col["name"]: col for col in data.get("value", [])}
+
+
+async def _resolve_list_id_by_name(
+    client: httpx.AsyncClient, display_name: str
+) -> str:
+    """Resolve a list's id by its display name (for lists with no .env ID)."""
+    url = f"{settings.graph_base_url}/sites/{settings.sharepoint_site_id}/lists"
+    headers = await _auth_header()
+    resp = await client.get(
+        url, headers=headers, timeout=30,
+        params={"$filter": f"displayName eq '{display_name}'", "$select": "id"},
+    )
+    resp.raise_for_status()
+    vals = resp.json().get("value", [])
+    return vals[0]["id"] if vals else ""
 
 
 async def _update_choice_column(
@@ -473,10 +508,21 @@ async def provision(
             if only_list and only_list.lower() not in display_name.lower():
                 continue
 
-            list_id: str = getattr(settings, spec["list_id_attr"], "")
-            if not settings.is_list_configured(list_id):
-                print(f"  {YELLOW('SKIP')}  {display_name}  {DIM('(list ID not configured)')}")
-                continue
+            if spec.get("list_id_attr"):
+                list_id = getattr(settings, spec["list_id_attr"], "")
+                if not settings.is_list_configured(list_id):
+                    print(f"  {YELLOW('SKIP')}  {display_name}  {DIM('(list ID not configured)')}")
+                    continue
+            else:
+                # No .env ID — resolve by display name (e.g. OrgOS Groups).
+                try:
+                    list_id = await _resolve_list_id_by_name(client, display_name)
+                except Exception as exc:
+                    print(f"  {YELLOW('SKIP')}  {display_name}  {DIM(f'(name lookup failed: {exc})')}")
+                    continue
+                if not list_id:
+                    print(f"  {YELLOW('SKIP')}  {display_name}  {DIM('(list not found — create it first)')}")
+                    continue
 
             print(f"  {BOLD(CYAN(display_name))}")
 
