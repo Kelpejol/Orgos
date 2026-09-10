@@ -104,7 +104,7 @@ export default function ControlRegister() {
           <div style={{ marginTop: 14, padding: "10px 12px", background: "#FCEBEB",
                         borderRadius: 8, fontSize: 12, color: "#791F1F",
                         border: "1px solid #F09595" }}>
-            This control is Blocked — the role "{selected.OwnerRole}" is unassigned in the Role Register. Assign someone to that role to activate this control.
+            This control is Blocked — the role "{selected.OwnerRole}" doesn't resolve to anyone. Set it to a real job title, or create a group with that name under Org roles → Groups, then reassign this control.
           </div>
         )}
       </div>

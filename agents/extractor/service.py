@@ -772,14 +772,20 @@ async def run_extraction_from_text(
             procedural_steps_indexed=0,
         )
 
-    # Everyone's job titles are the role vocabulary — the model maps each
-    # control's responsible party to the closest real Dragnet job title.
+    # The role vocabulary is everyone's job titles PLUS the OrgOS groups
+    # (e.g. "Compliance team") — both are valid control owners, so the model
+    # maps each control's responsible party to the closest real one.
     job_titles: list[str] = []
     try:
         from graph.client import list_all_job_titles
         job_titles = await list_all_job_titles()
     except Exception as exc:
         logger.debug(f"Job titles unavailable for extraction ({exc}); using document wording")
+    try:
+        from groups.service import group_names
+        job_titles = list(await group_names()) + job_titles
+    except Exception as exc:
+        logger.debug(f"Groups unavailable for extraction vocabulary ({exc})")
 
     raw_items = await run_extraction(text, doc_code, doc_type, job_titles)
     items     = _validate_items(raw_items, doc_type, doc_code)

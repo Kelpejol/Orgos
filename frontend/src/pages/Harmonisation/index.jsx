@@ -150,7 +150,7 @@ const HarmDecisionPanel = ({ item, onDecide, isPending }) => {
           onBlur={e => (e.target.style.borderColor = canonicalName.trim() ? "#5DCAA5" : "#C0C0C0")}
         />
         <div style={{ fontSize: 10, color: "var(--color-text-tertiary)", marginTop: 3 }}>
-          All variant terms will be mapped to this name in the Role Register and Control Register.
+          All variant terms will be mapped to this name in the Control Register. Tip: add them as aliases on the matching group under Org roles → Groups so they resolve automatically.
         </div>
       </div>
 
@@ -496,7 +496,7 @@ export default function Harmonisation() {
       {filtered.length === 0 ? (
         <EmptyState message={
           items.length === 0
-            ? "No Zone 3 items yet. Harmonisation items are created by the Classifier agent after it compares extracted role terms against the Role Register and detects near-duplicate controls across documents. The Classifier is built in Phase 11 of the implementation plan."
+            ? "No Zone 3 items yet. Harmonisation items are created by the Classifier agent after it compares extracted role terms against the role vocabulary (Entra job titles and OrgOS groups) and detects near-duplicate controls across documents. The Classifier is built in Phase 11 of the implementation plan."
             : "No items match your search."
         } />
       ) : (

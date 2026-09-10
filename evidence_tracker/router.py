@@ -93,8 +93,30 @@ async def list_evidence(
         items = await get_list_items(_list_id(), _LIST_NAME)
         evds  = [_sp_to_evd(i) for i in items]
 
+        # Ownership is a ROLE (job title / group / alias) — OwnerEntraId is
+        # never populated. Resolve once and stamp each item so the UI can gate
+        # actions without re-deriving membership client-side.
+        try:
+            from ownership.resolver import get_ownership_index
+            ownership = await get_ownership_index()
+            for e in evds:
+                res = ownership.resolve(e["OwnerRole"])
+                e["OwnedByMe"]    = ownership.owns(e["OwnerRole"], user.oid)
+                e["OwnerKind"]    = res["kind"]           # group | job_title | unresolved
+                e["OwnerPeople"]  = res["people"]
+                e["OwnerResolved"] = res["resolved"]
+        except Exception as exc:
+            logger.warning(f"Could not resolve evidence ownership: {exc}")
+            for e in evds:
+                e.setdefault("OwnedByMe", False)
+                e.setdefault("OwnerKind", "unresolved")
+                e.setdefault("OwnerPeople", [])
+                e.setdefault("OwnerResolved", False)
+
         if owner_oid:
-            evds = [e for e in evds if e["OwnerEntraId"] == owner_oid]
+            # Filter by who actually holds the owning role.
+            evds = [e for e in evds
+                    if any((p.get("oid") or "") == owner_oid for p in e.get("OwnerPeople", []))]
         if status:
             evds = [e for e in evds if e["Status"] == status]
         if control_id:

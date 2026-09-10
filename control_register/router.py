@@ -100,6 +100,48 @@ async def get_control(
         _handle(exc, f"get control {item_id}")
 
 
+class ReassignControlOwner(BaseModel):
+    owner_role: str
+
+
+@router.patch("/api/v1/controls/{item_id}/reassign-owner")
+async def reassign_control_owner(
+    item_id: str,
+    body: ReassignControlOwner,
+    user: CurrentUser = Depends(require_compliance_lead),
+) -> dict:
+    """
+    Reassign a control's owner to a real job title or OrgOS group.
+    A control is Blocked while its role resolves to nobody, so this also
+    re-derives Status: Active once the new role has real holders.
+    """
+    owner_role = (body.owner_role or "").strip()
+    if not owner_role:
+        raise HTTPException(status_code=422, detail="owner_role is required.")
+    try:
+        # Only activate if the role actually resolves to someone.
+        resolved = False
+        try:
+            from ownership.resolver import get_ownership_index
+            resolved = (await get_ownership_index()).has_owner(owner_role)
+        except Exception as exc:
+            logger.warning(f"Could not resolve '{owner_role}' while reassigning {item_id}: {exc}")
+            resolved = True  # don't block the edit if resolution is unavailable
+
+        await update_list_item(_cr_list_id(), _CR_LIST_NAME, item_id, {
+            "OwnerRole": owner_role,
+            "Status":    "Active" if resolved else "Blocked",
+        })
+        updated = await get_list_item(_cr_list_id(), _CR_LIST_NAME, item_id)
+        result = _sp_to_control(updated)
+        result["OwnerResolved"] = resolved
+        return result
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _handle(exc, f"reassign control owner {item_id}")
+
+
 # =============================================================================
 #  Decision cascade schemas
 # =============================================================================

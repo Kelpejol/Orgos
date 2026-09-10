@@ -169,9 +169,11 @@ export default function WorkHub({ go }) {
   const allExpire  = expiringQ.data     || [];
   const allGaps    = gapsQ.data         || [];
 
-  // Standard Users see only their own items
+  // Standard Users see only their own items.
+  // Evidence ownership is a ROLE (job title / group / alias) resolved
+  // server-side into OwnedByMe — OwnerEntraId is never populated on evidence.
   const myEvid  = isStandard
-    ? allEvid.filter((e) => e.owner_oid === oid || e.OwnerEntraId === oid || e.owner?.oid === oid)
+    ? allEvid.filter((e) => e.OwnedByMe === true)
     : allEvid;
 
   const myOblig = isStandard

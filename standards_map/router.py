@@ -113,6 +113,7 @@ CLAUSES = [
 def _calculate_traffic_light(
     controls: list[dict],
     clause_evidence: list[dict],
+    ownership=None,
 ) -> str:
     """
     Calculate traffic light per DINT Section 5.4.
@@ -123,6 +124,10 @@ def _calculate_traffic_light(
 
     `clause_evidence` must already be scoped to `controls` (the caller indexes
     evidence by control id — this avoids an O(controls × evidence) scan here).
+
+    Ownership is judged by resolving the control's OwnerRole (job title, group
+    name, or group alias) to real people via `ownership` — NOT by OwnerEntraId,
+    which the accept cascade never populates.
     """
     if not controls:
         return "Red"
@@ -130,7 +135,12 @@ def _calculate_traffic_light(
     for c in controls:
         if c.get("Status") == "Blocked":
             return "Red"
-        if not c.get("OwnerEntraId"):
+        owner_role = c.get("OwnerRole") or ""
+        if ownership is not None:
+            if not ownership.has_owner(owner_role):
+                return "Red"
+        elif not owner_role:
+            # No index available — fall back to "a role is named at all".
             return "Red"
 
     if not clause_evidence:
@@ -217,6 +227,11 @@ async def get_standards_map(
         for e in evidence:
             evidence_by_control.setdefault(e.get("LinkedControlId", ""), []).append(e)
 
+        # Ownership is a role (job title / group / alias) → resolve once and
+        # reuse for every clause rather than per-control Graph calls.
+        from ownership.resolver import get_ownership_index
+        ownership = await get_ownership_index()
+
         # Build result per clause
         clauses_to_show = [
             c for c in CLAUSES if not standard or c["standard"] == standard
@@ -231,7 +246,7 @@ async def get_standards_map(
             clause_evidence = [
                 e for c in clause_controls for e in evidence_by_control.get(c["id"], [])
             ]
-            traffic = _calculate_traffic_light(clause_controls, clause_evidence)
+            traffic = _calculate_traffic_light(clause_controls, clause_evidence, ownership)
             evidence_accepted = sum(
                 1 for e in clause_evidence if e.get("Status") == "Accepted"
             )
@@ -320,9 +335,12 @@ async def get_clause_detail(
 
         fmt_controls = [fmt_control(c) for c in controls]
         fmt_evidence = [fmt_evidence(e) for e in evidence]
+        from ownership.resolver import get_ownership_index
+        ownership = await get_ownership_index()
         traffic = _calculate_traffic_light(
             [{"id": str(c["id"]), **c.get("fields", {})} for c in controls],
             [{"id": str(e["id"]), **e.get("fields", {})} for e in evidence],
+            ownership,
         )
 
         return {

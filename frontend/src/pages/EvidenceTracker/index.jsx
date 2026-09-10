@@ -12,7 +12,6 @@ import StatusBadge from "../../components/shared/StatusBadge.jsx";
 import { Field } from "../../components/shared/Forms.jsx";
 import { LoadingState, ErrorState, EmptyState } from "../../components/shared/LoadingState.jsx";
 import { useCurrentUserRole } from "../../hooks/useCurrentUserRole.js";
-import { useGroups } from "../../hooks/useGrc.js";
 import { useAlert } from "../../components/shared/AlertModal.jsx";
 import JobTitleInput from "../../components/shared/JobTitleInput.jsx";
 import apiClient from "../../api/grcApi.js";
@@ -345,7 +344,7 @@ const VerifyPanel = ({ item, onVerify, onClose, isPending }) => {
 //  Evidence card
 // =============================================================================
 
-const EvidenceCard = ({ item, currentOid, isCompliance, onSubmit, onSubmitLink, onVerify, onReassignOwner, isGroupOwner, actionItemId }) => {
+const EvidenceCard = ({ item, currentOid, isCompliance, onSubmit, onSubmitLink, onVerify, onReassignOwner, actionItemId }) => {
   const [expanded, setExpanded]     = useState(false);
   const [showSubmit, setShowSubmit] = useState(false);
   const [showVerify, setShowVerify] = useState(false);
@@ -353,8 +352,9 @@ const EvidenceCard = ({ item, currentOid, isCompliance, onSubmit, onSubmitLink, 
   const [newOwner, setNewOwner]     = useState("");
 
   const ss = STATUS_STYLES[item.Status] || STATUS_STYLES["Pending"];
-  // Any member of the owner group can act, not only the named person owner.
-  const canAct      = item.OwnerEntraId === currentOid || isGroupOwner;
+  // Ownership resolved server-side: whoever holds the owning role (job
+  // title, group, or alias) can act — OwnerEntraId is never populated.
+  const canAct      = item.OwnedByMe === true;
   const isOwner      = canAct;
   const canSubmit   = canAct && ["Pending", "Due Soon", "Overdue", "Rejected"].includes(item.Status);
   const canVerify   = isCompliance && item.Status === "Submitted";
@@ -415,11 +415,17 @@ const EvidenceCard = ({ item, currentOid, isCompliance, onSubmit, onSubmitLink, 
                       fontSize: 11, color: "var(--color-text-secondary)" }}>
           <span>
             {item.OwnerRole || "No owner"}
-            {isGroupOwner && (
-              <span title="You are a member of this group"
-                style={{ marginLeft: 5, fontSize: 9, fontWeight: 700, color: "#085041",
-                         background: "#E7F5F0", border: "0.5px solid #9FD9C8", borderRadius: 20,
-                         padding: "1px 6px" }}>YOUR GROUP</span>
+            {item.OwnerKind === "group" && (
+              <span title={`Group — ${(item.OwnerPeople || []).map(p => p.display_name).join(", ") || "no members"}`}
+                style={{ marginLeft: 5, fontSize: 9, fontWeight: 700, color: "#3C3489",
+                         background: "#EEEDFE", border: "0.5px solid #AFA9EC", borderRadius: 20,
+                         padding: "1px 6px" }}>GROUP</span>
+            )}
+            {item.OwnerResolved === false && item.OwnerRole && (
+              <span title="This role doesn't match any job title or group, so nobody holds it"
+                style={{ marginLeft: 5, fontSize: 9, fontWeight: 700, color: "#8A5A00",
+                         background: "#FDF3E2", border: "0.5px solid #F0CE94", borderRadius: 20,
+                         padding: "1px 6px" }}>UNASSIGNED</span>
             )}
             {" · "}{item.Frequency || "No frequency"}
           </span>
@@ -580,26 +586,16 @@ export default function EvidenceTracker() {
   const { notify } = useAlert();
   const qc = useQueryClient();
   const { data: all = [], isLoading, error, refetch } = useEvidence();
-  const { data: groups = [] } = useGroups();
-
-  // Group names the current user belongs to — an item owned by one of these is
-  // "mine" and I can act on it, even if I'm not the named person owner.
-  const myGroupNames = useMemo(
-    () => new Set(
-      groups
-        .filter(g => (g.members || []).some(m => m.oid === oid))
-        .map(g => (g.name || "").toLowerCase())
-    ),
-    [groups, oid],
-  );
-  const ownsViaGroup = (item) => myGroupNames.has((item.OwnerRole || "").toLowerCase());
+  // Ownership is resolved server-side (job title, group, or group alias) and
+  // stamped on each item as OwnedByMe — OwnerEntraId is never populated.
+  const ownsIt = (e) => e.OwnedByMe === true;
 
   const views = useMemo(() => {
-    const mine     = all.filter(e => e.OwnerEntraId === oid || ownsViaGroup(e));
+    const mine     = all.filter(ownsIt);
     const overdue  = all.filter(e => e.Status === "Overdue");
     const submitted = all.filter(e => e.Status === "Submitted");
     return { mine, overdue, submitted };
-  }, [all, oid, myGroupNames]);
+  }, [all]);
 
   const activeItems = useMemo(() => {
     let list = view === "mine"      ? views.mine
@@ -758,7 +754,6 @@ export default function EvidenceTracker() {
               onSubmitLink={handleSubmitLink}
               onVerify={handleVerify}
               onReassignOwner={handleReassignOwner}
-              isGroupOwner={ownsViaGroup(item)}
               actionItemId={actionItemId}
             />
           ))}

@@ -147,6 +147,7 @@ def _make_gap_key(standard: str, clause: str, gap_category: str, ctrl_id: str = 
 def _find_gaps(
     controls: list[dict],
     evidence: list[dict],
+    ownership=None,
 ) -> list[dict]:
     """
     Compare confirmed registers against the required clause list.
@@ -186,9 +187,22 @@ def _find_gaps(
             })
             continue
 
-        # Ownership gap — controls exist but owner is unassigned or control is blocked
+        # Ownership gap — the control's OwnerRole doesn't resolve to anyone.
+        # Ownership is a ROLE (job title / group / alias), never OwnerEntraId
+        # (which the accept cascade leaves empty), so resolve the role.
         for ctrl in clause_controls:
-            if ctrl["status"] == "Blocked" or not ctrl["owner_oid"]:
+            owner_role = ctrl.get("owner_role") or ""
+            unowned = (
+                not ownership.has_owner(owner_role) if ownership is not None
+                else not owner_role
+            )
+            if ctrl["status"] == "Blocked" or unowned:
+                reason = (
+                    "No owner role is set on the control."
+                    if not owner_role else
+                    f"Role '{owner_role}' does not match any job title or group, "
+                    f"so nobody holds it."
+                )
                 gaps.append({
                     "standard":    standard,
                     "clause":      clause,
@@ -198,7 +212,7 @@ def _find_gaps(
                     "severity":    "Major",
                     "finding": (
                         f"Control '{ctrl['statement'][:100]}' for {standard} {clause} "
-                        f"has no assigned owner. Role '{ctrl['owner_role']}' is unassigned."
+                        f"has no assigned owner. {reason}"
                     ),
                     "impact": (
                         "Evidence cannot be collected. Control is unroutable. "
@@ -368,7 +382,12 @@ async def run_gap_analysis(triggered_by: str = "system") -> dict:
     logger.info(f"Existing open gap keys: {len(existing_keys)}")
 
     # Part 1 — find gaps
-    gaps = _find_gaps(controls, evidence)
+    # Ownership is a role (job title / group / alias) — resolve it once so
+    # role-owned controls aren't all reported as ownership gaps.
+    from ownership.resolver import get_ownership_index
+    ownership = await get_ownership_index()
+
+    gaps = _find_gaps(controls, evidence, ownership)
     logger.info(f"Gap finding complete: {len(gaps)} gaps found before deduplication")
 
     if not gaps:

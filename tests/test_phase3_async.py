@@ -56,29 +56,59 @@ def test_conflict_scan_flags_frequency_difference():
 #  Standards-map traffic light (A4 — now takes pre-scoped clause_evidence)
 # -----------------------------------------------------------------------------
 
-_CTRL = {"id": "c1", "OwnerEntraId": "oid", "Status": "Active"}
+# Ownership is a ROLE (job title / group / alias) resolved to people —
+# OwnerEntraId is never populated on controls, so the traffic light must judge
+# by resolving OwnerRole.
+class _StubOwnership:
+    def __init__(self, owned_roles):
+        self._owned = {r.strip().lower() for r in owned_roles}
+
+    def has_owner(self, role):
+        return (role or "").strip().lower() in self._owned
+
+
+_OWN = _StubOwnership(["ISMS Lead"])
+_CTRL = {"id": "c1", "OwnerRole": "ISMS Lead", "Status": "Active"}
 
 
 def test_traffic_red_when_no_controls():
-    assert _calculate_traffic_light([], []) == "Red"
+    assert _calculate_traffic_light([], [], _OWN) == "Red"
 
 
-def test_traffic_red_when_owner_unassigned():
-    assert _calculate_traffic_light([{"id": "c1", "OwnerEntraId": "", "Status": "Active"}], []) == "Red"
+def test_traffic_red_when_role_resolves_to_nobody():
+    ctrl = {"id": "c1", "OwnerRole": "Nonexistent Role", "Status": "Active"}
+    assert _calculate_traffic_light([ctrl], [], _OWN) == "Red"
+
+
+def test_traffic_red_when_no_owner_role_at_all():
+    ctrl = {"id": "c1", "OwnerRole": "", "Status": "Active"}
+    assert _calculate_traffic_light([ctrl], [], _OWN) == "Red"
+
+
+def test_traffic_not_red_merely_because_owner_entra_id_is_empty():
+    """Regression: controls never carry OwnerEntraId — that must not force Red."""
+    ctrl = {"id": "c1", "OwnerRole": "ISMS Lead", "OwnerEntraId": "", "Status": "Active"}
+    assert _calculate_traffic_light([ctrl], [{"Status": "Accepted"}], _OWN) == "Green"
 
 
 def test_traffic_amber_when_control_but_no_evidence():
-    assert _calculate_traffic_light([_CTRL], []) == "Amber"
+    assert _calculate_traffic_light([_CTRL], [], _OWN) == "Amber"
 
 
 def test_traffic_amber_when_evidence_submitted_not_verified():
-    assert _calculate_traffic_light([_CTRL], [{"Status": "Submitted"}]) == "Amber"
+    assert _calculate_traffic_light([_CTRL], [{"Status": "Submitted"}], _OWN) == "Amber"
 
 
 def test_traffic_red_when_evidence_overdue_or_rejected():
-    assert _calculate_traffic_light([_CTRL], [{"Status": "Overdue"}]) == "Red"
-    assert _calculate_traffic_light([_CTRL], [{"Status": "Rejected"}]) == "Red"
+    assert _calculate_traffic_light([_CTRL], [{"Status": "Overdue"}], _OWN) == "Red"
+    assert _calculate_traffic_light([_CTRL], [{"Status": "Rejected"}], _OWN) == "Red"
 
 
 def test_traffic_green_when_all_evidence_accepted():
+    assert _calculate_traffic_light([_CTRL], [{"Status": "Accepted"}], _OWN) == "Green"
+
+
+def test_traffic_falls_back_when_no_ownership_index():
+    """With no index we can only check that a role is named at all."""
     assert _calculate_traffic_light([_CTRL], [{"Status": "Accepted"}]) == "Green"
+    assert _calculate_traffic_light([{"id": "c1", "OwnerRole": "", "Status": "Active"}], []) == "Red"

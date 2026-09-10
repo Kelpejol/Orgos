@@ -182,7 +182,7 @@ const ClauseDetail = ({ clauseCode, onBack }) => {
               {isBlocked && (
                 <div style={{ marginTop: 8, padding: "6px 10px", background: "#FCEBEB",
                               borderRadius: 6, fontSize: 11, color: "#791F1F" }}>
-                  Blocked — role "{control.OwnerRole}" is unassigned in the Role Register.
+                  Blocked — role "{control.OwnerRole}" doesn't resolve to a job title or group.
                   Assign someone to activate this control.
                 </div>
               )}
