@@ -66,8 +66,7 @@ const TextCell = ({ value, muted }) => {
 export default function OrgRoles() {
   const [search, setSearch] = useState("");
   const [tab, setTab] = useState("people");
-  const [allStaff, setAllStaff] = useState(false);
-  const { data: users = [], isLoading, error, refetch } = useOrgRoles(allStaff);
+  const { data: users = [], isLoading, error, refetch } = useOrgRoles();
   const { data: ownership = {} } = useOwnershipSummary();
   const ownsFor = (role) => ownership[(role || "").trim().toLowerCase()] || null;
 
@@ -111,12 +110,6 @@ export default function OrgRoles() {
       {tab === "people" && (
         <>
       <ReadOnlyBanner message="Org roles are read live from Entra ID. Assignment is managed exclusively in the Dragnet ERP admin panel." />
-
-      <label style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: 12,
-                      color: "var(--color-text-secondary)", marginBottom: 10, cursor: "pointer" }}>
-        <input type="checkbox" checked={allStaff} onChange={(e) => setAllStaff(e.target.checked)} />
-        Show all staff (not only people with an org role)
-      </label>
 
       <input
         type="text"

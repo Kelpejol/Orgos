@@ -42,7 +42,7 @@ Two structural shifts drive almost everything left:
 
 **Ownership visibility (§2.7)**
 - `OwnerDisplay` everywhere (controls, evidence, standards): the role, a **GROUP / JOB TITLE / UNASSIGNED** badge, **who actually holds it** (expandable), and an **alias note** ("matched via alias X → Y").
-- **Org roles**: "Show all staff" toggle (38 org-role holders ↔ all 98 internal staff) and an **"Owns"** column with controls/evidence counts per role; same counts on group cards.
+- **Org roles**: an **"Owns"** column with controls/evidence counts per role; same counts on group cards.
 - **"Blocked"** now consistently means *the role resolves to nobody*, worded the same everywhere.
 
 **CDI**

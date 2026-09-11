@@ -22,15 +22,9 @@ router = APIRouter(prefix="/api/v1/org-roles", tags=["Org Roles"])
 
 @router.get("")
 async def list_org_roles(
-    all_staff: bool = False,
     user: CurrentUser = Depends(require_compliance_lead),
 ) -> list[dict]:
-    """
-    By default: everyone the ERP has granted an org_role.
-    With ?all_staff=true: every enabled internal member (a full staff
-    directory), org_roles simply empty for most of them.
-    """
-    return await list_users_with_org_roles(include_all_staff=all_staff)
+    return await list_users_with_org_roles()
 
 
 @router.get("/ownership-summary")

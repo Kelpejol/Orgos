@@ -380,8 +380,7 @@ export const sharePointApi = {
 // =============================================================================
 
 export const orgRolesApi = {
-  list: (allStaff = false) =>
-    apiClient.get("/api/v1/org-roles", { params: allStaff ? { all_staff: true } : {} }).then((r) => r.data),
+  list: () => apiClient.get("/api/v1/org-roles").then((r) => r.data),
   ownershipSummary: () =>
     apiClient.get("/api/v1/org-roles/ownership-summary").then((r) => r.data),
   // Distinct real job titles — the role vocabulary for control ownership.

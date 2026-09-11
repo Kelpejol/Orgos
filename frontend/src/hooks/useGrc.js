@@ -264,10 +264,10 @@ export const useSoftDeleteContract = () => {
 // =============================================================================
 
 /** Fetch every user with an org_role assigned, read live from Entra ID. */
-export const useOrgRoles = (allStaff = false) =>
+export const useOrgRoles = () =>
   useQuery({
-    queryKey: ["org-roles", allStaff],
-    queryFn: () => orgRolesApi.list(allStaff),
+    queryKey: ["org-roles"],
+    queryFn: () => orgRolesApi.list(),
     staleTime: 120_000,
   });
 

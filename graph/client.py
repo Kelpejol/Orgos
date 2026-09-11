@@ -783,7 +783,7 @@ async def resolve_user(entra_oid: str) -> dict:
         return {"display_name": "", "email": "", "org_roles": []}
 
 
-async def list_users_with_org_roles(include_all_staff: bool = False) -> list[dict]:
+async def list_users_with_org_roles() -> list[dict]:
     """
     Lists every Entra ID user who has at least one org_role assigned, read
     live from onPremisesExtensionAttributes.extensionAttribute1 — the same
@@ -796,17 +796,9 @@ async def list_users_with_org_roles(include_all_staff: bool = False) -> list[dic
     """
     results: list[dict] = []
     url = f"{settings.graph_base_url}/users"
-    # Default: only people the ERP has granted an org_role. With
-    # include_all_staff, list every enabled internal member instead (org_roles
-    # simply comes back empty for most of them) — a full staff directory.
-    odata_filter = (
-        "accountEnabled eq true and userType eq 'Member'"
-        if include_all_staff else
-        "onPremisesExtensionAttributes/extensionAttribute1 ne null"
-    )
     params: Optional[dict] = {
-        "$select": "id,displayName,mail,userPrincipalName,jobTitle,department,userType,onPremisesExtensionAttributes",
-        "$filter": odata_filter,
+        "$select": "id,displayName,mail,userPrincipalName,jobTitle,department,onPremisesExtensionAttributes",
+        "$filter": "onPremisesExtensionAttributes/extensionAttribute1 ne null",
         "$count": "true",
         "$top": "999",
     }
@@ -822,7 +814,7 @@ async def list_users_with_org_roles(include_all_staff: bool = False) -> list[dic
             for u in data.get("value", []):
                 raw = (u.get("onPremisesExtensionAttributes") or {}).get("extensionAttribute1") or ""
                 roles = [r.strip().lower() for r in raw.split(",") if r.strip()]
-                if not roles and not include_all_staff:
+                if not roles:
                     continue
                 results.append({
                     "oid": u.get("id", ""),
