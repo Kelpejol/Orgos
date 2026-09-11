@@ -36,6 +36,15 @@ Two structural shifts drive almost everything left:
   - **nobody able to submit evidence**.
 - Stale "Role Register" UI copy removed (that register was deleted in the ERP merge).
 
+**Approver correction (meeting commitment)**
+- **Change the approver after submission** — Compliance or the document owner, without sending the document back a stage.
+- **Reverse a wrong approval** — the document returns to Approval and its Document Register entry is **withdrawn** (never hard-deleted); a reason is required and both actions are audit-logged.
+
+**Ownership visibility (§2.7)**
+- `OwnerDisplay` everywhere (controls, evidence, standards): the role, a **GROUP / JOB TITLE / UNASSIGNED** badge, **who actually holds it** (expandable), and an **alias note** ("matched via alias X → Y").
+- **Org roles**: "Show all staff" toggle (38 org-role holders ↔ all 98 internal staff) and an **"Owns"** column with controls/evidence counts per role; same counts on group cards.
+- **"Blocked"** now consistently means *the role resolves to nobody*, worded the same everywhere.
+
 **CDI**
 - **Combined POL-PRO documents no longer flagged** — detected by naming convention; CDI-01 accepts the compound type.
 - Collective terms ("All Staff") no longer flagged as unregistered roles.
@@ -59,10 +68,6 @@ Officers submit **.docx**, not PDF.
 - This is a **hard prerequisite** for CDI auto-fix, the AI revision loop, and CDT merge — all of which require a real `.docx`.
 - Legacy PDFs stay readable; they just can't be auto-fixed or merged.
 
-### 2.3 Approver reversible / editable ❌
-- Change the approver **after** submission (Compliance + owner).
-- Reverse a wrong approval. Today only `recall` exists (owner pulls back from Approval), and nothing can undo an approval once it's in the register.
-
 ### 2.4 Register enrichment 🟡 *(foundation for §3)*
 Extend the groups/role model with what the meeting asked for:
 - **Group email** per group/role.
@@ -78,12 +83,6 @@ Extend the groups/role model with what the meeting asked for:
 ### 2.6 AI revision loop — "no, use this wording" 🟡
 - Today the drafter edits the replacement text directly.
 - Target: drafter replies with a **comment**, and the AI picks the final wording from it.
-
-### 2.7 UI follow-ups
-- Show **who a role resolves to** wherever an owner is displayed (controls, evidence, standards) — group members / job-title holders on hover or expand.
-- Surface **alias matches** ("matched via alias 'Compliance' → Compliance team") so people trust resolution.
-- **"Who owns what"** on Org roles: count of controls/evidence per role/group — makes ownership holes visible before the Gap Analyzer complains.
-- Rethink **"Blocked"** to consistently mean *the role resolves to nobody* (now true in Standards Map/Gap Analyzer; align the copy everywhere).
 
 ---
 
@@ -152,14 +151,12 @@ Still genuinely wanted from HR/Compliance (see §2.4): team/group entries **labe
 |---|---|---|---|
 | 1 | Control-number format (§2.1) | — | Actively wrong; blocks correct new codes |
 | 2 | Word-only drafts (§2.2) | — | Prerequisite for auto-fix, revision loop, CDT |
-| 3 | Approver edit/reverse (§2.3) | — | Named meeting commitment; small |
-| 4 | Register enrichment (§2.4) | SharePoint columns | Foundation for HR sync + CDI-07 |
-| 5 | Confirm title propagation to Entra (§3.1) | Isaac (a question, not a build) | Keeps the vocabulary current |
-| 6 | CDI-07 re-enable (§2.5) | §2.4 | Safe only once aliases/register are real |
-| 7 | Notifications (§3.2) | channel decision | Completes "sensitisation is a team activity" |
-| 8 | CDT (§4) | §2.1, §2.2 | Highest effort; needs a stable base |
+| 3 | Register enrichment (§2.4) | SharePoint columns | Foundation for HR sync + CDI-07 |
+| 4 | Confirm title propagation to Entra (§3.1) | Isaac (a question, not a build) | Keeps the vocabulary current |
+| 5 | CDI-07 re-enable (§2.5) | §2.4 | Safe only once aliases/register are real |
+| 6 | Notifications (§3.2) | channel decision | Completes "sensitisation is a team activity" |
+| 7 | CDT (§4) | §2.1, §2.2 | Highest effort; needs a stable base |
 
-**Parallel track:** UI follow-ups (§2.7) can be picked up alongside any of the above.
 
 ---
 

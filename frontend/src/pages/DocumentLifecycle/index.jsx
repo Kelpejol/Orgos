@@ -1170,6 +1170,12 @@ const LifecycleCard = ({
   const [claimError,      setClaimError]      = useState("");
   const [showCdiFix,      setShowCdiFix]      = useState(false);
   const [showAmend,       setShowAmend]       = useState(false);
+  const [approverAction,  setApproverAction]  = useState(null);   // "change" | "reverse"
+  const [approverBusy,    setApproverBusy]    = useState(false);
+  const [approverErr,     setApproverErr]     = useState("");
+  const [newApprover,     setNewApprover]     = useState(null);
+  const [reverseReason,   setReverseReason]   = useState("");
+  const { isCompliance } = useCurrentUserRole();
   const qc = useQueryClient();
 
   const isOwner         = doc.OwnerEntraId === currentUserOid;
@@ -1591,6 +1597,101 @@ const LifecycleCard = ({
               </div>
               <div style={{ fontSize: 10, color: "#085041", opacity: 0.8, marginTop: 2 }}>
                 Approved by {doc.ApproverName || "—"} · Added to Document Register
+              </div>
+            </div>
+          )}
+
+          {/* Correct a wrong approver, or reverse a wrong approval.
+              Open to the document owner and to Compliance. */}
+          {(isOwner || isCompliance) && !approverAction && (
+            <div style={{ display: "flex", gap: 6 }}>
+              {!isApproved && (
+                <button onClick={() => { setApproverErr(""); setNewApprover(null); setApproverAction("change"); }}
+                  style={{ flex: 1, padding: "6px", fontSize: 11, borderRadius: 7, cursor: "pointer",
+                           border: "1.5px solid #C9A8E0", background: "#F4EEFB", color: "#6B2FA0", fontWeight: 500 }}>
+                  Change approver
+                </button>
+              )}
+              {isApproved && (
+                <button onClick={() => { setApproverErr(""); setReverseReason(""); setApproverAction("reverse"); }}
+                  style={{ flex: 1, padding: "6px", fontSize: 11, borderRadius: 7, cursor: "pointer",
+                           border: "1.5px solid #F09595", background: "transparent", color: "#A32D2D", fontWeight: 500 }}>
+                  Reverse approval
+                </button>
+              )}
+            </div>
+          )}
+
+          {approverAction === "change" && (
+            <div style={{ padding: "10px 12px", borderRadius: 8, background: "var(--color-background-secondary)",
+                          border: "1px solid var(--color-border-tertiary)" }}>
+              <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 5 }}>New approving authority</div>
+              <UserSearchField onSelect={setNewApprover} placeholder="Search for the correct approver…" />
+              {approverErr && <div style={{ fontSize: 11, color: "#A32D2D", marginTop: 6 }}>{approverErr}</div>}
+              <div style={{ display: "flex", gap: 6, marginTop: 10 }}>
+                <button disabled={approverBusy || !newApprover}
+                  onClick={async () => {
+                    setApproverBusy(true); setApproverErr("");
+                    try {
+                      await apiClient.patch(`/api/v1/lifecycle/documents/${doc.id}/approver`, {
+                        approver_id: newApprover.oid, approver_name: newApprover.display_name,
+                      });
+                      qc.invalidateQueries({ queryKey: ["lifecycle"] });
+                      setApproverAction(null);
+                    } catch (err) {
+                      setApproverErr(err.response?.data?.detail || err.message || "Could not change approver.");
+                    } finally { setApproverBusy(false); }
+                  }}
+                  style={{ flex: 1, padding: "7px", fontSize: 11.5, fontWeight: 600, borderRadius: 7,
+                           border: "none", color: "#fff", cursor: "pointer",
+                           background: !newApprover ? "#C9CCD1" : "#6B2FA0" }}>
+                  {approverBusy ? "Saving…" : "Save approver"}
+                </button>
+                <button onClick={() => setApproverAction(null)}
+                  style={{ padding: "7px 12px", fontSize: 11.5, borderRadius: 7, cursor: "pointer",
+                           border: "1.5px solid var(--color-border-tertiary)", background: "transparent",
+                           color: "var(--color-text-secondary)" }}>Cancel</button>
+              </div>
+            </div>
+          )}
+
+          {approverAction === "reverse" && (
+            <div style={{ padding: "10px 12px", borderRadius: 8, background: "#FCEBEB",
+                          border: "1px solid #F09595" }}>
+              <div style={{ fontSize: 11, fontWeight: 600, color: "#791F1F", marginBottom: 4 }}>
+                Reverse this approval
+              </div>
+              <div style={{ fontSize: 11, color: "#791F1F", marginBottom: 6, lineHeight: 1.5 }}>
+                The document returns to Approval and its Document Register entry is withdrawn.
+              </div>
+              <textarea value={reverseReason} onChange={(e) => setReverseReason(e.target.value)} rows={2}
+                placeholder="Reason (min 10 characters) — e.g. approved by the wrong authority"
+                style={{ width: "100%", padding: "7px 9px", fontSize: 11.5, borderRadius: 7,
+                         border: "1.5px solid #F09595", boxSizing: "border-box", fontFamily: "inherit" }} />
+              {approverErr && <div style={{ fontSize: 11, color: "#A32D2D", marginTop: 6 }}>{approverErr}</div>}
+              <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+                <button disabled={approverBusy || reverseReason.trim().length < 10}
+                  onClick={async () => {
+                    setApproverBusy(true); setApproverErr("");
+                    try {
+                      await apiClient.post(`/api/v1/lifecycle/documents/${doc.id}/reverse-approval`, {
+                        reason: reverseReason.trim(),
+                      });
+                      qc.invalidateQueries({ queryKey: ["lifecycle"] });
+                      setApproverAction(null);
+                    } catch (err) {
+                      setApproverErr(err.response?.data?.detail || err.message || "Could not reverse approval.");
+                    } finally { setApproverBusy(false); }
+                  }}
+                  style={{ flex: 1, padding: "7px", fontSize: 11.5, fontWeight: 600, borderRadius: 7,
+                           border: "none", color: "#fff", cursor: "pointer",
+                           background: reverseReason.trim().length < 10 ? "#D8A9A9" : "#A32D2D" }}>
+                  {approverBusy ? "Reversing…" : "Reverse approval"}
+                </button>
+                <button onClick={() => setApproverAction(null)}
+                  style={{ padding: "7px 12px", fontSize: 11.5, borderRadius: 7, cursor: "pointer",
+                           border: "1.5px solid #C0C0C0", background: "transparent",
+                           color: "var(--color-text-secondary)" }}>Cancel</button>
               </div>
             </div>
           )}
