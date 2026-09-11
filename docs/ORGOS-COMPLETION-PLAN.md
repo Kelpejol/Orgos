@@ -11,7 +11,7 @@ Status legend: ✅ done · 🟡 partial · ❌ not started · ⛔ blocked on som
 Two structural shifts drive almost everything left:
 
 1. **Ownership is a ROLE, not a person.** Controls/evidence store `OwnerRole` (job title, group name, or group alias); `OwnerEntraId` is never populated. Everything that asks "is this owned / can this user act?" must resolve the role through `ownership/resolver.py`. *(Fixed — see §1.)*
-2. **The role vocabulary is moving from Entra → Seamless HR.** Today it's Entra job titles + OrgOS groups. The meeting's target is a proper register sourced from Seamless HR with group emails, aliases, multiple departments and multiple emails. *(Partly built, partly blocked — see §3.)*
+2. **The role vocabulary is Entra job titles + OrgOS groups — read LIVE.** The meeting's complaint was an *outdated Entra **export*** (a static snapshot copied into the old SharePoint Role Register). That list is gone; OrgOS now reads Entra live on every request, so it cannot go stale the same way. What's still wanted on top: group emails, multiple departments, multiple emails per entry. *(See §2.4 and §3.1.)*
 
 ---
 
@@ -89,12 +89,32 @@ Extend the groups/role model with what the meeting asked for:
 
 ## 3. Blocked / needs a decision ⛔
 
-### 3.1 Role register from Seamless HR ⛔ *(Isaac / HR + Paul)*
-The current source is Entra — exactly the "outdated export" the meeting wants replaced.
-- Needs from HR: team/group entries **labelled distinctly from individuals**, with **group emails** (e.g. Candidate Experience Team vs Candidate Experience Senior Executive).
-- Needs from us: an import/sync from Seamless HR into the register model in §2.4.
-- **This gates document flow** — the meeting's own sequencing says register and lifecycle must land together.
-- *Data note:* 117 of 198 enabled Entra users currently have **no job title**, so the Entra fallback is genuinely thin.
+### 3.1 Job titles: one question to confirm, not an integration ✅/❓ *(Isaac)*
+
+**Largely already solved.** The meeting's complaint was an outdated Entra **export**. That static list was deleted in the ERP merge; OrgOS now reads Entra **live** (≈1h cache), so it refreshes itself.
+
+**Verified data (checked against the live tenant):**
+
+| | count |
+|---|---|
+| Enabled accounts | 194 |
+| ...of which **Guests** (external orgs) | 96 |
+| **Dragnet staff accounts** | **98** |
+| → with a job title | **77** |
+| → without | 21 — almost all shared/booking mailboxes & bots (`info@`, `DiscoverCall@`, `boardroom-bot@`, `BirthdayCalendar@`), only ~5 real people |
+| **Distinct job titles (owner vocabulary)** | **55** |
+
+So coverage is good — an earlier note in this plan claiming "117 of 198 have no job title" was wrong; it counted guests and mailboxes.
+
+**The one open question (process, not code):**
+> When HR changes a job title in Seamless HR, does that change reach **Entra**?
+
+- **Yes** → nothing to build; OrgOS picks it up within the hour.
+- **No** → titles will drift; someone should sync them into Entra, exactly as the ERP already does for `org_roles` via `extensionAttribute1`.
+
+Either way **no OrgOS integration is required.** Only if a decision is made to bypass Entra and read Seamless HR directly would we build a sync — and that is not currently needed.
+
+Still genuinely wanted from HR/Compliance (see §2.4): team/group entries **labelled distinctly from individuals**, with **group emails**.
 
 ### 3.2 Notifications ⛔ *(needs a channel decision)*
 "Sensitisation notifies all team members" and "notify the group" are **not possible today** — there is no email/Teams/webhook anywhere in OrgOS.
@@ -134,7 +154,7 @@ The current source is Entra — exactly the "outdated export" the meeting wants 
 | 2 | Word-only drafts (§2.2) | — | Prerequisite for auto-fix, revision loop, CDT |
 | 3 | Approver edit/reverse (§2.3) | — | Named meeting commitment; small |
 | 4 | Register enrichment (§2.4) | SharePoint columns | Foundation for HR sync + CDI-07 |
-| 5 | Seamless HR sync (§3.1) | HR (Isaac) | Gates Compliance taking over |
+| 5 | Confirm title propagation to Entra (§3.1) | Isaac (a question, not a build) | Keeps the vocabulary current |
 | 6 | CDI-07 re-enable (§2.5) | §2.4 | Safe only once aliases/register are real |
 | 7 | Notifications (§3.2) | channel decision | Completes "sensitisation is a team activity" |
 | 8 | CDT (§4) | §2.1, §2.2 | Highest effort; needs a stable base |
