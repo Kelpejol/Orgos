@@ -105,6 +105,8 @@ async def list_evidence(
                 e["OwnerKind"]    = res["kind"]           # group | job_title | unresolved
                 e["OwnerPeople"]  = res["people"]
                 e["OwnerResolved"] = res["resolved"]
+                e["OwnerCanonical"] = res["canonical"]
+                e["OwnerViaAlias"]  = res["via_alias"]
         except Exception as exc:
             logger.warning(f"Could not resolve evidence ownership: {exc}")
             for e in evds:

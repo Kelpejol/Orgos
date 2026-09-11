@@ -11,6 +11,7 @@ import { Field } from "../../components/shared/Forms.jsx";
 import { LoadingState, ErrorState, EmptyState } from "../../components/shared/LoadingState.jsx";
 import apiClient from "../../api/grcApi.js";
 import JobTitleInput from "../../components/shared/JobTitleInput.jsx";
+import OwnerDisplay from "../../components/shared/OwnerDisplay.jsx";
 import { useCurrentUserRole } from "../../hooks/useCurrentUserRole.js";
 
 const controlApi = {
@@ -103,7 +104,7 @@ export default function ControlRegister() {
         <Field l="ISO clause"      v={selected.ISOClause} />
         <Field l="Source document" v={selected.SourceDocument} />
         {selected.SourceClause && <Field l="Source clause"  v={selected.SourceClause} />}
-        <Field l="Owner role"      v={selected.OwnerRole} />
+        <Field l="Owner role"      v={<OwnerDisplay item={selected} />} />
         {isCompliance && (
           reassigning ? (
             <div style={{ margin: "6px 0 10px", padding: "10px 12px", borderRadius: 8,
@@ -274,7 +275,7 @@ export default function ControlRegister() {
                         {c.ControlStatement || c.Title}
                       </div>
                       <div style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>
-                        {c.OwnerRole || "No owner"} · {c.SourceDocument || "No source"}
+                        {c.OwnerRole || "No owner"}{c.OwnerResolved === false && c.OwnerRole ? " (unassigned)" : ""} · {c.SourceDocument || "No source"}
                       </div>
                     </div>
                     <span style={{ fontSize: 12, color: "var(--color-text-tertiary)", flexShrink: 0 }}>›</span>

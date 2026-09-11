@@ -7,7 +7,7 @@
 // =============================================================================
 
 import { useMemo, useState } from "react";
-import { useOrgRoles } from "../../hooks/useGrc.js";
+import { useOrgRoles, useOwnershipSummary } from "../../hooks/useGrc.js";
 import { TableSkeleton, ErrorState, EmptyState } from "../../components/shared/LoadingState.jsx";
 import ReadOnlyBanner from "../../components/shared/ReadOnlyBanner.jsx";
 import GroupsPanel from "../../components/shared/GroupsPanel.jsx";
@@ -66,7 +66,10 @@ const TextCell = ({ value, muted }) => {
 export default function OrgRoles() {
   const [search, setSearch] = useState("");
   const [tab, setTab] = useState("people");
-  const { data: users = [], isLoading, error, refetch } = useOrgRoles();
+  const [allStaff, setAllStaff] = useState(false);
+  const { data: users = [], isLoading, error, refetch } = useOrgRoles(allStaff);
+  const { data: ownership = {} } = useOwnershipSummary();
+  const ownsFor = (role) => ownership[(role || "").trim().toLowerCase()] || null;
 
   const filtered = useMemo(() => {
     if (!search.trim()) return users;
@@ -109,6 +112,12 @@ export default function OrgRoles() {
         <>
       <ReadOnlyBanner message="Org roles are read live from Entra ID. Assignment is managed exclusively in the Dragnet ERP admin panel." />
 
+      <label style={{ display: "inline-flex", alignItems: "center", gap: 7, fontSize: 12,
+                      color: "var(--color-text-secondary)", marginBottom: 10, cursor: "pointer" }}>
+        <input type="checkbox" checked={allStaff} onChange={(e) => setAllStaff(e.target.checked)} />
+        Show all staff (not only people with an org role)
+      </label>
+
       <input
         type="text"
         value={search}
@@ -128,7 +137,7 @@ export default function OrgRoles() {
         }}
       />
 
-      {isLoading && <TableSkeleton rows={8} cols={5} />}
+      {isLoading && <TableSkeleton rows={8} cols={6} />}
       {error && <ErrorState error={error} onRetry={refetch} />}
       {!isLoading && !error && filtered.length === 0 && (
         <EmptyState
@@ -158,7 +167,7 @@ export default function OrgRoles() {
             >
               <thead>
                 <tr style={{ background: "var(--color-background-secondary)" }}>
-                  {["Name", "Email", "Job title", "Department", "Org roles"].map((h) => (
+                  {["Name", "Email", "Job title", "Department", "Owns", "Org roles"].map((h) => (
                     <th
                       key={h}
                       style={{
@@ -194,6 +203,20 @@ export default function OrgRoles() {
                     </td>
                     <td style={{ padding: "6px 8px" }}>
                       <TextCell value={u.department} muted />
+                    </td>
+                    <td style={{ padding: "6px 8px", whiteSpace: "nowrap" }}>
+                      {(() => {
+                        const o = ownsFor(u.job_title);
+                        if (!o) return <span style={{ color: "var(--color-text-tertiary)" }}>—</span>;
+                        return (
+                          <span title={`${o.controls} control(s), ${o.evidence} evidence item(s) owned by "${u.job_title}"`}
+                                style={{ fontSize: 11 }}>
+                            {o.controls > 0 && <b>{o.controls}</b>} {o.controls > 0 ? "ctrl" : ""}
+                            {o.controls > 0 && o.evidence > 0 ? " · " : ""}
+                            {o.evidence > 0 && <b>{o.evidence}</b>} {o.evidence > 0 ? "evid" : ""}
+                          </span>
+                        );
+                      })()}
                     </td>
                     <td style={{ padding: "6px 8px" }}>
                       <OrgRolesCell roles={u.org_roles} />

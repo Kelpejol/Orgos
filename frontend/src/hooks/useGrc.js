@@ -264,11 +264,20 @@ export const useSoftDeleteContract = () => {
 // =============================================================================
 
 /** Fetch every user with an org_role assigned, read live from Entra ID. */
-export const useOrgRoles = () =>
+export const useOrgRoles = (allStaff = false) =>
   useQuery({
-    queryKey: ["org-roles"],
-    queryFn: () => orgRolesApi.list(),
+    queryKey: ["org-roles", allStaff],
+    queryFn: () => orgRolesApi.list(allStaff),
     staleTime: 120_000,
+  });
+
+/** Controls/evidence owned per role — "who owns what". */
+export const useOwnershipSummary = () =>
+  useQuery({
+    queryKey: ["ownership-summary"],
+    queryFn: () => orgRolesApi.ownershipSummary(),
+    staleTime: 120_000,
+    retry: false,
   });
 
 /** The distinct real Dragnet job titles — role vocabulary for control ownership. */

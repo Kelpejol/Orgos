@@ -24,7 +24,7 @@ from pydantic import BaseModel
 from agents.cdi_checker.service import DOC_CODE_PATTERN, run_cdi_check
 from agents.extractor.service import run_extraction_from_file
 from agents.llm_client import llm_generate
-from auth.validator import CurrentUser, get_current_user
+from auth.validator import ROLE_ADMIN, ROLE_COMPLIANCE, CurrentUser, get_current_user
 from config import settings
 from graph.auth import get_graph_access_token
 from graph.client import (
@@ -1334,6 +1334,175 @@ async def recall_doc(
         raise
     except Exception as exc:
         _handle_error(exc, f"recall document {item_id}")
+
+
+# =============================================================================
+#  Approver correction & approval reversal
+#
+#  Meeting commitment: "If the wrong approver is selected (e.g. MD instead of
+#  Bobby) even after submission, Compliance and document owners must be able to
+#  reverse or edit it." Both actions are open to Compliance OR the document
+#  owner, and both are audit-logged.
+# =============================================================================
+
+def _may_correct_approval(doc: dict, user: CurrentUser) -> bool:
+    """Compliance/Admin, or the document owner."""
+    roles = user.roles or []
+    if ROLE_COMPLIANCE in roles or ROLE_ADMIN in roles:
+        return True
+    return user.oid == doc.get("OwnerEntraId", "")
+
+
+async def _audit_lifecycle_action(doc: dict, user: CurrentUser, action: str, detail: str) -> None:
+    """Best-effort audit record — never blocks the action."""
+    if not settings.is_list_configured(settings.audit_log_list_id):
+        return
+    try:
+        await create_list_item(settings.audit_log_list_id, "Audit Log", {
+            "Title":              f"{action} — {doc.get('DocumentCode', '') or doc.get('Title', '')}",
+            "Action":             action,
+            "ReviewerEntraId":    user.oid,
+            "ReviewerName":       user.name,
+            "Decision":           action,
+            "Rationale":          detail[:500],
+            "SourceDocumentCode": doc.get("DocumentCode", ""),
+            "Timestamp":          datetime.now(timezone.utc).isoformat(),
+        })
+    except Exception as exc:
+        logger.error(f"AUDIT GAP — '{action}' on lifecycle {doc.get('id','')} not logged: {exc}")
+
+
+class ChangeApprover(BaseModel):
+    approver_id:   str
+    approver_name: Optional[str] = ""
+    reason:        Optional[str] = ""
+
+
+@router.patch("/documents/{item_id}/approver")
+async def change_approver(
+    item_id: str,
+    body: ChangeApprover,
+    user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    """
+    Correct the approving authority on a document that is awaiting approval.
+    Compliance or the document owner may do this; the document does NOT have to
+    go back a stage.
+    """
+    if not (body.approver_id or "").strip():
+        raise HTTPException(status_code=422, detail="approver_id is required.")
+    try:
+        item = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
+        doc  = await _sp_to_doc(item)
+
+        if not _may_correct_approval(doc, user):
+            raise HTTPException(
+                status_code=403,
+                detail="Only Compliance or the document owner can change the approver.",
+            )
+        if doc.get("ApprovalStatus") == "Approved":
+            raise HTTPException(
+                status_code=409,
+                detail="This document is already approved. Reverse the approval first, "
+                       "then set the correct approver.",
+            )
+
+        previous = doc.get("ApproverName") or doc.get("ApproverEntraId") or "(none)"
+        approver_name = await _resolve_display_name(body.approver_id, body.approver_name or "")
+
+        await update_list_item(_get_list_id(), _LIST_NAME, item_id, {
+            "ApproverEntraId": body.approver_id,
+            "Approver":        approver_name,
+        })
+        await _audit_lifecycle_action(
+            doc, user, "Approver changed",
+            f"{previous} → {approver_name or body.approver_id}. {body.reason or ''}".strip(),
+        )
+
+        updated = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
+        return await _sp_to_doc(updated)
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _handle_error(exc, f"change approver {item_id}")
+
+
+class ReverseApproval(BaseModel):
+    reason: str
+
+
+@router.post("/documents/{item_id}/reverse-approval")
+async def reverse_approval(
+    item_id: str,
+    body: ReverseApproval,
+    user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    """
+    Reverse an approval that should not have happened (e.g. the wrong approver
+    signed it off). The document returns to the Approval stage awaiting a fresh
+    decision, and the Document Register entry it created is WITHDRAWN — never
+    hard-deleted, so the audit trail survives.
+    """
+    reason = (body.reason or "").strip()
+    if len(reason) < 10:
+        raise HTTPException(
+            status_code=422,
+            detail="A reason of at least 10 characters is required to reverse an approval.",
+        )
+    try:
+        item = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
+        doc  = await _sp_to_doc(item)
+
+        if not _may_correct_approval(doc, user):
+            raise HTTPException(
+                status_code=403,
+                detail="Only Compliance or the document owner can reverse an approval.",
+            )
+        if doc.get("ApprovalStatus") != "Approved":
+            raise HTTPException(
+                status_code=409,
+                detail=f"This document is not approved (status: "
+                       f"'{doc.get('ApprovalStatus') or 'none'}'), so there is nothing to reverse.",
+            )
+
+        register_id = doc.get("LinkedDocumentRegisterItem", "")
+        register_withdrawn = False
+        if register_id and settings.is_list_configured(settings.document_register_list_id):
+            try:
+                await update_list_item(
+                    settings.document_register_list_id, "Document Register", str(register_id),
+                    {"Status": "Withdrawn"},
+                )
+                register_withdrawn = True
+            except Exception as exc:
+                logger.error(
+                    f"Approval reversed for {item_id} but Document Register item "
+                    f"{register_id} could not be withdrawn: {exc}"
+                )
+
+        await update_list_item(_get_list_id(), _LIST_NAME, item_id, {
+            "Stage":                       "Approval",
+            "ApprovalStatus":              "",
+            "ApprovedDate":                "",
+            "LinkedDocumentRegisterItem":  "",
+        })
+        await _audit_lifecycle_action(
+            doc, user, "Approval reversed",
+            f"{reason} (register item {register_id or 'n/a'} "
+            f"{'withdrawn' if register_withdrawn else 'NOT withdrawn — check manually'})",
+        )
+
+        updated = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
+        result  = await _sp_to_doc(updated)
+        result["RegisterEntryWithdrawn"] = register_withdrawn
+        result["PreviousRegisterItemId"] = register_id
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _handle_error(exc, f"reverse approval {item_id}")
 
 
 @router.patch("/documents/{item_id}/deadline")

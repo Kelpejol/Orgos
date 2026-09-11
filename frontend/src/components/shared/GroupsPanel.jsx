@@ -8,7 +8,7 @@
 
 import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { useGroups } from "../../hooks/useGrc.js";
+import { useGroups, useOwnershipSummary } from "../../hooks/useGrc.js";
 import { groupsApi } from "../../api/grcApi.js";
 import { useCurrentUserRole } from "../../hooks/useCurrentUserRole.js";
 import UserSearchField from "./UserSearchField.jsx";
@@ -35,7 +35,7 @@ function MemberChip({ m, onRemove }) {
   );
 }
 
-function GroupCard({ group, canEdit }) {
+function GroupCard({ group, canEdit, owns }) {
   const qc = useQueryClient();
   const { notify } = useAlert();
   const [busy, setBusy] = useState(false);
@@ -123,6 +123,7 @@ function GroupCard({ group, canEdit }) {
           <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginTop: 3 }}>
             {group.member_count} member{group.member_count === 1 ? "" : "s"}
             {group.category ? ` · ${group.category}` : ""}
+            {owns ? ` · owns ${owns.controls} control${owns.controls === 1 ? "" : "s"}, ${owns.evidence} evidence` : ""}
           </div>
         </div>
         {canEdit && (
@@ -222,6 +223,7 @@ function CreateGroupForm({ onDone }) {
 
 export default function GroupsPanel() {
   const { isCompliance } = useCurrentUserRole();
+  const { data: ownership = {} } = useOwnershipSummary();
   const { data: groups = [], isLoading, error, refetch } = useGroups();
   const [creating, setCreating] = useState(false);
 
@@ -261,7 +263,8 @@ export default function GroupsPanel() {
 
       {groups.length > 0 && (
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          {groups.map((g) => <GroupCard key={g.id} group={g} canEdit={isCompliance} />)}
+          {groups.map((g) => <GroupCard key={g.id} group={g} canEdit={isCompliance}
+            owns={ownership[(g.name || '').trim().toLowerCase()]} />)}
         </div>
       )}
     </div>

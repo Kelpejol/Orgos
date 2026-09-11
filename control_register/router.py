@@ -75,6 +75,35 @@ def _sp_to_control(item: dict) -> dict:
 #  Control Register endpoints
 # =============================================================================
 
+async def _stamp_ownership(controls: list[dict]) -> list[dict]:
+    """
+    Add resolved-owner info to each control so the UI can show WHO holds the
+    role (and whether it matched via an alias). Ownership is a role string —
+    OwnerEntraId is never populated.
+    """
+    try:
+        from ownership.resolver import get_ownership_index
+        index = await get_ownership_index()
+    except Exception as exc:
+        logger.warning(f"Could not resolve control ownership: {exc}")
+        for c in controls:
+            c.update({"OwnerPeople": [], "OwnerKind": "unresolved",
+                      "OwnerResolved": False, "OwnerCanonical": c.get("OwnerRole", ""),
+                      "OwnerViaAlias": False})
+        return controls
+
+    for c in controls:
+        res = index.resolve(c.get("OwnerRole", ""))
+        c.update({
+            "OwnerPeople":    res["people"],
+            "OwnerKind":      res["kind"],
+            "OwnerResolved":  res["resolved"],
+            "OwnerCanonical": res["canonical"],
+            "OwnerViaAlias":  res["via_alias"],
+        })
+    return controls
+
+
 @router.get("/api/v1/controls")
 async def list_controls(
     user: CurrentUser = Depends(get_current_user),
@@ -83,7 +112,7 @@ async def list_controls(
         items = await get_list_items(_cr_list_id(), _CR_LIST_NAME)
         controls = [_sp_to_control(i) for i in items]
         controls.sort(key=lambda c: c["created"], reverse=True)
-        return controls
+        return await _stamp_ownership(controls)
     except Exception as exc:
         _handle(exc, "list controls")
 
@@ -95,7 +124,7 @@ async def get_control(
 ) -> dict:
     try:
         item = await get_list_item(_cr_list_id(), _CR_LIST_NAME, item_id)
-        return _sp_to_control(item)
+        return (await _stamp_ownership([_sp_to_control(item)]))[0]
     except Exception as exc:
         _handle(exc, f"get control {item_id}")
 

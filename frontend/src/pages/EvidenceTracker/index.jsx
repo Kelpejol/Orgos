@@ -14,6 +14,7 @@ import { LoadingState, ErrorState, EmptyState } from "../../components/shared/Lo
 import { useCurrentUserRole } from "../../hooks/useCurrentUserRole.js";
 import { useAlert } from "../../components/shared/AlertModal.jsx";
 import JobTitleInput from "../../components/shared/JobTitleInput.jsx";
+import OwnerDisplay from "../../components/shared/OwnerDisplay.jsx";
 import apiClient from "../../api/grcApi.js";
 
 // =============================================================================
@@ -454,6 +455,7 @@ const EvidenceCard = ({ item, currentOid, isCompliance, onSubmit, onSubmitLink, 
           {item.EvidenceType && (
             <Field l="Evidence type" v={`${item.EvidenceType} — ${EVID_TYPE_LABELS[item.EvidenceType] || ""}`} />
           )}
+          <Field l="Owner"          v={<OwnerDisplay item={item} />} />
           <Field l="Source system"  v={item.SourceSystem} />
           <Field l="Format"         v={item.EvidenceFormat} />
           <Field l="Frequency"      v={item.Frequency} />

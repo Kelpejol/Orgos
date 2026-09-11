@@ -10,6 +10,7 @@ import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import StatusBadge from "../../components/shared/StatusBadge.jsx";
 import { Field } from "../../components/shared/Forms.jsx";
+import OwnerDisplay from "../../components/shared/OwnerDisplay.jsx";
 import { LoadingState, ErrorState } from "../../components/shared/LoadingState.jsx";
 import apiClient from "../../api/grcApi.js";
 
@@ -170,7 +171,7 @@ const ClauseDetail = ({ clauseCode, onBack }) => {
                 {control.ControlStatement}
               </div>
               <div>
-                <Field l="Owner role"       v={control.OwnerRole || "—"} />
+                <Field l="Owner role"       v={<OwnerDisplay item={control} compact />} />
                 <Field l="Source document"  v={control.SourceDocument || "—"} />
                 {control.RiskImplication && (
                   <Field l="Risk if fails"  v={control.RiskImplication} color="#A32D2D" />
@@ -182,7 +183,7 @@ const ClauseDetail = ({ clauseCode, onBack }) => {
               {isBlocked && (
                 <div style={{ marginTop: 8, padding: "6px 10px", background: "#FCEBEB",
                               borderRadius: 6, fontSize: 11, color: "#791F1F" }}>
-                  Blocked — role "{control.OwnerRole}" doesn't resolve to a job title or group.
+                  Blocked — role "{control.OwnerRole}" resolves to nobody, so this control is unroutable.
                   Assign someone to activate this control.
                 </div>
               )}
