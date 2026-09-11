@@ -21,7 +21,7 @@ from fastapi import (
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
-from agents.cdi_checker.service import DOC_CODE_PATTERN, run_cdi_check
+from agents.cdi_checker.service import is_valid_doc_code, run_cdi_check
 from agents.extractor.service import run_extraction_from_file
 from agents.llm_client import llm_generate
 from auth.validator import ROLE_ADMIN, ROLE_COMPLIANCE, CurrentUser, get_current_user
@@ -855,7 +855,7 @@ async def approval_impact(
             return blocked("The document owner cannot approve their own document.")
         if not settings.is_list_configured(settings.document_register_list_id):
             return blocked("Document Register list is not configured — approval cannot publish.")
-        if not DOC_CODE_PATTERN.match(str(doc.get("DocumentCode", "")).strip().upper()):
+        if not is_valid_doc_code(str(doc.get("DocumentCode", ""))):
             return blocked(
                 f"Document code '{doc.get('DocumentCode', '')}' is invalid — fix it before approving."
             )
@@ -1025,7 +1025,7 @@ async def _finalize_document_approval(
         )
 
     effective_date = date.today()
-    if not DOC_CODE_PATTERN.match(str(doc.get("DocumentCode", "")).strip().upper()):
+    if not is_valid_doc_code(str(doc.get("DocumentCode", ""))):
         raise HTTPException(
             status_code=422,
             detail=(

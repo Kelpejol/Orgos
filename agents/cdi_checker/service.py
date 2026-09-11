@@ -44,6 +44,34 @@ DOC_CODE_PATTERN = re.compile(
 COMBINED_DOC_CODE_PATTERN = re.compile(
     r"^DRG-[A-Z]{2,6}-[A-Z]{2,3}-[A-Z]{2,3}-[A-Z0-9]{2,6}-\d{2}-\d{2}$"
 )
+# Finds a controlled document code inside document text — matches BOTH the
+# standard form and the combined policy-and-procedure form (compound type),
+# e.g. DRG-ISMS-POL-ACP-01-26 and DRG-QI-POL-PRO-NCA-01-26.
+DOC_CODE_SEARCH_PATTERN = re.compile(
+    r"\bDRG-[A-Z]{2,6}-[A-Z]{2,3}(?:-[A-Z]{2,3})?-[A-Z0-9]{2,6}-\d{2}-\d{2}\b",
+    re.IGNORECASE,
+)
+
+
+def is_valid_doc_code(code: str) -> bool:
+    """
+    True for a well-formed controlled document code — standard OR combined
+    policy-and-procedure (compound type). Use this everywhere instead of
+    matching DOC_CODE_PATTERN directly, so combined documents aren't rejected.
+    """
+    c = (code or "").strip().upper()
+    return bool(DOC_CODE_PATTERN.match(c) or COMBINED_DOC_CODE_PATTERN.match(c))
+
+
+def find_doc_code_in_text(text: str) -> str:
+    """Recover a document code from the document body. "" if none present."""
+    m = DOC_CODE_SEARCH_PATTERN.search((text or "").upper())
+    if not m:
+        return ""
+    candidate = m.group(0).strip().upper()
+    return candidate if is_valid_doc_code(candidate) else ""
+
+
 _COMBINED_DOC_RE = re.compile(
     r"policies?\s*(?:and|&|/)\s*procedures?|\bpol[\s/\-]*pro\b",
     re.IGNORECASE,
@@ -377,20 +405,35 @@ def _has_section_heading(text: str, keyword: str) -> bool:
 
 
 def check_01_document_code(text: str, doc_code: str) -> dict:
-    """CDI-01: Document code present and in correct format."""
-    if not doc_code:
+    """
+    CDI-01: Document code present and in correct format.
+
+    If no code was recorded against the item, look inside the document body
+    before declaring one missing — a document that carries a valid code (including
+    the combined policy-and-procedure compound form) must not be flagged as
+    having no control number just because the register field was blank.
+    """
+    code = (doc_code or "").strip()
+    if not code:
+        recovered = find_doc_code_in_text(text)
+        if recovered:
+            result = _pass("CDI-01", "Document code format")
+            result["note"] = (
+                f"Code '{recovered}' read from the document body "
+                f"(it was not recorded on the lifecycle item)."
+            )
+            return result
         return _fail(
             "CDI-01", "Document code format",
             "No document code provided.",
             proposed_fix="Generate a code: DRG-{DEPT}-{TYPE}-{SHORT}-{SERIAL}-{YEAR}. E.g. DRG-ISMS-POL-ACP-01-26.",
             fix_source="Document Creation Standards §1",
         )
-    code = doc_code.strip()
     if DOC_CODE_PATTERN.match(code):
         return _pass("CDI-01", "Document code format")
     # Combined policy-and-procedure documents use a compound type (POL-PRO) —
     # accept their format rather than flagging it as malformed.
-    if is_combined_document(text, doc_code) and COMBINED_DOC_CODE_PATTERN.match(code):
+    if COMBINED_DOC_CODE_PATTERN.match(code):
         result = _pass("CDI-01", "Document code format")
         result["note"] = "Combined policy-and-procedure document — compound type accepted."
         return result

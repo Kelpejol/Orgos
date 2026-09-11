@@ -25,7 +25,7 @@ from urllib.parse import unquote, urlparse
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from agents.cdi_checker.service import DOC_CODE_PATTERN
+from agents.cdi_checker.service import is_valid_doc_code
 from agents.extractor.service import run_extraction_from_file
 from config import configure_logging, settings
 from graph.client import (
@@ -239,7 +239,7 @@ async def run_publish(
                 print("  -> SKIP: missing DocumentCode")
                 skipped += 1
                 continue
-            if not DOC_CODE_PATTERN.match(doc_code.strip().upper()):
+            if not is_valid_doc_code(doc_code):
                 print(f"  -> SKIP: invalid DocumentCode '{doc_code}'")
                 skipped += 1
                 continue

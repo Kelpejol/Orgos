@@ -47,7 +47,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import httpx
 
-from agents.cdi_checker.service import DOC_CODE_PATTERN, extract_text, run_cdi_check
+from agents.cdi_checker.service import (
+    DOC_CODE_SEARCH_PATTERN,
+    extract_text,
+    is_valid_doc_code,
+    run_cdi_check,
+)
 from config import configure_logging, settings
 from graph.auth import get_graph_access_token
 from graph.client import create_list_item, get_list_items, startup, shutdown
@@ -73,10 +78,6 @@ REGISTER_LIST_NAME = "Document Register"
 
 DEFAULT_OWNER_NAME = "System (SharePoint Intake)"
 DEFAULT_STANDARDS = "ISO 27001, ISO 9001, NDPA"
-DOC_CODE_SEARCH_PATTERN = re.compile(
-    r"\bDRG-[A-Z]{2,6}-[A-Z]{2,3}-[A-Z0-9]{2,6}-\d{2}-\d{2}\b",
-    re.IGNORECASE,
-)
 
 
 @dataclass(frozen=True)
@@ -398,7 +399,8 @@ def extract_document_code_from_text(text: str) -> str:
     if not match:
         return ""
     candidate = match.group(0).upper().strip()
-    return candidate if DOC_CODE_PATTERN.match(candidate) else ""
+    # Accepts the combined policy-and-procedure compound form too.
+    return candidate if is_valid_doc_code(candidate) else ""
 
 
 def classify_for_lifecycle(filename: str, folder_path: str, document_code: str) -> IntakeClassification:

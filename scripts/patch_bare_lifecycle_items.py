@@ -34,7 +34,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import httpx
 
-from agents.cdi_checker.service import extract_text, run_cdi_check, DOC_CODE_PATTERN
+from agents.cdi_checker.service import extract_text, run_cdi_check, is_valid_doc_code
 from config import configure_logging, settings
 from graph.auth import get_graph_access_token
 from graph.client import get_list_items, update_list_item, startup, shutdown
@@ -52,10 +52,8 @@ LIFECYCLE_LIST_NAME = "Document Lifecycle"
 DEFAULT_OWNER_NAME  = "System (SharePoint Intake)"
 DEFAULT_STANDARDS   = "ISO 27001, ISO 9001, NDPA"
 
-DOC_CODE_SEARCH_PATTERN = re.compile(
-    r"\bDRG-[A-Z]{2,6}-[A-Z]{2,3}-[A-Z0-9]{2,6}-\d{2}-\d{2}\b",
-    re.IGNORECASE,
-)
+# Shared, combined-aware pattern (matches the POL-PRO compound form too).
+from agents.cdi_checker.service import DOC_CODE_SEARCH_PATTERN  # noqa: E402
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -148,7 +146,7 @@ def extract_document_code_from_text(text: str) -> str:
     if not match:
         return ""
     candidate = match.group(0).upper().strip()
-    return candidate if DOC_CODE_PATTERN.match(candidate) else ""
+    return candidate if is_valid_doc_code(candidate) else ""
 
 
 def _clean_sp_text(text: str) -> str:

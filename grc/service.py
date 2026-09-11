@@ -13,7 +13,7 @@ from typing import Optional
 
 from pydantic import ValidationError
 
-from agents.cdi_checker.service import DOC_CODE_PATTERN
+from agents.cdi_checker.service import is_valid_doc_code
 from auth.validator import CurrentUser
 from graph.client import (
     create_list_item,
@@ -240,7 +240,7 @@ async def _sp_item_to_doc(item: dict) -> DocumentRead:
     """Convert a SharePoint List item dict to a DocumentRead schema."""
     fields = item.get("fields", {})
     document_code = fields.get(DOC_FIELDS["document_code"]) or "DRG-MISSING-DOC-00"
-    if not DOC_CODE_PATTERN.match(str(document_code).strip().upper()):
+    if not is_valid_doc_code(str(document_code)):
         raise ValueError(f"Invalid Document Register code '{document_code}' on item {item.get('id')}")
     title = fields.get(DOC_FIELDS["title"]) or document_code
     effective_date = _parse_date(fields.get(DOC_FIELDS["effective_date"])) or _today()

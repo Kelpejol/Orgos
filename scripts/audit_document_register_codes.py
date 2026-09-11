@@ -17,7 +17,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from agents.cdi_checker.service import DOC_CODE_PATTERN
+from agents.cdi_checker.service import is_valid_doc_code
 from config import configure_logging, settings
 from graph.client import get_list_items, startup, shutdown, update_list_item
 
@@ -43,7 +43,7 @@ async def run(withdraw_invalid: bool) -> None:
         for item in items:
             fields = item.get("fields", {})
             code = field_text(fields, "DocumentCode")
-            if not DOC_CODE_PATTERN.match(code.upper()):
+            if not is_valid_doc_code(code):
                 invalid.append(item)
 
         print("\n" + "=" * 72)
