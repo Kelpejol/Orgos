@@ -35,41 +35,88 @@ logger = logging.getLogger(__name__)
 #  Constants
 # =============================================================================
 
-DOC_CODE_PATTERN = re.compile(
-    r"^DRG-[A-Z]{2,6}-[A-Z]{2,3}-[A-Z0-9]{2,6}-\d{2}-\d{2}$"
-)
+# Per CDI v06 (§4.0 CODING) the trailing "-SERIAL-YEAR" suffix is retired —
+# a code now stops at the document ID, e.g. DRG-QI-PRO-CDI, not
+# DRG-QI-PRO-CDI-01-26. Confirmed by the compliance officer 2026-09:
+#   - The new-format cover template is the one to build against (no suffix).
+#   - Wani (Victoria Shobayo) is converting the ~112 legacy-format documents
+#     herself, on no fixed timeline — so BOTH shapes must be accepted
+#     indefinitely; there is no cutover date to design a hard switch around.
+# The estate itself is messy across that transition — new codes with no
+# suffix, legacy codes with a serial+year suffix, legacy codes with only a
+# serial (no year, esp. combined policy-and-procedure documents), and legacy
+# codes with no distinct mnemonic before the suffix. Trying to enumerate every
+# shape as its own regex is unmaintainable and prone to missing a real one (as
+# happened before: the combined-document fix assumed a serial+year suffix that
+# the real documents don't have). is_valid_doc_code() instead checks the
+# STRUCTURE directly — see its docstring for the shapes it accepts. (There is
+# deliberately no fixed DOC_CODE_PATTERN constant any more — the estate has too
+# many real shapes for one regex to be both correct and legible; see below.)
 
-# Combined policy-and-procedure documents carry a COMPOUND type segment
-# (e.g. DRG-QI-POL-PRO-CDI-01-26). They are legitimate — do not flag them.
-COMBINED_DOC_CODE_PATTERN = re.compile(
-    r"^DRG-[A-Z]{2,6}-[A-Z]{2,3}-[A-Z]{2,3}-[A-Z0-9]{2,6}-\d{2}-\d{2}$"
-)
-# Finds a controlled document code inside document text — matches BOTH the
-# standard form and the combined policy-and-procedure form (compound type),
-# e.g. DRG-ISMS-POL-ACP-01-26 and DRG-QI-POL-PRO-NCA-01-26.
-DOC_CODE_SEARCH_PATTERN = re.compile(
-    r"\bDRG-[A-Z]{2,6}-[A-Z]{2,3}(?:-[A-Z]{2,3})?-[A-Z0-9]{2,6}-\d{2}-\d{2}\b",
-    re.IGNORECASE,
-)
+# Broad CANDIDATE finder for recovering a code out of document body text: DRG
+# followed by 2-6 dash-separated alphanumeric groups. Deliberately loose — it
+# only proposes candidates; is_valid_doc_code() below does the real acceptance
+# check, so a loose find here can never let an invalid code through.
+DOC_CODE_SEARCH_PATTERN = re.compile(r"\bDRG(?:-[A-Z0-9]+){2,6}\b", re.IGNORECASE)
 
 
 def is_valid_doc_code(code: str) -> bool:
     """
-    True for a well-formed controlled document code — standard OR combined
-    policy-and-procedure (compound type). Use this everywhere instead of
-    matching DOC_CODE_PATTERN directly, so combined documents aren't rejected.
+    True for a well-formed controlled document code, new format OR any
+    legacy format still in the estate — see the module comment above for why
+    both must be accepted with no cutover date. Shapes accepted:
+
+      NEW canonical      DRG-[FUNCTION]-[TYPE]-[ID]               DRG-QI-PRO-CDI
+      NEW combined       DRG-[FUNCTION]-[TYPE]-[TYPE]-[ID]        DRG-QI-POL-PRO-NCA
+      LEGACY             DRG-[DEPT]-[TYPE]-[SHORT]-SERIAL-YEAR    DRG-CAE-PRO-3CX-01-26
+      LEGACY combined    DRG-[DEPT]-[TYPE]-[TYPE]-[SHORT]-SS-YY   DRG-QI-POL-PRO-NCA-01-26
+      LEGACY (no short)  DRG-[DEPT]-[TYPE]-SERIAL-YEAR            DRG-CLE-SOP-01-25
+      LEGACY single-serial combined (no year)                     DRG-QI-POL-PRO-NCA-01
+
+    Expressed structurally rather than as one rigid regex, since the estate's
+    real shapes vary too much for that (see the docs/CDT-V06-TEMPLATE-ANALYSIS.md
+    library scan — this covers all of them, both old and new, with one rule):
+    must start "DRG-", have a 2-6 letter FUNCTION/DEPT segment, then at least
+    one more segment — optionally followed by one or two trailing pure-2-digit
+    groups (a legacy SERIAL and/or YEAR). What's left after stripping those
+    must start with a 2-4 letter TYPE code.
     """
     c = (code or "").strip().upper()
-    return bool(DOC_CODE_PATTERN.match(c) or COMBINED_DOC_CODE_PATTERN.match(c))
+    if not c.startswith("DRG-"):
+        return False
+    parts = c.split("-")
+    if len(parts) < 4 or parts[0] != "DRG":
+        return False
+    if not all(parts[1:]):  # no empty segments, e.g. "DRG--PRO-CDI"
+        return False
+
+    dept = parts[1]
+    if not (dept.isalpha() and 2 <= len(dept) <= 6):
+        return False
+
+    body = parts[2:]
+    stripped = 0
+    while body and stripped < 2 and len(body[-1]) == 2 and body[-1].isdigit():
+        body = body[:-1]
+        stripped += 1
+    if not body:
+        return False  # nothing left for a TYPE code
+
+    type_code = body[0]
+    return bool(type_code.isalpha() and 2 <= len(type_code) <= 4)
 
 
 def find_doc_code_in_text(text: str) -> str:
-    """Recover a document code from the document body. "" if none present."""
-    m = DOC_CODE_SEARCH_PATTERN.search((text or "").upper())
-    if not m:
-        return ""
-    candidate = m.group(0).strip().upper()
-    return candidate if is_valid_doc_code(candidate) else ""
+    """
+    Recover a document code from the document body. Scans every DRG-prefixed
+    candidate (new format, legacy format, combined — any shape) and returns
+    the first that is actually valid. "" if none found.
+    """
+    for m in DOC_CODE_SEARCH_PATTERN.finditer((text or "").upper()):
+        candidate = m.group(0).strip().upper()
+        if is_valid_doc_code(candidate):
+            return candidate
+    return ""
 
 
 _COMBINED_DOC_RE = re.compile(
@@ -426,23 +473,22 @@ def check_01_document_code(text: str, doc_code: str) -> dict:
         return _fail(
             "CDI-01", "Document code format",
             "No document code provided.",
-            proposed_fix="Generate a code: DRG-{DEPT}-{TYPE}-{SHORT}-{SERIAL}-{YEAR}. E.g. DRG-ISMS-POL-ACP-01-26.",
-            fix_source="Document Creation Standards §1",
+            proposed_fix="Generate a code: DRG-{FUNCTION}-{TYPE}-{ID}. E.g. DRG-QI-PRO-CDI.",
+            fix_source="CDI Procedure §4.0 (Coding)",
         )
-    if DOC_CODE_PATTERN.match(code):
-        return _pass("CDI-01", "Document code format")
-    # Combined policy-and-procedure documents use a compound type (POL-PRO) —
-    # accept their format rather than flagging it as malformed.
-    if COMBINED_DOC_CODE_PATTERN.match(code):
+    if is_valid_doc_code(code):
         result = _pass("CDI-01", "Document code format")
-        result["note"] = "Combined policy-and-procedure document — compound type accepted."
+        # Combined policy-and-procedure documents use a compound type
+        # (POL-PRO) — surface that this was recognised, not just accepted.
+        if is_combined_document(text, code):
+            result["note"] = "Combined policy-and-procedure document — compound type accepted."
         return result
     return _fail(
         "CDI-01", "Document code format",
         f"Document code '{doc_code}' does not match the required format.",
         current_text=doc_code,
-        proposed_fix="Correct format: DRG-{DEPT}-{TYPE}-{SHORT}-{SERIAL}-{YEAR}. E.g. DRG-ISMS-POL-ACP-01-26.",
-        fix_source="Document Creation Standards §1",
+        proposed_fix="Correct format: DRG-{FUNCTION}-{TYPE}-{ID}. E.g. DRG-QI-PRO-CDI.",
+        fix_source="CDI Procedure §4.0 (Coding)",
     )
 
 
