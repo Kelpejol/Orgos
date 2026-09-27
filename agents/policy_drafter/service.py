@@ -7,10 +7,13 @@
 # =============================================================================
 
 import logging
+from datetime import date
 
 from agents.llm_client import llm_generate
 from agents.policy_drafter.docx_builder import build_docx
 from config import settings
+from lifecycle.schemas import CdtCoverFacts, RevisionHistoryEntry, StandardEntry
+from lifecycle.templates import load_master_template
 
 logger = logging.getLogger(__name__)
 
@@ -198,11 +201,16 @@ def generate_doc_code_base(department: str, doc_type: str, title: str) -> str:
 
 
 def _generate_doc_code(
-    department: str, doc_type: str, title: str, serial: str = "01",
+    department: str, doc_type: str, title: str, disambiguator: str = "",
 ) -> str:
+    """
+    v06 (CDI §4.0): DRG-[FUNCTION]-[TYPE]-[ID] — no trailing serial/year.
+    `disambiguator` is appended directly to the ID (e.g. "CDI2") only when the
+    plain code already collides with an existing document — see
+    generate_doc_code_base() + the caller's collision check.
+    """
     dept, type_code, short = _doc_code_parts(department, doc_type, title)
-    year = "26"
-    return f"DRG-{dept}-{type_code}-{short}-{serial}-{year}"
+    return f"DRG-{dept}-{type_code}-{short}{disambiguator}"
 
 
 # =============================================================================
@@ -215,19 +223,28 @@ async def draft_document(
     department:        str,
     notes:             str = "",
     standards_mapping: str = "",
-    serial:            str = "01",
+    disambiguator:     str = "",
 ) -> dict:
     """
     Generate a complete CDI-compliant document draft from a brief.
     Follows DRG-QI-REF-DOCS-01-26 Section 8 fifteen-step sequence.
 
+    v06: the cover/history come from the document TYPE's master CDT template
+    (fetched + structurally validated here — a missing/broken master raises
+    TemplateNotFoundError/InvalidTemplateError, which the caller surfaces as a
+    clear error rather than silently drafting a non-conforming cover by hand).
+    The AI never touches the cover's markers; it only writes body content
+    after them. See lifecycle/templates.py + lifecycle/merge.py.
+
     Returns a dict with:
-      doc_code, title, doc_type, department, sections (dict),
-      full_text (plain text), docx_buffer (BytesIO — ready to serve / upload)
+      doc_code, title, doc_type, department, sections (dict), full_text,
+      cdt_cover / revision_history (dicts — seed values for the lifecycle
+      item), docx_buffer (BytesIO — ready to serve / upload)
     """
     logger.info(f"Document Drafter starting: '{title}' ({doc_type}, {department})")
 
-    doc_code = _generate_doc_code(department, doc_type, title, serial)
+    doc_code = _generate_doc_code(department, doc_type, title, disambiguator)
+    master_template_bytes = await load_master_template(doc_type)
 
     # Default standards if not provided — ensures CDI-09 passes
     effective_standards = standards_mapping or "ISO 27001, ISO 9001, NDPA"
@@ -306,6 +323,28 @@ Classification:    Internal
 
 END OF DOCUMENT — {doc_code} v1.0 DRAFT"""
 
+    # ── Seed the CDT cover facts (v06) — Compliance refines these later via
+    # PATCH /lifecycle/documents/{id}/cover; these are a sensible starting
+    # point, not a final answer the AI is asserting. ─────────────────────────
+    today = date.today()
+    cdt_cover = CdtCoverFacts(
+        domain=department,
+        type_layer=doc_type,
+        classification="Internal use only",
+        distribution="All staff",
+        version="Draft",
+        standards=[
+            StandardEntry(name=s.strip(), reference="")
+            for s in effective_standards.split(",") if s.strip()
+        ],
+    )
+    revision_history = [RevisionHistoryEntry(
+        version="Draft",
+        date=today.strftime("%B %Y"),
+        purpose="Initial AI-generated draft",
+        approved_by="",
+    )]
+
     # ── Build the formatted .docx ─────────────────────────────────────────────
     draft_meta = {
         "doc_code":          doc_code,
@@ -315,13 +354,15 @@ END OF DOCUMENT — {doc_code} v1.0 DRAFT"""
         "standards_mapping": effective_standards,   # always non-empty — CDI-09 cover page
         "sections":          sections,
     }
-    logger.info("Building .docx...")
-    docx_buffer = build_docx(draft_meta)
+    logger.info("Building .docx from the master template...")
+    docx_buffer = build_docx(draft_meta, master_template_bytes)
     logger.info(f"Document Drafter complete: {doc_code}")
 
     return {
         **draft_meta,
-        "full_text":    full_text,
-        "docx_buffer":  docx_buffer,   # BytesIO — use in download endpoint
-        "ai_generated": True,
+        "full_text":       full_text,
+        "docx_buffer":     docx_buffer,   # BytesIO — use in download endpoint
+        "cdt_cover":       cdt_cover.model_dump(),
+        "revision_history": [h.model_dump() for h in revision_history],
+        "ai_generated":    True,
     }

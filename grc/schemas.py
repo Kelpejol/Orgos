@@ -12,6 +12,12 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+# CdtCoverFacts/RevisionHistoryEntry are the canonical CDT shapes — reused here
+# rather than duplicated, so the register and the merge engine can never drift
+# out of sync. Safe: lifecycle.schemas only imports grc.schemas under
+# TYPE_CHECKING (see its module comment), so this is not circular.
+from lifecycle.schemas import CdtCoverFacts
+
 
 # =============================================================================
 #  Shared
@@ -74,14 +80,44 @@ class DocumentBase(BaseModel):
     )
     status: DocumentStatus = Field(default=DocumentStatus.ACTIVE)
 
+    # ── Controlled Document Templating (CDT) control facts — v06 ──────────
+    # Drives the master-template merge. `current_version` (R0x) above is the
+    # existing, system-wide version convention (Standards Map etc. rely on
+    # it) — UNCHANGED and separate from `cdt_cover.version`, which is the
+    # LITERAL cover-page value (may be "Draft" before first approval) and has
+    # no "R" prefix. `effective_date`/`next_review_date` above are also
+    # reused as-is (real dates) and formatted into the human-printed cover
+    # style at merge time — see lifecycle.schemas.MergeContext.
+    #
+    # Bundled into ONE field (not one column per cover fact) because OrgOS
+    # cannot create SharePoint columns — see lifecycle/schemas.py's module
+    # comment for the full reasoning.
+    cdt_cover: Optional[CdtCoverFacts] = Field(
+        default=None,
+        description="v06 cover-page control facts (domain, parent document, "
+                    "owner role/group, approvals, classification, distribution, "
+                    "standards). All optional so existing create paths keep working.",
+    )
+    revision_history: list[dict] = Field(
+        default_factory=list,
+        description="Revision-history rows; each {version,date,purpose,approved_by}. Stored as JSON.",
+    )
+
     @field_validator("document_code")
     @classmethod
     def validate_doc_code_format(cls, v: str) -> str:
-        """Enforce DRG-[DEPT]-[TYPE]-[REF]-[YY] format."""
-        parts = v.split("-")
-        if len(parts) < 4 or parts[0] != "DRG":
+        """
+        Enforce a well-formed controlled document code — v06 canonical
+        (DRG-[FUNCTION]-[TYPE]-[ID]) or any real legacy shape still in the
+        estate. Reuses the one true acceptance rule (agents.cdi_checker) so
+        this can never silently disagree with what CDI-01/approval/publish
+        accept elsewhere.
+        """
+        from agents.cdi_checker.service import is_valid_doc_code
+        if not is_valid_doc_code(v):
             raise ValueError(
-                f"Document code '{v}' must follow format: DRG-[DEPT]-[TYPE]-[REF]-[YY]"
+                f"Document code '{v}' is not a valid controlled document code "
+                f"(e.g. DRG-QI-PRO-CDI, or a legacy DRG-ISMS-POL-ACP-01-26)."
             )
         return v.upper()
 
@@ -104,6 +140,9 @@ class DocumentUpdate(BaseModel):
     applicable_standards: Optional[list[str]] = None
     status: Optional[DocumentStatus] = None
     owner_id: Optional[str] = None
+    # CDT control facts (all optional on PATCH)
+    cdt_cover: Optional[CdtCoverFacts] = None
+    revision_history: Optional[list[dict]] = None
 
 
 class DocumentRead(DocumentBase):

@@ -6,11 +6,10 @@
 # =============================================================================
 
 import io
-from datetime import date
+
 from docx import Document
-from docx.shared import Pt, Inches, RGBColor, Cm
+from docx.shared import Pt, Inches, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.enum.table import WD_TABLE_ALIGNMENT, WD_ALIGN_VERTICAL
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 
@@ -22,10 +21,6 @@ from docx.oxml import OxmlElement
 BRAND_DARK   = RGBColor(0x1A, 0x1A, 0x2E)   # near-black navy
 BRAND_ACCENT = RGBColor(0x37, 0x8A, 0xDD)   # Dragnet blue
 BRAND_MID    = RGBColor(0x44, 0x47, 0x5A)   # dark grey
-BRAND_LIGHT  = RGBColor(0xF4, 0xF6, 0xFA)   # off-white background
-RULE_GREY    = RGBColor(0xCC, 0xCC, 0xCC)
-WHITE        = RGBColor(0xFF, 0xFF, 0xFF)
-RED_DRAFT    = RGBColor(0xA3, 0x2D, 0x2D)
 
 
 # =============================================================================
@@ -43,32 +38,6 @@ def _set_para_border_bottom(para, color: str = "CCCCCC", size: int = 4):
     bottom.set(qn("w:color"), color)
     pBdr.append(bottom)
     pPr.append(pBdr)
-
-
-def _set_cell_shading(cell, fill_hex: str):
-    """Set cell background shading (ShadingType.CLEAR pattern)."""
-    tc   = cell._tc
-    tcPr = tc.get_or_add_tcPr()
-    shd  = OxmlElement("w:shd")
-    shd.set(qn("w:val"),   "clear")
-    shd.set(qn("w:color"), "auto")
-    shd.set(qn("w:fill"),  fill_hex)
-    tcPr.append(shd)
-
-
-def _set_cell_borders(cell, color: str = "CCCCCC"):
-    """Set thin borders on a table cell."""
-    tc   = cell._tc
-    tcPr = tc.get_or_add_tcPr()
-    tcBorders = OxmlElement("w:tcBorders")
-    for side in ("top", "left", "bottom", "right"):
-        el = OxmlElement(f"w:{side}")
-        el.set(qn("w:val"),   "single")
-        el.set(qn("w:sz"),    "4")
-        el.set(qn("w:space"), "0")
-        el.set(qn("w:color"), color)
-        tcBorders.append(el)
-    tcPr.append(tcBorders)
 
 
 def _run(para, text: str, bold=False, italic=False,
@@ -175,252 +144,43 @@ def _parse_and_add_lines(doc: Document, text: str, is_policy_statement: bool = F
 
         i += 1
 
-
 # =============================================================================
-#  Cover page
-# =============================================================================
-
-def _add_cover(doc: Document, draft: dict):
-    """Add a styled cover page."""
-    # Company name
-    p = doc.add_paragraph()
-    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    p.paragraph_format.space_before = Pt(60)
-    p.paragraph_format.space_after  = Pt(4)
-    _run(p, "DRAGNET SOLUTIONS LIMITED", bold=True, size_pt=14, color=BRAND_DARK)
-
-    # Horizontal rule
-    rule = doc.add_paragraph()
-    rule.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    _set_para_border_bottom(rule, color="378ADD", size=8)
-
-    # Document title
-    p2 = doc.add_paragraph()
-    p2.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    p2.paragraph_format.space_before = Pt(20)
-    p2.paragraph_format.space_after  = Pt(8)
-    _run(p2, draft["title"].upper(), bold=True, size_pt=16, color=BRAND_ACCENT)
-
-    # DRAFT watermark badge
-    p3 = doc.add_paragraph()
-    p3.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    p3.paragraph_format.space_after = Pt(32)
-    _run(p3, "  DRAFT — AI GENERATED — PENDING REVIEW  ",
-         bold=True, size_pt=9, color=RED_DRAFT)
-
-    # Metadata table
-    meta_table = doc.add_table(rows=6, cols=2)
-    meta_table.alignment = WD_TABLE_ALIGNMENT.CENTER
-    meta_table.style = "Table Grid"
-
-    col_w = [Inches(2.0), Inches(4.5)]
-    for row in meta_table.rows:
-        row.cells[0].width = col_w[0]
-        row.cells[1].width = col_w[1]
-
-    rows_data = [
-        ("Document Code",  draft["doc_code"]),
-        ("Document Type",  draft["doc_type"]),
-        ("Department",     draft["department"]),
-        ("Version",        "1.0"),
-        ("Status",         "DRAFT"),
-        ("Date",           "[DATE — to be completed by owner]"),
-    ]
-
-    for i, (label, value) in enumerate(rows_data):
-        c0, c1 = meta_table.rows[i].cells
-        _set_cell_shading(c0, "1A1A2E")
-        _set_cell_shading(c1, "F4F6FA")
-        _set_cell_borders(c0)
-        _set_cell_borders(c1)
-        c0.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
-        c1.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
-        p0 = c0.paragraphs[0]
-        p0.paragraph_format.space_before = Pt(4)
-        p0.paragraph_format.space_after  = Pt(4)
-        _run(p0, label, bold=True, size_pt=9, color=WHITE)
-        p1 = c1.paragraphs[0]
-        p1.paragraph_format.space_before = Pt(4)
-        p1.paragraph_format.space_after  = Pt(4)
-        _run(p1, value, size_pt=10,
-             color=BRAND_DARK if label != "Status" else RED_DRAFT,
-             bold=(label == "Status"))
-
-    # Standards
-    if draft.get("standards_mapping"):
-        doc.add_paragraph()
-        p4 = doc.add_paragraph()
-        p4.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        _run(p4, f"Standards: {draft['standards_mapping']}", size_pt=9,
-             color=BRAND_MID, italic=True)
-
-    doc.add_page_break()
-
-
-# =============================================================================
-#  Revision history table
+#  Main builder — v06
+#
+#  The cover, standards block and revision-history table are NOT hand-built
+#  here any more — they come from the document TYPE's master CDT template
+#  (fetched + validated by the caller via lifecycle.templates.load_master_
+#  template). This function opens THAT document and appends the AI-generated
+#  body content after it, leaving the master's {{ markers }} untouched — the
+#  same "AI never touches the file; deterministic merge does" principle as
+#  the rest of CDT. The lifecycle item's cover facts (seeded by
+#  draft_document()) get merged into those markers later, on demand
+#  (GET .../preview.pdf) and at approval (_finalize_document_approval) — never
+#  here. This also means the master template's own page setup, fonts and
+#  styling are respected, not overridden by a second, competing style.
 # =============================================================================
 
-def _add_revision_history(doc: Document, draft: dict):
-    _heading(doc, "Revision History", level=1)
-
-    tbl = doc.add_table(rows=2, cols=4)
-    tbl.style = "Table Grid"
-    tbl.alignment = WD_TABLE_ALIGNMENT.LEFT
-
-    col_widths = [Inches(0.7), Inches(1.5), Inches(1.8), Inches(2.5)]
-    headers = ["Version", "Date", "Author", "Change"]
-
-    # Header row
-    hdr_row = tbl.rows[0]
-    for j, (hdr, w) in enumerate(zip(headers, col_widths)):
-        cell = hdr_row.cells[j]
-        cell.width = w
-        _set_cell_shading(cell, "1A1A2E")
-        _set_cell_borders(cell)
-        p = cell.paragraphs[0]
-        p.paragraph_format.space_before = Pt(3)
-        p.paragraph_format.space_after  = Pt(3)
-        _run(p, hdr, bold=True, size_pt=9, color=WHITE)
-
-    # Data row
-    data_row = tbl.rows[1]
-    data = ["1.0", "[DATE]", "[AUTHOR]", "Initial draft — AI-generated"]
-    for j, (val, w) in enumerate(zip(data, col_widths)):
-        cell = data_row.cells[j]
-        cell.width = w
-        _set_cell_shading(cell, "F4F6FA")
-        _set_cell_borders(cell)
-        p = cell.paragraphs[0]
-        p.paragraph_format.space_before = Pt(3)
-        p.paragraph_format.space_after  = Pt(3)
-        _run(p, val, size_pt=9, color=BRAND_MID)
-
-    doc.add_paragraph()
-
-
-# =============================================================================
-#  Review and approval table
-# =============================================================================
-
-def _add_review_approval(doc: Document):
-    _heading(doc, "8. Review and Approval", level=1)
-
-    tbl = doc.add_table(rows=5, cols=2)
-    tbl.style = "Table Grid"
-    tbl.alignment = WD_TABLE_ALIGNMENT.LEFT
-
-    col_widths = [Inches(2.5), Inches(4.0)]
-    rows_data = [
-        ("Document Owner",    "[ROLE FROM ROLE REGISTER]"),
-        ("Approved By",       "[APPROVER NAME AND ROLE]"),
-        ("Effective Date",    "[DATE]"),
-        ("Next Review Date",  "[DATE + 12 MONTHS]"),
-        ("Classification",    "Internal"),
-    ]
-
-    for i, (label, value) in enumerate(rows_data):
-        c0, c1 = tbl.rows[i].cells
-        c0.width = col_widths[0]
-        c1.width = col_widths[1]
-        _set_cell_shading(c0, "F4F6FA")
-        _set_cell_shading(c1, "FFFFFF")
-        _set_cell_borders(c0)
-        _set_cell_borders(c1)
-        p0 = c0.paragraphs[0]
-        p0.paragraph_format.space_before = Pt(4)
-        p0.paragraph_format.space_after  = Pt(4)
-        _run(p0, label, bold=True, size_pt=9, color=BRAND_DARK)
-        p1 = c1.paragraphs[0]
-        p1.paragraph_format.space_before = Pt(4)
-        p1.paragraph_format.space_after  = Pt(4)
-        _run(p1, value, size_pt=9, color=BRAND_MID, italic=True)
-
-
-# =============================================================================
-#  Header / Footer
-# =============================================================================
-
-def _add_header_footer(doc: Document, draft: dict):
-    section = doc.sections[0]
-
-    # Header
-    header = section.header
-    header.is_linked_to_previous = False
-    hp = header.paragraphs[0] if header.paragraphs else header.add_paragraph()
-    hp.clear()
-    hp.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-    _run(hp, f"{draft['doc_code']}  |  v1.0 DRAFT", size_pt=8,
-         color=BRAND_MID, italic=True)
-    _set_para_border_bottom(hp, color="CCCCCC", size=4)
-
-    # Footer
-    footer = section.footer
-    footer.is_linked_to_previous = False
-    fp = footer.paragraphs[0] if footer.paragraphs else footer.add_paragraph()
-    fp.clear()
-    fp.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    _run(fp, "DRAGNET SOLUTIONS LIMITED  |  CONFIDENTIAL — INTERNAL USE ONLY  |  ",
-         size_pt=8, color=BRAND_MID)
-    # Page number field
-    fldChar1 = OxmlElement("w:fldChar")
-    fldChar1.set(qn("w:fldCharType"), "begin")
-    instrText = OxmlElement("w:instrText")
-    instrText.text = "PAGE"
-    fldChar2 = OxmlElement("w:fldChar")
-    fldChar2.set(qn("w:fldCharType"), "end")
-    run = fp.add_run()
-    run.font.size = Pt(8)
-    run.font.color.rgb = BRAND_MID
-    run._r.append(fldChar1)
-    run._r.append(instrText)
-    run._r.append(fldChar2)
-
-
-# =============================================================================
-#  Main builder
-# =============================================================================
-
-def build_docx(draft: dict) -> io.BytesIO:
+def build_docx(draft: dict, master_template_bytes: bytes) -> io.BytesIO:
     """
-    Build a formatted .docx from a draft dict produced by service.py.
+    Build a formatted .docx from a draft dict produced by service.py, on top
+    of the document type's master CDT template.
 
     Parameters
     ----------
     draft : dict
-        Must contain: doc_code, title, doc_type, department,
-        standards_mapping, sections {purpose, scope, policy_statement,
-        responsibilities, procedure, records}
+        Must contain: doc_code, sections {purpose, scope, policy_statement,
+        responsibilities, procedure, records}.
+    master_template_bytes : bytes
+        The type's master template (cover + revision-history markers intact).
 
     Returns
     -------
     io.BytesIO
-        Ready to send as HTTP response or upload to SharePoint.
+        Ready to send as HTTP response or upload to SharePoint. Still
+        contains live {{ markers }} in its cover — this is the SOURCE
+        document, not a published copy.
     """
-    doc = Document()
-
-    # Page setup — A4 with 1-inch margins
-    for section in doc.sections:
-        section.page_width   = Cm(21)
-        section.page_height  = Cm(29.7)
-        section.left_margin  = Inches(1)
-        section.right_margin = Inches(1)
-        section.top_margin   = Inches(1)
-        section.bottom_margin = Inches(0.8)
-
-    # Default paragraph spacing
-    style = doc.styles["Normal"]
-    style.font.name = "Arial"
-    style.font.size = Pt(10)
-
-    # ── Cover page ───────────────────────────────────────────────────────────
-    _add_cover(doc, draft)
-
-    # ── Header / Footer ──────────────────────────────────────────────────────
-    _add_header_footer(doc, draft)
-
-    # ── Revision history ─────────────────────────────────────────────────────
-    _add_revision_history(doc, draft)
+    doc = Document(io.BytesIO(master_template_bytes))
 
     sections = draft.get("sections", {})
 
@@ -474,15 +234,12 @@ def build_docx(draft: dict) -> io.BytesIO:
     _body(doc, "[To be completed by document owner]", indent=False)
     doc.add_paragraph()
 
-    # ── 8. Review and Approval ────────────────────────────────────────────────
-    _add_review_approval(doc)
-
     # ── End marker ────────────────────────────────────────────────────────────
     doc.add_paragraph()
     end_para = doc.add_paragraph()
     end_para.alignment = WD_ALIGN_PARAGRAPH.CENTER
     _set_para_border_bottom(end_para, color="378ADD", size=4)
-    _run(end_para, f"END OF DOCUMENT — {draft['doc_code']} v1.0 DRAFT",
+    _run(end_para, f"END OF DOCUMENT — {draft['doc_code']}",
          size_pt=8, color=BRAND_MID, italic=True)
 
     # ── Serialize ─────────────────────────────────────────────────────────────

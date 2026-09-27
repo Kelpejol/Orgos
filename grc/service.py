@@ -6,6 +6,7 @@
 # =============================================================================
 
 import calendar
+import json
 import logging
 import re
 from datetime import date, datetime, timedelta, timezone
@@ -14,6 +15,7 @@ from typing import Optional
 from pydantic import ValidationError
 
 from agents.cdi_checker.service import is_valid_doc_code
+from lifecycle.schemas import CdtCoverFacts
 from auth.validator import CurrentUser
 from graph.client import (
     create_list_item,
@@ -260,6 +262,10 @@ async def _sp_item_to_doc(item: dict) -> DocumentRead:
         linked_controls_count=_parse_int(fields.get(DOC_FIELDS["linked_controls_count"])) or 0,
         sharepoint_url=fields.get(DOC_FIELDS["sharepoint_url"]) or None,
         status=fields.get(DOC_FIELDS["status"]) or "Active",
+        # CDT control facts (optional — absent on documents created before CDT,
+        # or before the CDTCoverFacts column has been added to this list)
+        cdt_cover=CdtCoverFacts.from_json(fields.get(DOC_FIELDS["cdt_cover"])),
+        revision_history=_parse_json_list(fields.get(DOC_FIELDS["revision_history"])),
         created=_parse_datetime(item.get("createdDateTime")),
         modified=_parse_datetime(item.get("lastModifiedDateTime")),
     )
@@ -388,6 +394,28 @@ def _parse_int(value) -> Optional[int]:
         return None
 
 
+def _parse_json_list(value) -> list[dict]:
+    """
+    Parse a SharePoint JSON-array text column (e.g. RevisionHistory) into a list
+    of dicts. Tolerant on READ: a blank or malformed value yields [] (logged),
+    so one bad row never breaks a document listing. Strict shape validation for
+    the merge happens in the CDT layer (lifecycle.schemas.RevisionHistoryEntry).
+    """
+    if not value:
+        return []
+    if isinstance(value, list):
+        return [v for v in value if isinstance(v, dict)]
+    try:
+        data = json.loads(value)
+    except (json.JSONDecodeError, TypeError) as exc:
+        logger.warning("Ignoring malformed JSON list column: %s", exc)
+        return []
+    if not isinstance(data, list):
+        logger.warning("JSON list column was not an array; ignoring")
+        return []
+    return [v for v in data if isinstance(v, dict)]
+
+
 # =============================================================================
 #  Document Register
 # =============================================================================
@@ -443,6 +471,13 @@ async def create_document(doc: DocumentCreate) -> DocumentRead:
     }
     if doc.next_review_date:
         fields[DOC_FIELDS["next_review_date"]] = doc.next_review_date.isoformat()
+    # CDT control facts — one bundled JSON column (see grc/constants.py)
+    if doc.cdt_cover is not None:
+        fields[DOC_FIELDS["cdt_cover"]] = doc.cdt_cover.to_json()
+    if doc.revision_history:
+        fields[DOC_FIELDS["revision_history"]] = json.dumps(
+            doc.revision_history, ensure_ascii=False
+        )
     fields.update(_document_owner_write_field(doc.owner_id))
 
     item = await create_list_item(
@@ -471,6 +506,13 @@ async def update_document(item_id: str, doc: DocumentUpdate) -> DocumentRead:
         fields[DOC_FIELDS["applicable_standards"]] = ";".join(doc.applicable_standards)
     if doc.status is not None:
         fields[DOC_FIELDS["status"]] = doc.status.value
+    # CDT control facts — partial update: write only if provided
+    if doc.cdt_cover is not None:
+        fields[DOC_FIELDS["cdt_cover"]] = doc.cdt_cover.to_json()
+    if doc.revision_history is not None:
+        fields[DOC_FIELDS["revision_history"]] = json.dumps(
+            doc.revision_history, ensure_ascii=False
+        )
     if doc.owner_id is not None:
         fields.update(_document_owner_write_field(doc.owner_id))
 

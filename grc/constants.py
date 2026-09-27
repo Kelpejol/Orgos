@@ -41,6 +41,15 @@ DOC_FIELDS = {
     "linked_controls_count":"LinkedControlsCount",
     "status":              "Status",
     "sharepoint_url":      "SharePointUrl",
+    # Controlled Document Templating (CDT) control facts — v06. TWO new
+    # SharePoint columns required on the Document Register list (both
+    # "Multiple lines of text"): CDTCoverFacts (one JSON object — every
+    # cover-page fact except doc_code/title/type, which already have their
+    # own columns above) and RevisionHistory (a JSON array). Bundled rather
+    # than one column per fact because OrgOS cannot create SharePoint columns
+    # itself — see lifecycle/schemas.py's module comment.
+    "cdt_cover":           "CDTCoverFacts",
+    "revision_history":    "RevisionHistory",   # JSON array in a multi-line text column
     # Withdrawal provenance — new SharePoint columns required on Document Register list
     "withdrawal_reason":   "WithdrawalReason",
     "withdrawn_date":      "WithdrawnDate",

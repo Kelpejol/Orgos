@@ -108,6 +108,7 @@ OrgOS is a **Tier-1 standalone module** of the Dragnet ERP (own `*.dragnet.ng` s
 | HTTP client | httpx ≥ 0.27 | All Graph API calls — never `requests` or `aiohttp` |
 | Data validation | Pydantic v2 ≥ 2.7 | `model_validate()`, `model_dump()`, `@field_validator` |
 | Settings | pydantic-settings | `BaseSettings` + `.env` file |
+| Observability | OpenTelemetry OTLP/HTTP | FastAPI, HTTPX, logs, metrics, and spans exportable to Grafana |
 | JWT validation | python-jose[cryptography] | RS256, Entra ID tokens |
 | PDF extraction | pypdf | Text extraction from uploaded PDFs |
 | DOCX extraction | python-docx | Text extraction + DOCX generation |
@@ -800,8 +801,48 @@ APP_PORT=8000
 LOG_LEVEL=DEBUG
 SKIP_AUTH=false                         # true only for local dev with no real ERP — see §9
 
+# ── Observability / Grafana OTLP ─────────────────────────────────
+# Leave blank locally. In staging/prod, DevOps can enable traces, metrics,
+# logs, FastAPI spans, HTTPX outbound spans, and app lifecycle spans with:
+OTEL_EXPORTER_OTLP_ENDPOINT=http://grafana-alloy:4318
+OTEL_SERVICE_NAME=orgos-api
+OTEL_SERVICE_VERSION=1.0.0
+OTEL_METRICS_INTERVAL_MS=60000
+# Grafana Cloud/secured collectors can add:
+# OTEL_EXPORTER_OTLP_HEADERS=Authorization=Basic <base64-instance-and-token>
+
 # ── Graph Search (NL Search optional enhancement) ────────────────
 GRAPH_SEARCH_REGION=EUR                 # NAM | EUR | APC — match your tenant region
+```
+
+### Grafana Observability
+
+OrgOS exports telemetry over OTLP/HTTP. Point `OTEL_EXPORTER_OTLP_ENDPOINT`
+at Grafana Alloy, an OpenTelemetry Collector, or Grafana Cloud. The app appends
+the standard `/v1/traces`, `/v1/metrics`, and `/v1/logs` paths automatically.
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=http://grafana-alloy:4318 uvicorn main:app --host 0.0.0.0 --port 8000
+```
+
+That one line enables:
+
+- inbound FastAPI request traces and request metrics
+- outbound `httpx` traces for Microsoft Graph, LLM gateway, Ollama, and other HTTP calls
+- Python application logs exported as OTLP logs
+- custom spans/counters for app startup, shutdown, `/health`, and Graph health
+
+Optional controls:
+
+```bash
+OTEL_ENABLED=true                         # force-enable even when using signal-specific endpoints
+OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=...    # override traces endpoint
+OTEL_EXPORTER_OTLP_METRICS_ENDPOINT=...   # override metrics endpoint
+OTEL_EXPORTER_OTLP_LOGS_ENDPOINT=...      # override logs endpoint
+OTEL_TRACES_ENABLED=true
+OTEL_METRICS_ENABLED=true
+OTEL_LOGS_ENABLED=true
+OTEL_EXCLUDED_URLS=/health                # comma-separated FastAPI instrumentation exclusions
 ```
 
 ### Frontend `.env.local`

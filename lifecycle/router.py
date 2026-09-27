@@ -18,7 +18,7 @@ from fastapi import (
     APIRouter, Depends, File, HTTPException,
     UploadFile, status,
 )
-from fastapi.responses import RedirectResponse
+from fastapi.responses import Response
 from pydantic import BaseModel
 
 from agents.cdi_checker.service import is_valid_doc_code, run_cdi_check
@@ -28,15 +28,23 @@ from auth.validator import ROLE_ADMIN, ROLE_COMPLIANCE, CurrentUser, get_current
 from config import settings
 from graph.auth import get_graph_access_token
 from graph.client import (
+    convert_drive_item_to_pdf,
     create_list_item,
     download_file_from_sharepoint,
+    ensure_drive_folder,
     get_list_item,
     get_list_items,
+    resolve_compliance_drive,
     resolve_sp_user_lookup_id,
     resolve_user,
     update_list_item,
+    upload_bytes_to_drive,
 )
 from graph.exceptions import GraphAPIError, GraphNotFoundError
+from lifecycle.graft import graft_cover_onto_document
+from lifecycle.merge import MergeError, merge, scan_markers
+from lifecycle.schemas import CdtCoverFacts, MergeContext, RevisionHistoryEntry, StandardEntry
+from lifecycle.templates import InvalidTemplateError, TemplateNotFoundError, load_master_template
 
 logger = logging.getLogger(__name__)
 
@@ -251,6 +259,11 @@ async def _sp_to_doc(item: dict) -> dict:
         "SensitisationDeadline":    f.get("SensitisationDeadline", ""),
         "StakeholderResponseCount": int(f.get("StakeholderResponseCount", 0) or 0),
         "Stakeholders":             stakeholders,
+        # CDT control facts (v06) — absent/blank until the CDTCoverFacts column
+        # has been added by an admin (OrgOS cannot create columns itself) and/or
+        # until Compliance has entered any cover facts for this document.
+        "CDTCoverFacts":            f.get("CDTCoverFacts", ""),
+        "RevisionHistory":          f.get("RevisionHistory", ""),
         "created":                  item.get("createdDateTime", ""),
         "modified":                 item.get("lastModifiedDateTime", ""),
     }
@@ -302,6 +315,19 @@ def _next_version(current: str) -> str:
     m = re.match(r"^\s*R?0*(\d+)\s*$", str(current or ""), re.IGNORECASE)
     n = int(m.group(1)) if m else 1
     return f"R{n + 1:02d}"
+
+
+def _next_cdt_version(current: str) -> str:
+    """
+    The CDT cover's OWN "Version" numbering — separate from the system-wide
+    "R0x" convention above (real documents print plain numbers: 04, 05, 06…).
+    "Draft"/blank → "01" (first issue); a numeric string bumps by one,
+    zero-padded to 2 digits, matching the estate's own convention.
+    """
+    m = re.match(r"^\s*0*(\d+)\s*$", str(current or "").strip())
+    if not m:
+        return "01"
+    return f"{int(m.group(1)) + 1:02d}"
 
 
 class ProgressDoc(BaseModel):
@@ -1037,6 +1063,41 @@ async def _finalize_document_approval(
     revision_of = str(doc.get("RevisionOf") or "").strip()
     new_version = "R01"
 
+    # ── CDT (v06): advance the cover facts + revision history, and attempt to
+    # produce the PUBLISHED (marker-free) copy for the register. Best-effort —
+    # a merge problem must never block approval itself; it falls back to the
+    # raw source, exactly as before CDT existed, with a clear warning logged.
+    approver_name = await _resolve_display_name(approver_oid, "")
+    cdt_cover = _load_cdt_cover(doc)
+    cdt_history = _load_revision_history(doc)
+    cdt_cover.version = _next_cdt_version(cdt_cover.version)
+    cdt_cover.effective_date = effective_date.strftime("%B %Y")
+    if not cdt_cover.final_approval:
+        cdt_cover.final_approval = approver_name or cdt_cover.final_approval
+    cdt_history = cdt_history + [RevisionHistoryEntry(
+        version=cdt_cover.version,
+        date=cdt_cover.effective_date,
+        purpose=(approval_note or "Approved for use")[:500],
+        approved_by=approver_name or str(approver_oid),
+    )]
+
+    published_url = doc.get("SharePointFileUrl", "")  # fallback: reuse the source as-is
+    if doc.get("SharePointFileUrl"):
+        try:
+            source_bytes, filename = await download_file_from_sharepoint(doc["SharePointFileUrl"])
+            merge_ctx = MergeContext.from_lifecycle_dict({
+                **doc, "CDTCoverFacts": cdt_cover.to_json(),
+                "RevisionHistory": RevisionHistoryEntry.list_to_json(cdt_history),
+            })
+            result = merge(source_bytes, merge_ctx)
+            published_url = await _upload_to_sharepoint(item_id, filename or f"{doc['DocumentCode']}.docx", result.document)
+        except Exception as exc:
+            logger.warning(
+                f"CDT merge at approval failed for lifecycle {item_id} — publishing the "
+                f"unmerged source instead (cover markers will still show as {{ }} in the "
+                f"Register copy until this is fixed): {exc}"
+            )
+
     if revision_of:
         # ── Revision of an existing register document — update in place ──
         # The register item keeps its identity; the version bumps R01→R02→…
@@ -1060,6 +1121,8 @@ async def _finalize_document_approval(
             "Status":         "Active",
             "CurrentVersion": new_version,
             "EffectiveDate":  effective_date.isoformat(),
+            "CDTCoverFacts":  cdt_cover.to_json(),
+            "RevisionHistory": RevisionHistoryEntry.list_to_json(cdt_history),
         }
         if doc.get("Title"):
             dr_update["Title"] = doc["Title"]
@@ -1100,6 +1163,8 @@ async def _finalize_document_approval(
             "EffectiveDate":       effective_date.isoformat(),
             "ApplicableStandards": doc.get("StandardsMapping", ""),
             "LinkedControlsCount": 0,
+            "CDTCoverFacts":       cdt_cover.to_json(),
+            "RevisionHistory":     RevisionHistoryEntry.list_to_json(cdt_history),
         }
         if doc.get("SensitisationDeadline"):
             dr_fields["NextReviewDate"] = doc["SensitisationDeadline"]
@@ -1123,17 +1188,19 @@ async def _finalize_document_approval(
             f"{item_id}: {doc['DocumentCode']}"
         )
 
-    # Link the register entry to its source file. Written as its OWN update:
-    # the previous code batched SharePointUrl together with a "Source" field
-    # that does not exist on the list, so SharePoint rejected the whole write
-    # and the URL silently never landed. Keeping SharePointUrl isolated fixes it.
-    if register_item_id and (doc.get("SharePointFileUrl") or ""):
+    # Link the register entry to its PUBLISHED file (the CDT-merged, marker-free
+    # copy where the merge above succeeded; the raw source as a fallback where
+    # it did not). Written as its OWN update: the previous code batched
+    # SharePointUrl together with a "Source" field that does not exist on the
+    # list, so SharePoint rejected the whole write and the URL silently never
+    # landed. Keeping SharePointUrl isolated fixes it.
+    if register_item_id and published_url:
         try:
             await update_list_item(
                 settings.document_register_list_id,
                 "Document Register",
                 register_item_id,
-                {"SharePointUrl": doc["SharePointFileUrl"]},
+                {"SharePointUrl": published_url},
             )
         except Exception as exc:
             logger.warning(
@@ -1147,7 +1214,16 @@ async def _finalize_document_approval(
         "ApprovedDate":               effective_date.isoformat(),
         "ApproverEntraId":            approver_oid,
         "LinkedDocumentRegisterItem": register_item_id,
+        # CDT: persist the advanced cover facts + appended history row on the
+        # lifecycle item too, and its file pointer if the merge produced a
+        # published copy — this item is now terminal (Approved), so there is
+        # no future merge expected against it; reflecting the final state here
+        # keeps its own record consistent with the register entry it created.
+        "CDTCoverFacts":              cdt_cover.to_json(),
+        "RevisionHistory":            RevisionHistoryEntry.list_to_json(cdt_history),
     }
+    if published_url and published_url != doc.get("SharePointFileUrl"):
+        fields["SharePointFileUrl"] = published_url
     if approval_note:
         fields["Notes"] = (doc.get("Notes") or "") + f"\n\n{approval_note}"
     await update_list_item(_get_list_id(), _LIST_NAME, item_id, fields)
@@ -1505,6 +1581,281 @@ async def reverse_approval(
         _handle_error(exc, f"reverse approval {item_id}")
 
 
+# =============================================================================
+#  Controlled Document Templating (CDT) — v06 cover facts + live preview
+#
+#  The lifecycle item's SharePointFileUrl is the SOURCE document: it has real
+#  body content (drafted by the author/AI) but its cover + revision-history
+#  tables still carry live {{ markers }} — never hand-filled. Compliance edits
+#  the underlying facts here (any field, at any time — confirmed answer #4);
+#  a preview merges those facts into a FRESH copy for viewing, and the SOURCE
+#  itself is never overwritten by a preview. Approval performs the same merge
+#  to produce the final PUBLISHED Document Register copy (see
+#  _finalize_document_approval) — the source keeps its markers so future
+#  revisions can merge again.
+# =============================================================================
+
+class UpdateCdtCover(BaseModel):
+    """
+    Partial update for a document's CDT cover facts. Every field optional —
+    only provided fields are changed; everything else already on the item is
+    preserved (confirmed answer #4: any field may change at any time, nothing
+    is fixed-forever).
+    """
+    domain:               Optional[str] = None
+    parent_document:      Optional[str] = None
+    type_layer:           Optional[str] = None
+    classification:       Optional[str] = None
+    distribution:         Optional[str] = None
+    owner:                Optional[str] = None
+    first_pass_approval:  Optional[str] = None
+    final_approval:       Optional[str] = None
+    version:              Optional[str] = None
+    effective_date:       Optional[str] = None
+    next_review_due:      Optional[str] = None
+    standards:            Optional[list[StandardEntry]] = None
+    revision_history:     Optional[list[RevisionHistoryEntry]] = None
+
+
+def _load_cdt_cover(doc: dict) -> CdtCoverFacts:
+    return CdtCoverFacts.from_json(doc.get("CDTCoverFacts", ""))
+
+
+def _load_revision_history(doc: dict) -> list[RevisionHistoryEntry]:
+    return RevisionHistoryEntry.list_from_json(doc.get("RevisionHistory", ""))
+
+
+@router.get("/documents/{item_id}/cover")
+async def get_cover_facts(
+    item_id: str,
+    user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    """Current CDT cover facts + revision history for this document."""
+    try:
+        item = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
+        doc  = await _sp_to_doc(item)
+        cover = _load_cdt_cover(doc)
+        history = _load_revision_history(doc)
+        return {
+            "document_id": item_id,
+            "cover": cover.model_dump(),
+            "revision_history": [h.model_dump() for h in history],
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _handle_error(exc, f"get cover facts {item_id}")
+
+
+@router.patch("/documents/{item_id}/cover")
+async def update_cover_facts(
+    item_id: str,
+    body: UpdateCdtCover,
+    user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    """
+    Partial update of a document's CDT cover facts. Compliance/Admin or the
+    document owner — same authorisation as correcting the approver, since
+    both are "fix the document's control facts before/at approval" actions.
+
+    Writes are gated on the CDTCoverFacts/RevisionHistory columns actually
+    existing (an admin must add them once — OrgOS cannot create SharePoint
+    columns itself) so this degrades to a clear error rather than a silent
+    no-op or a confusing SharePoint 400 if they're missing.
+    """
+    try:
+        item = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
+        doc  = await _sp_to_doc(item)
+
+        if not _may_correct_approval(doc, user):
+            raise HTTPException(
+                status_code=403,
+                detail="Only Compliance or the document owner can edit the cover facts.",
+            )
+
+        current = _load_cdt_cover(doc)
+        updates = body.model_dump(exclude_unset=True, exclude={"revision_history"})
+        merged = current.model_copy(update=updates)
+
+        fields: dict = {"CDTCoverFacts": merged.to_json()}
+        if body.revision_history is not None:
+            fields["RevisionHistory"] = RevisionHistoryEntry.list_to_json(body.revision_history)
+
+        try:
+            await update_list_item(_get_list_id(), _LIST_NAME, item_id, fields)
+        except Exception as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Could not save cover facts — the 'CDTCoverFacts' and/or "
+                    "'RevisionHistory' columns may not exist yet on the Document "
+                    f"Lifecycle list. An admin must add them once. ({exc})"
+                ),
+            )
+
+        await _audit_lifecycle_action(
+            doc, user, "Cover facts updated",
+            ", ".join(sorted(updates.keys())) or "revision_history",
+        )
+
+        updated = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
+        result = await _sp_to_doc(updated)
+        result["cover"] = _load_cdt_cover(result).model_dump()
+        result["revision_history"] = [h.model_dump() for h in _load_revision_history(result)]
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _handle_error(exc, f"update cover facts {item_id}")
+
+
+_CDT_PREVIEW_FOLDER = "_CDT_Previews"
+
+
+@router.get("/documents/{item_id}/preview.pdf")
+async def preview_document_pdf(
+    item_id: str,
+    user: CurrentUser = Depends(get_current_user),
+) -> Response:
+    """
+    Live preview: merge the document's CURRENT cover facts into its source
+    .docx and return the result as a PDF. Uses Microsoft Graph's native
+    docx→pdf conversion — no local converter needed.
+
+    The SOURCE (SharePointFileUrl) is never touched — the merged copy is
+    uploaded to a disposable scratch location purely so Graph can convert it
+    (conversion requires a real driveItem, not raw bytes), then converted and
+    returned. Re-running this simply overwrites that scratch copy.
+    """
+    try:
+        item = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
+        doc  = await _sp_to_doc(item)
+
+        file_url = doc.get("SharePointFileUrl", "")
+        if not file_url:
+            raise HTTPException(
+                status_code=404,
+                detail="No document file has been uploaded for this item yet.",
+            )
+
+        source_bytes, _ = await download_file_from_sharepoint(file_url)
+        ctx = MergeContext.from_lifecycle_dict(doc)
+
+        try:
+            result = merge(source_bytes, ctx)
+        except MergeError as exc:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Could not generate a preview: {exc}",
+            )
+
+        _, drive_id = await resolve_compliance_drive()
+        await ensure_drive_folder(drive_id, _CDT_PREVIEW_FOLDER)
+        preview_filename = f"{item_id}.docx"
+        await upload_bytes_to_drive(drive_id, _CDT_PREVIEW_FOLDER, preview_filename, result.document)
+        pdf_bytes = await convert_drive_item_to_pdf(drive_id, f"{_CDT_PREVIEW_FOLDER}/{preview_filename}")
+
+        return Response(content=pdf_bytes, media_type="application/pdf")
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _handle_error(exc, f"preview document {item_id}")
+
+
+@router.post("/documents/{item_id}/attach-cover")
+async def attach_cdt_cover(
+    item_id: str,
+    user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    """
+    One-time onboarding step for a document that has no CDT cover yet —
+    either written by hand from scratch, or an existing document being
+    brought onto CDT for the first time. Grafts the document type's master
+    template's cover + revision-history tables (with live {{ markers }})
+    onto the front of the document's current content, so it behaves from
+    then on exactly like a document that was templated from day one:
+    cover facts editable via PATCH .../cover, auto-merged at every future
+    approval.
+
+    Idempotent — if the document already has CDT markers (already
+    onboarded, or uploaded straight from the blank master template), this
+    is a no-op that just reports `already_templated: true` rather than an
+    error, so the frontend can safely call it any time before opening the
+    cover-facts panel.
+
+    The original uploaded file is never discarded — it's kept alongside as
+    a timestamped backup before the grafted version replaces
+    SharePointFileUrl, so nothing is ever unrecoverable if the automatic
+    graft gets something wrong.
+    """
+    try:
+        item = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
+        doc  = await _sp_to_doc(item)
+
+        if not _may_correct_approval(doc, user):
+            raise HTTPException(
+                status_code=403,
+                detail="Only Compliance or the document owner can attach a CDT cover.",
+            )
+
+        file_url = doc.get("SharePointFileUrl", "")
+        if not file_url:
+            raise HTTPException(
+                status_code=404,
+                detail="No document file has been uploaded for this item yet.",
+            )
+
+        existing_bytes, _ = await download_file_from_sharepoint(file_url)
+
+        if scan_markers(existing_bytes):
+            return {"already_templated": True, "images_carried": 0, "images_skipped": 0, "backup_url": ""}
+
+        doc_type = doc.get("DocumentType", "")
+        try:
+            master_bytes = await load_master_template(doc_type)
+        except TemplateNotFoundError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=f"No master CDT template is set up for document type '{doc_type}': {exc}",
+            )
+        except InvalidTemplateError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail=f"The master CDT template for '{doc_type}' is broken and cannot be used: {exc}",
+            )
+
+        graft_result = graft_cover_onto_document(existing_bytes, master_bytes)
+
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+        backup_filename = f"original_upload_{timestamp}.docx"
+        backup_url = await _upload_to_sharepoint(item_id, backup_filename, existing_bytes)
+
+        original_filename = urlparse(file_url).path.rsplit("/", 1)[-1] or f"document_{item_id}.docx"
+        new_file_url = await _upload_to_sharepoint(item_id, original_filename, graft_result.document)
+
+        await update_list_item(_get_list_id(), _LIST_NAME, item_id, {"SharePointFileUrl": new_file_url})
+
+        await _audit_lifecycle_action(
+            doc, user, "CDT cover attached",
+            f"images carried: {graft_result.images_carried}, skipped: {graft_result.images_skipped}, "
+            f"backup: {backup_url}",
+        )
+
+        return {
+            "already_templated": False,
+            "images_carried": graft_result.images_carried,
+            "images_skipped": graft_result.images_skipped,
+            "backup_url": backup_url,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _handle_error(exc, f"attach CDT cover {item_id}")
+
+
 @router.patch("/documents/{item_id}/deadline")
 async def extend_deadline(
     item_id: str,
@@ -1582,13 +1933,27 @@ async def upload_doc_file(
     cdi_status   = "Pending"
     cdi_failures = ""
     try:
+        item_data = None
         try:
             item_data = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
             doc_code  = item_data.get("fields", {}).get("DocumentCode", "")
         except Exception:
             doc_code = ""
 
-        cdi_result = await run_cdi_check(file_bytes, filename, doc_code)
+        # If the upload already carries a CDT cover (markers), check it
+        # merged with the document's current cover facts — never on raw
+        # {{ title }}/{{ doc_code }} syntax, which would fail the check for
+        # reasons that have nothing to do with the document's real content.
+        cdi_check_bytes = file_bytes
+        if item_data is not None and scan_markers(file_bytes):
+            try:
+                doc_for_ctx = await _sp_to_doc(item_data)
+                ctx = MergeContext.from_lifecycle_dict(doc_for_ctx)
+                cdi_check_bytes = merge(file_bytes, ctx).document
+            except Exception as exc:
+                logger.warning(f"CDI check falling back to raw upload for {item_id}: {exc}")
+
+        cdi_result = await run_cdi_check(cdi_check_bytes, filename, doc_code)
 
         if cdi_result.get("error"):
             cdi_status   = "Error"
@@ -1651,7 +2016,20 @@ async def download_doc_file(
     item_id: str,
     user: CurrentUser = Depends(get_current_user),
 ):
-    """Redirect the client to the SharePoint file URL for direct download."""
+    """
+    Serve the document for download. If it's on the CDT template (has live
+    {{ markers }} in its cover), serve the current cover facts MERGED IN —
+    never the raw, symbol-visible source — so anyone downloading via the
+    app, and the CDI check in POST .../upload, always see the real content.
+
+    Always returns the actual file bytes (never a redirect to the raw
+    SharePoint URL): the frontend fetches this endpoint with credentials
+    for the OrgOS API's own origin, and a redirect to a different origin
+    (sharepoint.com) would not carry that same session and would typically
+    be blocked by the browser's CORS policy anyway. Since the bytes have to
+    be fetched server-side regardless (to check for markers), there is no
+    real cost to always returning them directly.
+    """
     try:
         item = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
         doc  = await _sp_to_doc(item)
@@ -1661,7 +2039,27 @@ async def download_doc_file(
                 status_code=404,
                 detail="No file has been uploaded for this lifecycle item yet.",
             )
-        return RedirectResponse(url=url, status_code=302)
+
+        try:
+            source_bytes, _ = await download_file_from_sharepoint(url)
+        except Exception as exc:
+            raise HTTPException(status_code=503, detail=f"Could not fetch the document: {exc}")
+
+        content = source_bytes
+        if scan_markers(source_bytes):
+            try:
+                ctx = MergeContext.from_lifecycle_dict(doc)
+                content = merge(source_bytes, ctx).document
+            except Exception as exc:
+                logger.warning(f"Download merge fell back to raw file for {item_id}: {exc}")
+                content = source_bytes
+
+        filename = urlparse(url).path.rsplit("/", 1)[-1] or f"document_{item_id}.docx"
+        return Response(
+            content=content,
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
     except HTTPException:
         raise
     except Exception as exc:

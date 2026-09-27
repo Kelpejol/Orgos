@@ -18,6 +18,7 @@ import { CascadeImpactPreview } from "../../components/shared/CascadeImpactModal
 import ReviseDocumentModal from "../../components/shared/ReviseDocumentModal.jsx";
 import CdiFixPanel from "../../components/shared/CdiFixPanel.jsx";
 import FeedbackAmendPanel from "../../components/shared/FeedbackAmendPanel.jsx";
+import CdtCoverPanel from "../../components/shared/CdtCoverPanel.jsx";
 import apiClient from "../../api/grcApi.js";
 import { useAiSuggestion } from "../../hooks/useAiSuggestion.js";
 
@@ -70,6 +71,29 @@ const lifecycleApi = {
   downloadUrl: (id) => {
     const BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
     return `${BASE}/api/v1/lifecycle/documents/${id}/download`;
+  },
+
+  // CDT (v06) — cover facts editing + live PDF preview.
+  getCover: (id) =>
+    apiClient.get(`/api/v1/lifecycle/documents/${id}/cover`).then(r => r.data),
+
+  updateCover: (id, body) =>
+    apiClient.patch(`/api/v1/lifecycle/documents/${id}/cover`, body).then(r => r.data),
+
+  attachCover: (id) =>
+    apiClient.post(`/api/v1/lifecycle/documents/${id}/attach-cover`).then(r => r.data),
+
+  previewPdf: async (id) => {
+    const BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
+    const resp = await fetch(`${BASE}/api/v1/lifecycle/documents/${id}/preview.pdf`, {
+      credentials: "include",
+    });
+    if (!resp.ok) {
+      let detail = `Preview failed: ${resp.status}`;
+      try { detail = (await resp.json()).detail || detail; } catch { /**/ }
+      throw new Error(detail);
+    }
+    return resp.blob();
   },
 
   updateFeedback: (id, feedbackJson) =>
@@ -1170,6 +1194,10 @@ const LifecycleCard = ({
   const [claimError,      setClaimError]      = useState("");
   const [showCdiFix,      setShowCdiFix]      = useState(false);
   const [showAmend,       setShowAmend]       = useState(false);
+  const [showCdtCover,    setShowCdtCover]    = useState(false);
+  const [attachingCover,  setAttachingCover]  = useState(false);
+  const [attachCoverMsg,  setAttachCoverMsg]  = useState("");
+  const [attachCoverErr,  setAttachCoverErr]  = useState("");
   const [approverAction,  setApproverAction]  = useState(null);   // "change" | "reverse"
   const [approverBusy,    setApproverBusy]    = useState(false);
   const [approverErr,     setApproverErr]     = useState("");
@@ -1248,32 +1276,55 @@ const LifecycleCard = ({
     }
   };
  
-  // ── Download — authenticated fetch, never a bare <a href> ──────────────────
+  // ── Download — always through the backend endpoint, never a direct
+  // window.open on the raw SharePoint URL: once a document is on the CDT
+  // template, the endpoint merges the current cover facts in before
+  // serving it, so this is the only path guaranteed to never show raw
+  // {{ markers }} — a direct link to SharePointFileUrl would bypass that.
   const handleDownload = async () => {
     setDownloading(true);
     setDownloadError("");
     try {
       const BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
       const filename = `${doc.DocumentCode || doc.id}_v1.0_DRAFT.docx`;
- 
-      if (doc.SharePointFileUrl) {
-        // File already lives in SharePoint — the user is authenticated via
-        // their M365 browser session, so a direct tab open works fine.
-        window.open(doc.SharePointFileUrl, "_blank", "noreferrer");
-      } else {
-        // Stream via the backend endpoint using the MSAL bearer token.
-        await authenticatedDownload(
-          `${BASE}/api/v1/lifecycle/documents/${doc.id}/download`,
-          filename,
-        );
-      }
+      await authenticatedDownload(
+        `${BASE}/api/v1/lifecycle/documents/${doc.id}/download`,
+        filename,
+      );
     } catch (err) {
       setDownloadError(err.message || "Download failed");
     } finally {
       setDownloading(false);
     }
   };
- 
+
+  // ── Attach CDT cover — onboard a document with no cover onto the master
+  // template. Idempotent (already_templated: true is a no-op), never
+  // destructive (backend keeps the original upload as a backup). Opens the
+  // cover-facts panel immediately afterwards so the officer can fill it in.
+  const handleAttachCover = async () => {
+    setAttachingCover(true);
+    setAttachCoverErr("");
+    setAttachCoverMsg("");
+    try {
+      const result = await lifecycleApi.attachCover(doc.id);
+      if (result.already_templated) {
+        setShowCdtCover(true);
+      } else {
+        qc.invalidateQueries({ queryKey: ["lifecycle"] });
+        const parts = [`Cover attached (${result.images_carried} image(s) carried over`];
+        if (result.images_skipped) parts.push(`, ${result.images_skipped} skipped`);
+        parts.push(")");
+        setAttachCoverMsg(parts.join(""));
+        setShowCdtCover(true);
+      }
+    } catch (err) {
+      setAttachCoverErr(err?.response?.data?.detail || err.message || "Attach cover failed");
+    } finally {
+      setAttachingCover(false);
+    }
+  };
+
   return (
    <>
     {showCdiFix && (
@@ -1283,6 +1334,10 @@ const LifecycleCard = ({
     {showAmend && (
       <FeedbackAmendPanel docId={doc.id} docCode={doc.DocumentCode}
         onClose={() => setShowAmend(false)} />
+    )}
+    {showCdtCover && (
+      <CdtCoverPanel docId={doc.id} docCode={doc.DocumentCode} lifecycleApi={lifecycleApi}
+        onClose={() => setShowCdtCover(false)} />
     )}
     <div style={{
       background: "var(--color-background-primary)",
@@ -1418,6 +1473,18 @@ const LifecycleCard = ({
         <div style={{ padding: "5px 8px", background: "#FCEBEB", borderRadius: 6,
                       fontSize: 11, color: "#791F1F", marginBottom: 6 }}>
           Download failed: {downloadError}
+        </div>
+      )}
+      {attachCoverErr && (
+        <div style={{ padding: "5px 8px", background: "#FCEBEB", borderRadius: 6,
+                      fontSize: 11, color: "#791F1F", marginBottom: 6 }}>
+          Attach cover failed: {attachCoverErr}
+        </div>
+      )}
+      {attachCoverMsg && (
+        <div style={{ padding: "5px 8px", background: "#E7F5F0", borderRadius: 6,
+                      fontSize: 11, color: "#085041", marginBottom: 6 }}>
+          {attachCoverMsg}
         </div>
       )}
 
@@ -1749,6 +1816,32 @@ const LifecycleCard = ({
                   cursor: "pointer",
                 }}>
                   Fix CDI issues
+                </button>
+              )}
+              {/* CDT (v06) — cover facts + live PDF preview. Any stage, once a
+                  file exists; same people who can edit it on the backend. */}
+              {doc.SharePointFileUrl && (isOwner || isCompliance) && (
+                <button onClick={() => setShowCdtCover(true)} style={{
+                  padding: "7px", fontSize: 11, borderRadius: 7, fontWeight: 600,
+                  border: "1.5px solid #AFA9EC", background: "#EEEDFE", color: "#3C3489",
+                  cursor: "pointer",
+                }}>
+                  Cover & preview
+                </button>
+              )}
+              {/* Attach CDT cover — onboards a document written outside the
+                  template (or any existing document with no cover at all)
+                  onto the master template. Backend is idempotent — safe to
+                  show any time a file exists, whether or not it already has
+                  a cover; if it does, this just opens the cover panel. */}
+              {doc.SharePointFileUrl && (isOwner || isCompliance) && (
+                <button onClick={handleAttachCover} disabled={attachingCover} style={{
+                  padding: "7px", fontSize: 11, borderRadius: 7, fontWeight: 600,
+                  border: "1.5px solid #AFA9EC", background: "transparent", color: "#3C3489",
+                  cursor: attachingCover ? "default" : "pointer",
+                  opacity: attachingCover ? 0.6 : 1,
+                }}>
+                  {attachingCover ? "Attaching…" : "Attach CDT cover"}
                 </button>
               )}
               {/* Reassign */}

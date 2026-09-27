@@ -55,6 +55,20 @@ class Settings(BaseSettings):
         default="Policies, Procedures, Manuals, Guidelines, Frameworks, Handbook, SOP"
     )
 
+    # ── Controlled Document Templating (CDT) ──────────────────────────────
+    # Folder paths are relative to the ORGOS LIBRARY drive root (resolved via
+    # graph.client.resolve_compliance_drive). Master templates and working
+    # source documents live in dedicated sibling folders so they stay separate
+    # from the live/published document tree under compliance_starting_folder.
+    cdt_templates_folder: str = Field(
+        default="Templates",
+        description="ORGOS LIBRARY folder holding one master .docx template per document type",
+    )
+    cdt_sources_folder: str = Field(
+        default="Sources",
+        description="ORGOS LIBRARY working-area folder holding marked-up source .docx documents",
+    )
+
     # ── SharePoint List IDs — Tier 1 ──────────────────────────────────────
     document_register_list_id: str = Field(default="placeholder")
     compliance_calendar_list_id: str = Field(default="placeholder")
@@ -72,6 +86,24 @@ class Settings(BaseSettings):
     app_port: int = Field(default=8000)
     log_level: str = Field(default="DEBUG")
     skip_auth: bool = Field(default=False)
+
+    # ── OpenTelemetry / Grafana observability ────────────────────────────
+    # Single-line enablement for DevOps:
+    # OTEL_EXPORTER_OTLP_ENDPOINT=http://grafana-alloy:4318
+    # Signal-specific endpoints and headers follow the standard OTEL_* names.
+    otel_enabled: bool = Field(default=False)
+    otel_service_name: str = Field(default="orgos-api")
+    otel_service_version: str = Field(default="1.0.0")
+    otel_exporter_otlp_endpoint: str = Field(default="")
+    otel_exporter_otlp_traces_endpoint: str = Field(default="")
+    otel_exporter_otlp_metrics_endpoint: str = Field(default="")
+    otel_exporter_otlp_logs_endpoint: str = Field(default="")
+    otel_exporter_otlp_headers: str = Field(default="")
+    otel_traces_enabled: bool = Field(default=True)
+    otel_metrics_enabled: bool = Field(default=True)
+    otel_logs_enabled: bool = Field(default=True)
+    otel_metrics_interval_ms: int = Field(default=60000)
+    otel_excluded_urls: str = Field(default="")
 
     # ── Dragnet ERP session revocation ──────────────────────────────────────
     # Shared secret the ERP calls POST /api/auth/revoke with when a user's

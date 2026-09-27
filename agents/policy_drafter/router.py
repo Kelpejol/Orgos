@@ -29,6 +29,7 @@ from graph.client import (
     resolve_user,
     update_list_item,
 )
+from lifecycle.templates import InvalidTemplateError, TemplateNotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -62,32 +63,30 @@ async def _write_lifecycle_owner_name(item_id: str, owner_oid: str, fallback: st
     return owner_name
 
 
-async def _next_serial(base_prefix: str) -> str:
+async def _next_disambiguator(base_prefix: str) -> str:
     """
-    Query the Document Lifecycle list for existing items whose DocumentCode
-    starts with base_prefix and return the next sequential serial number.
-    Example: base_prefix="DRG-SD-POL-ACCCON" → finds "DRG-SD-POL-ACCCON-01-26"
-    → returns "02".
-    Falls back to "01" if the list is unconfigured or the query fails.
+    v06: a fresh code is just base_prefix (e.g. "DRG-QI-PRO-CDI") — no trailing
+    serial/year. Query existing Document Lifecycle codes for an EXACT
+    collision with base_prefix and, if found, return a numeric disambiguator
+    to append directly to the ID ("2", "3", …) so the new code stays unique
+    without inventing a parallel numbering scheme. Empty string ("") means no
+    disambiguator is needed. Falls back to "" if the list is unconfigured or
+    the query fails — collisions are rare enough that this is an acceptable
+    degrade, not a silent data-loss risk.
     """
     try:
         items = await get_list_items(
             settings.document_lifecycle_list_id, "Document Lifecycle"
         )
-        max_serial = 0
-        for item in items:
-            code = item.get("fields", {}).get("DocumentCode", "")
-            if code.startswith(base_prefix + "-"):
-                parts = code.split("-")
-                # Format: DRG-DEPT-TYPE-SHORT-SERIAL-YEAR  (6 parts)
-                if len(parts) >= 6:
-                    try:
-                        max_serial = max(max_serial, int(parts[-2]))
-                    except ValueError:
-                        pass
-        return f"{(max_serial + 1):02d}"
+        existing = {item.get("fields", {}).get("DocumentCode", "") for item in items}
+        if base_prefix not in existing:
+            return ""
+        n = 2
+        while f"{base_prefix}{n}" in existing:
+            n += 1
+        return str(n)
     except Exception:
-        return "01"
+        return ""
 
 
 # =============================================================================
@@ -125,12 +124,13 @@ async def draft_document_endpoint(
     """
     logger.info(f"Document Drafter requested: '{body.title}' by {user.name}")
 
-    # ── 1: Auto-increment serial ──────────────────────────────────────────────
-    base_prefix = generate_doc_code_base(body.department, body.doc_type, body.title)
-    serial      = await _next_serial(base_prefix)
-    logger.info(f"Doc code base: {base_prefix}, next serial: {serial}")
+    # ── 1: Avoid a code collision (v06 has no serial/year to fall back on) ───
+    base_prefix   = generate_doc_code_base(body.department, body.doc_type, body.title)
+    disambiguator = await _next_disambiguator(base_prefix)
+    logger.info(f"Doc code base: {base_prefix}, disambiguator: {disambiguator or '(none)'}")
 
-    # ── 2 + 3: Generate sections via Ollama + build .docx ────────────────────
+    # ── 2 + 3: Generate sections via Ollama + build .docx on the master ──────
+    # template for this document type (v06 — see lifecycle/templates.py).
     try:
         draft = await draft_document(
             title=             body.title,
@@ -138,9 +138,19 @@ async def draft_document_endpoint(
             department=        body.department,
             notes=             body.notes,
             standards_mapping= body.standards_mapping,
-            serial=            serial,
+            disambiguator=     disambiguator,
         )
         logger.info(f"Draft + docx built: {draft['doc_code']}")
+    except TemplateNotFoundError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"No master CDT template is set up for document type '{body.doc_type}': {exc}",
+        )
+    except InvalidTemplateError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"The master CDT template for '{body.doc_type}' is broken and cannot be used: {exc}",
+        )
     except Exception as exc:
         logger.exception("Document Drafter generation failed")
         raise HTTPException(
@@ -150,7 +160,9 @@ async def draft_document_endpoint(
 
     docx_buffer: Optional[io.BytesIO] = draft.pop("docx_buffer", None)
     docx_bytes = docx_buffer.read() if docx_buffer else b""
-    filename   = f"{draft['doc_code']}_v1.0_DRAFT.docx"
+    filename   = f"{draft['doc_code']}_DRAFT.docx"
+    cdt_cover        = draft.pop("cdt_cover", None)
+    cdt_history      = draft.pop("revision_history", None)
 
     # ── 4: Run CDI check against the generated .docx ─────────────────────────
     cdi_result: dict = {}
@@ -211,7 +223,6 @@ async def draft_document_endpoint(
         lifecycle_fields["CDIFailures"] = cdi_failures_json
     if body.linked_gap_id:
         lifecycle_fields["LinkedGapId"] = body.linked_gap_id
-
     try:
         lifecycle_item = await create_list_item(
             settings.document_lifecycle_list_id,
@@ -233,6 +244,29 @@ async def draft_document_endpoint(
             status_code=500,
             detail=f"Draft generated but lifecycle entry creation failed: {exc}",
         )
+
+    # CDT (v06): seed the cover facts + initial revision-history row as a
+    # SEPARATE, best-effort write — never bundled into the create above. An
+    # admin must have added the CDTCoverFacts/RevisionHistory columns to the
+    # Document Lifecycle list; if not yet, this simply doesn't land, and the
+    # draft itself is unaffected (SharePoint would otherwise reject the WHOLE
+    # item creation over one unrecognised field).
+    if cdt_cover is not None or cdt_history is not None:
+        try:
+            cdt_fields: dict = {}
+            if cdt_cover is not None:
+                cdt_fields["CDTCoverFacts"] = json.dumps(cdt_cover)
+            if cdt_history is not None:
+                cdt_fields["RevisionHistory"] = json.dumps(cdt_history)
+            await update_list_item(
+                settings.document_lifecycle_list_id, "Document Lifecycle", lifecycle_id, cdt_fields,
+            )
+        except Exception as exc:
+            logger.info(
+                f"Lifecycle entry {lifecycle_id} created, but CDT cover facts were not "
+                f"seeded (are the 'CDTCoverFacts'/'RevisionHistory' columns present "
+                f"on the Document Lifecycle list yet?): {exc}"
+            )
 
     # ── 6: Return lifecycle metadata + base64 docx ───────────────────────────
     docx_b64 = base64.b64encode(docx_bytes).decode("ascii") if docx_bytes else None

@@ -9,6 +9,10 @@ python-multipart>=0.0.9
 # Document text extraction — Phase 3 Extractor agent
 pypdf>=4.0.0           # PDF text extraction
 python-docx>=1.1.0     # DOCX generation (Policy Drafter) + extraction fallback
+docxtpl>=0.16.0        # Controlled Document Templating (CDT) merge engine — Jinja2
+                       # templating over python-docx. Substitutes {{markers}} inside
+                       # Word headers, footers, and table cells (handles run-splitting).
+                       # Deterministic; the merge path NEVER calls AI.
 mammoth>=1.6.0         # DOCX text extraction for CDI Checker and Extractor agent
                        # for extracting clean text; handles more DOCX variants robustly
 azure-ai-formrecognizer>=3.3.0  # Azure Document Intelligence — OCR fallback for
@@ -38,6 +42,18 @@ fastapi>=0.115.0
 uvicorn[standard]>=0.30.0
 # [standard] installs watchfiles (hot reload), httptools (fast HTTP parser),
 # and websockets. Required for production-grade ASGI serving.
+
+# -----------------------------------------------------------------------------
+# Observability — OpenTelemetry export to Grafana Alloy/Collector/Grafana Cloud
+# -----------------------------------------------------------------------------
+opentelemetry-api>=1.27.0
+opentelemetry-sdk>=1.27.0
+opentelemetry-exporter-otlp-proto-http>=1.27.0
+opentelemetry-instrumentation-fastapi>=0.48b0
+opentelemetry-instrumentation-httpx>=0.48b0
+opentelemetry-instrumentation-logging>=0.48b0
+# Enable with one OTLP/HTTP endpoint:
+# OTEL_EXPORTER_OTLP_ENDPOINT=http://grafana-alloy:4318
 
 # -----------------------------------------------------------------------------
 # HTTP Client — ALL Graph API calls use this, never requests or aiohttp

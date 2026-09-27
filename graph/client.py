@@ -955,62 +955,180 @@ _DOCX_CONTENT_TYPE = (
 )
 
 
-async def upload_file_to_sharepoint(
-    file_bytes: bytes,
-    filename: str,
-    folder: str = "Document Lifecycle Drafts",
-) -> str:
+# =============================================================================
+#  Compliance library (ORGOS LIBRARY) drive resolution + drive-based file I/O
+#
+#  The controlled-document library ("ORGOS LIBRARY") lives on the COMPLIANCE
+#  site (settings.compliance_site_url — e.g. /sites/everybody), NOT the main
+#  OrgOS site. Its drive GUID is resolved dynamically by library name so we
+#  never hard-code a fragile GUID and never point at the wrong site.
+#
+#  This is the single source of truth for that resolution. It was previously
+#  duplicated across scripts/ (intake, migrate, count). New CDT file I/O
+#  (master templates, source docs, published copies) builds on these helpers.
+# =============================================================================
+
+# Resolved (site_id, drive_id) cached for the process lifetime — the drive
+# GUID is stable, so we resolve once and reuse.
+_compliance_drive_cache: Optional[tuple[str, str]] = None
+
+
+async def resolve_compliance_drive() -> tuple[str, str]:
     """
-    Upload a file to a SharePoint document library via the Graph API.
-
-    Uses a simple PUT upload — suitable for files up to ~4 MB (covers all
-    AI-generated .docx drafts). For larger files use the resumable upload
-    session endpoint instead.
-
-    Args:
-        file_bytes: Raw file content as bytes.
-        filename:   Target filename in SharePoint (e.g. "DRG-SD-POL-01-26.docx").
-        folder:     Library-relative folder path. Defaults to
-                    "Document Lifecycle Drafts". Must already exist in the
-                    document library — Graph will return 404 if it doesn't.
+    Resolve (site_id, drive_id) for the ORGOS LIBRARY document library on the
+    compliance site. Cached per process.
 
     Returns:
-        The SharePoint webUrl of the uploaded file (use as SharePointFileUrl
-        in the lifecycle list entry so the frontend can open it directly).
+        (site_id, drive_id) — both Graph IDs. Use drive_id for all
+        /drives/{drive_id}/root:/... file operations.
 
     Raises:
-        httpx.HTTPStatusError / graph exceptions on failure.
+        RuntimeError if no drive matching settings.compliance_library_name is
+        found on the compliance site (lists the available drives to aid debugging).
+    """
+    global _compliance_drive_cache
+    if _compliance_drive_cache is not None:
+        return _compliance_drive_cache
 
-    Required config.py settings:
-        sharepoint_site_id  — SharePoint site GUID or "hostname,siteId,webId"
-        sharepoint_drive_id — Document library drive GUID
-                              (find via GET /sites/{site}/drives)
+    base = settings.graph_base_url
+    url = settings.compliance_site_url.rstrip("/")
+    parts = url.replace("https://", "").split("/", 1)
+    hostname = parts[0]
+    path = parts[1] if len(parts) > 1 else ""
 
-    Example .env entries:
-        SHAREPOINT_SITE_ID=your-site-id
-        SHAREPOINT_DRIVE_ID=your-drive-id
+    site = await _request(
+        "GET", f"{base}/sites/{hostname}:/{path}", context="Resolve compliance site"
+    )
+    site_id = site["id"]
+
+    drives = await _request(
+        "GET", f"{base}/sites/{site_id}/drives", context="List compliance drives"
+    )
+    drive_list = drives.get("value", [])
+    drive_id = next(
+        (d["id"] for d in drive_list if d.get("name") == settings.compliance_library_name),
+        None,
+    )
+    if not drive_id:
+        available = [d.get("name") for d in drive_list]
+        raise RuntimeError(
+            f"Drive '{settings.compliance_library_name}' not found on "
+            f"{settings.compliance_site_url}. Available drives: {available}"
+        )
+
+    _compliance_drive_cache = (site_id, drive_id)
+    logger.info(
+        f"Resolved compliance library drive: "
+        f"'{settings.compliance_library_name}' -> {drive_id}"
+    )
+    return _compliance_drive_cache
+
+
+async def ensure_drive_folder(drive_id: str, folder_path: str) -> str:
+    """
+    Ensure a (possibly nested) folder path exists under a drive root, creating
+    any missing segments. Idempotent. Returns the deepest folder's item ID.
+
+    SharePoint PUT-to-path does not reliably create missing parent folders, so
+    publish/source paths call this first. Safe to call repeatedly.
+    """
+    client = get_client()
+    parent_ref = "root"  # first segment is created under the drive root
+    deepest_id = ""
+    for segment in [s for s in folder_path.strip("/").split("/") if s]:
+        headers = await _get_headers()
+        # Try to fetch the child folder by name under the current parent.
+        if parent_ref == "root":
+            list_url = f"{settings.graph_base_url}/drives/{drive_id}/root/children"
+            create_url = f"{settings.graph_base_url}/drives/{drive_id}/root/children"
+        else:
+            list_url = f"{settings.graph_base_url}/drives/{drive_id}/items/{parent_ref}/children"
+            create_url = f"{settings.graph_base_url}/drives/{drive_id}/items/{parent_ref}/children"
+
+        existing = await client.get(
+            list_url, headers=headers, params={"$select": "id,name,folder", "$top": 200}
+        )
+        existing.raise_for_status()
+        match = next(
+            (
+                c
+                for c in existing.json().get("value", [])
+                if c.get("name") == segment and "folder" in c
+            ),
+            None,
+        )
+        if match:
+            parent_ref = match["id"]
+            deepest_id = match["id"]
+            continue
+
+        created = await client.post(
+            create_url,
+            headers={**headers, "Content-Type": "application/json"},
+            json={
+                "name": segment,
+                "folder": {},
+                "@microsoft.graph.conflictBehavior": "fail",
+            },
+        )
+        # 201 = created; 409 = someone created it between our GET and POST (race) —
+        # re-fetch and continue rather than error.
+        if created.status_code == 409:
+            existing = await client.get(
+                list_url, headers=headers, params={"$select": "id,name,folder", "$top": 200}
+            )
+            existing.raise_for_status()
+            match = next(
+                (c for c in existing.json().get("value", []) if c.get("name") == segment),
+                None,
+            )
+            if not match:
+                raise RuntimeError(f"Could not create or find folder segment '{segment}'")
+            parent_ref = match["id"]
+            deepest_id = match["id"]
+            continue
+        if created.status_code not in (200, 201):
+            body = {}
+            try:
+                body = created.json()
+            except Exception:
+                pass
+            raise_for_graph_status(
+                created.status_code, body, f"Create folder '{segment}' in drive {drive_id}"
+            )
+        item = created.json()
+        parent_ref = item["id"]
+        deepest_id = item["id"]
+
+    return deepest_id
+
+
+async def upload_bytes_to_drive(
+    drive_id: str,
+    folder: str,
+    filename: str,
+    file_bytes: bytes,
+    content_type: str = _DOCX_CONTENT_TYPE,
+) -> dict:
+    """
+    PUT a small file (<4 MB) to a path under a drive root. Returns the created
+    driveItem dict (contains 'id' and 'webUrl').
+
+    The caller is responsible for ensuring the folder exists (call
+    ensure_drive_folder first for nested/new paths).
     """
     token = await get_graph_access_token()
     client = get_client()
 
-    # Graph PUT endpoint for small file upload:
-    # PUT /sites/{site}/drives/{drive}/root:/{folder}/{filename}:/content
-    url = (
-        f"{settings.graph_base_url}/sites/{settings.sharepoint_site_id}"
-        f"/drives/{settings.sharepoint_drive_id}"
-        f"/root:/{folder}/{filename}:/content"
-    )
+    safe_folder = folder.strip("/")
+    path = f"{safe_folder}/{filename}" if safe_folder else filename
+    url = f"{settings.graph_base_url}/drives/{drive_id}/root:/{path}:/content"
 
     response = await client.put(
         url,
         content=file_bytes,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": _DOCX_CONTENT_TYPE,
-        },
+        headers={"Authorization": f"Bearer {token}", "Content-Type": content_type},
     )
-
-    # 201 Created (new file) or 200 OK (overwrite) are both success
     if response.status_code not in (200, 201):
         body = {}
         try:
@@ -1018,14 +1136,101 @@ async def upload_file_to_sharepoint(
         except Exception:
             pass
         logger.error(
-            f"SharePoint upload failed | PUT {url} "
-            f"| status={response.status_code} | {body}"
+            f"Drive upload failed | PUT {url} | status={response.status_code} | {body}"
         )
-        raise_for_graph_status(response.status_code, body, f"Upload {filename} to SharePoint")
+        raise_for_graph_status(
+            response.status_code, body, f"Upload {filename} to drive {drive_id}"
+        )
+    return response.json()
 
-    data = response.json()
-    web_url = data.get("webUrl", "")
-    logger.info(f"Uploaded '{filename}' to SharePoint folder '{folder}': {web_url}")
+
+async def download_drive_item_by_path(drive_id: str, path: str) -> bytes:
+    """
+    Download a file's bytes from a drive by its root-relative path
+    (e.g. "Templates/Procedure.docx"). Complements upload_bytes_to_drive.
+
+    Raises the appropriate graph exception (e.g. GraphNotFoundError) if the
+    path does not exist.
+    """
+    token = await get_graph_access_token()
+    client = get_client()
+
+    safe_path = path.strip("/")
+    url = f"{settings.graph_base_url}/drives/{drive_id}/root:/{safe_path}:/content"
+    # follow_redirects: Graph returns a 302 to a pre-authenticated download URL
+    response = await client.get(
+        url, headers={"Authorization": f"Bearer {token}"}, follow_redirects=True
+    )
+    if response.status_code != 200:
+        body = {}
+        try:
+            body = response.json()
+        except Exception:
+            pass
+        raise_for_graph_status(
+            response.status_code, body, f"Download '{path}' from drive {drive_id}"
+        )
+    return response.content
+
+
+async def convert_drive_item_to_pdf(drive_id: str, path: str) -> bytes:
+    """
+    Return a drive item as a PDF, using Microsoft Graph's native format
+    conversion (?format=pdf) — no local converter (LibreOffice/docx2pdf)
+    needed. Verified against the ORGOS LIBRARY: 200, valid %PDF- magic bytes.
+
+    `path` is the root-relative path of an item that ALREADY EXISTS in the
+    drive — Graph's conversion only works on a real driveItem, not raw bytes,
+    so a caller with in-memory bytes (e.g. a fresh merge()) must upload them
+    first (see upload_bytes_to_drive) and pass that path here.
+    """
+    token = await get_graph_access_token()
+    client = get_client()
+
+    safe_path = path.strip("/")
+    url = f"{settings.graph_base_url}/drives/{drive_id}/root:/{safe_path}:/content"
+    response = await client.get(
+        url, headers={"Authorization": f"Bearer {token}"},
+        params={"format": "pdf"}, follow_redirects=True,
+    )
+    if response.status_code != 200:
+        body = {}
+        try:
+            body = response.json()
+        except Exception:
+            pass
+        raise_for_graph_status(
+            response.status_code, body, f"Convert '{path}' to PDF in drive {drive_id}"
+        )
+    return response.content
+
+
+async def upload_file_to_sharepoint(
+    file_bytes: bytes,
+    filename: str,
+    folder: str = "Document Lifecycle Drafts",
+) -> str:
+    """
+    Upload a small file to the ORGOS LIBRARY (compliance) document library and
+    return its webUrl.
+
+    Thin convenience wrapper over resolve_compliance_drive + upload_bytes_to_drive.
+    Previously referenced an undefined settings.sharepoint_drive_id on the wrong
+    site; now resolves the correct compliance-library drive dynamically.
+
+    Args:
+        file_bytes: Raw file content as bytes.
+        filename:   Target filename (e.g. "DRG-CAE-PRO-3CX-01-26.docx").
+        folder:     Library-relative folder path. Must exist, or pass a path
+                    you have pre-created with ensure_drive_folder.
+
+    Returns:
+        The SharePoint webUrl of the uploaded file.
+    """
+    _, drive_id = await resolve_compliance_drive()
+    item = await upload_bytes_to_drive(drive_id, folder, filename, file_bytes)
+    web_url = item.get("webUrl", "")
+    logger.info(f"Uploaded '{filename}' to ORGOS LIBRARY folder '{folder}': {web_url}")
     return web_url
 
 

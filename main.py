@@ -14,6 +14,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from config import configure_logging, settings
+from observability import (
+    record_counter,
+    setup_observability,
+    shutdown_observability,
+    start_span,
+)
 from graph import client as graph_client
 from auth.router import router as auth_router
 from grc.router import router as grc_router
@@ -49,36 +55,47 @@ async def lifespan(app: FastAPI):
     This replaces the deprecated @app.on_event("startup") pattern.
     """
     # ── Startup ──────────────────────────────────────────────────────────
-    logger.info(f"OrgOS starting — environment={settings.environment}")
-    await graph_client.startup()
-    # Pre-fetch JWKS on startup so first request does not fail
-    try:
-        from auth.validator import _get_jwks
-        await _get_jwks()
-        logger.info("JWKS pre-fetched successfully")
-    except Exception as e:
-        logger.warning(f"JWKS pre-fetch failed — will retry on first request: {e}")
+    with start_span("orgos.startup", environment=settings.environment):
+        logger.info(f"OrgOS starting — environment={settings.environment}")
+        await graph_client.startup()
+        # Pre-fetch JWKS on startup so first request does not fail
+        try:
+            from auth.validator import _get_jwks
+            await _get_jwks()
+            logger.info("JWKS pre-fetched successfully")
+        except Exception as e:
+            logger.warning(f"JWKS pre-fetch failed — will retry on first request: {e}")
 
-    # Start background scheduler (document review reminders + sensitisation deadlines)
-    try:
-        from jobs.scheduler import start_scheduler
-        start_scheduler()
-    except Exception as e:
-        logger.warning(f"APScheduler failed to start — scheduled jobs inactive: {e}")
+        # Start background scheduler (document review reminders + sensitisation deadlines)
+        try:
+            from jobs.scheduler import start_scheduler
+            start_scheduler()
+        except Exception as e:
+            logger.warning(f"APScheduler failed to start — scheduled jobs inactive: {e}")
 
-    logger.info("OrgOS ready")
+        logger.info("OrgOS ready")
+        record_counter(
+            "orgos.startup.count",
+            description="Number of OrgOS application startups",
+        )
 
     yield  # Application runs here
 
     # ── Shutdown ─────────────────────────────────────────────────────────
-    logger.info("OrgOS shutting down")
-    try:
-        from jobs.scheduler import stop_scheduler
-        stop_scheduler()
-    except Exception as e:
-        logger.warning(f"APScheduler failed to stop cleanly: {e}")
-    await graph_client.shutdown()
-    logger.info("OrgOS shutdown complete")
+    with start_span("orgos.shutdown", environment=settings.environment):
+        logger.info("OrgOS shutting down")
+        try:
+            from jobs.scheduler import stop_scheduler
+            stop_scheduler()
+        except Exception as e:
+            logger.warning(f"APScheduler failed to stop cleanly: {e}")
+        await graph_client.shutdown()
+        record_counter(
+            "orgos.shutdown.count",
+            description="Number of OrgOS application shutdowns",
+        )
+        logger.info("OrgOS shutdown complete")
+    shutdown_observability()
 
 
 # =============================================================================
@@ -97,6 +114,7 @@ app = FastAPI(
     openapi_url="/openapi.json",
     lifespan=lifespan,
 )
+setup_observability(app, settings)
 
 # =============================================================================
 #  CORS — allow the React frontend to call this API
@@ -137,13 +155,19 @@ app.include_router(groups_router)
 @app.get("/health", tags=["Health"], summary="Application health check")
 async def health() -> JSONResponse:
     """Basic health check. Returns 200 if the app is running."""
-    return JSONResponse(
-        content={
-            "status": "ok",
-            "environment": settings.environment,
-            "version": "1.0.0",
-        }
-    )
+    with start_span("orgos.health"):
+        record_counter(
+            "orgos.health.checks",
+            attributes={"target": "app", "status": "ok"},
+            description="Number of OrgOS health checks",
+        )
+        return JSONResponse(
+            content={
+                "status": "ok",
+                "environment": settings.environment,
+                "version": "1.0.0",
+            }
+        )
 
 
 @app.get(
@@ -156,6 +180,15 @@ async def graph_health() -> JSONResponse:
     Verifies the backend can acquire a Graph API token and reach SharePoint.
     Returns 503 if Graph API is unreachable or credentials are invalid.
     """
-    result = await graph_client.check_graph_connectivity()
-    status_code = 200 if result["status"] == "ok" else 503
-    return JSONResponse(content=result, status_code=status_code)
+    with start_span("orgos.health.graph") as span:
+        result = await graph_client.check_graph_connectivity()
+        status_code = 200 if result["status"] == "ok" else 503
+        if span is not None:
+            span.set_attribute("orgos.graph.status", result["status"])
+            span.set_attribute("http.status_code", status_code)
+        record_counter(
+            "orgos.health.checks",
+            attributes={"target": "graph", "status": result["status"]},
+            description="Number of OrgOS health checks",
+        )
+        return JSONResponse(content=result, status_code=status_code)
