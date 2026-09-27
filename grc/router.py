@@ -10,8 +10,16 @@ import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import Response
 
 from auth.validator import CurrentUser, get_current_user, require_compliance_lead
+from graph.client import (
+    convert_drive_item_to_pdf,
+    download_file_from_sharepoint,
+    ensure_drive_folder,
+    resolve_compliance_drive,
+    upload_bytes_to_drive,
+)
 from graph.exceptions import (
     GraphAPIError,
     GraphNotFoundError,
@@ -20,6 +28,8 @@ from graph.exceptions import (
 from grc import schemas
 from grc import service
 from config import settings
+from lifecycle.merge import MergeError, merge
+from lifecycle.schemas import MergeContext, RevisionHistoryEntry, StandardEntry
 
 logger = logging.getLogger(__name__)
 
@@ -192,6 +202,111 @@ async def update_document(
         return await service.update_document(item_id, doc)
     except Exception as exc:
         _handle_graph_error(exc, f"update document {item_id}")
+
+
+class UpdateRegisterCover(schemas.CdtCoverFacts):
+    """
+    PATCH body for a Document Register item's cover facts — all fields
+    optional, same partial-update semantics as the Lifecycle equivalent
+    (lifecycle/router.py's UpdateCdtCover). Kept separate from
+    DocumentUpdate (which already carries cdt_cover/revision_history for the
+    generic PATCH) so the frontend's CdtCoverPanel — built against the
+    Lifecycle cover endpoints — can be reused unchanged against a Document
+    Register item too, same request/response shape either way.
+    """
+
+    revision_history: Optional[list[RevisionHistoryEntry]] = None
+
+
+@router.get("/documents/{item_id}/cover", summary="Get a Document Register item's CDT cover facts")
+async def get_register_cover(
+    item_id: str,
+    user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    try:
+        doc = await service.get_document(item_id)
+        return {
+            "document_id": item_id,
+            "cover": (doc.cdt_cover or schemas.CdtCoverFacts()).model_dump(),
+            "revision_history": doc.revision_history or [],
+        }
+    except Exception as exc:
+        _handle_graph_error(exc, f"get register cover facts {item_id}")
+
+
+@router.patch("/documents/{item_id}/cover", summary="Update a Document Register item's CDT cover facts")
+async def update_register_cover(
+    item_id: str,
+    body: UpdateRegisterCover,
+    user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    """
+    A document's cover facts are editable at any time, same as on the
+    Lifecycle item pre-approval (confirmed answer #4 — nothing on the cover
+    is fixed-forever, even after publication).
+    """
+    try:
+        current = await service.get_document(item_id)
+        current_cover = current.cdt_cover or schemas.CdtCoverFacts()
+        updates = body.model_dump(exclude_unset=True, exclude={"revision_history"})
+        merged_cover = current_cover.model_copy(update=updates)
+
+        update_body = schemas.DocumentUpdate(cdt_cover=merged_cover)
+        if body.revision_history is not None:
+            update_body.revision_history = [h.model_dump() for h in body.revision_history]
+
+        updated = await service.update_document(item_id, update_body)
+        return {
+            "document_id": item_id,
+            "cover": (updated.cdt_cover or schemas.CdtCoverFacts()).model_dump(),
+            "revision_history": updated.revision_history or [],
+        }
+    except Exception as exc:
+        _handle_graph_error(exc, f"update register cover facts {item_id}")
+
+
+_CDT_PREVIEW_FOLDER = "_CDT_Previews"
+
+
+@router.get("/documents/{item_id}/preview.pdf", summary="Live-preview a Document Register item's current cover facts as a PDF")
+async def preview_register_document_pdf(
+    item_id: str,
+    user: CurrentUser = Depends(get_current_user),
+) -> Response:
+    """
+    Same mechanism as the Lifecycle preview (lifecycle/router.py): merge the
+    document's CURRENT cover facts into its stored .docx and convert to PDF
+    via Microsoft Graph. The stored file is never touched — this is purely
+    a live, disposable render.
+    """
+    try:
+        doc = await service.get_document(item_id)
+        file_url = doc.sharepoint_url
+        if not file_url:
+            raise HTTPException(
+                status_code=404,
+                detail="No document file is linked to this register entry.",
+            )
+
+        source_bytes, _ = await download_file_from_sharepoint(file_url)
+        ctx = MergeContext.from_document_read(doc)
+
+        try:
+            result = merge(source_bytes, ctx)
+        except MergeError as exc:
+            raise HTTPException(status_code=422, detail=f"Could not generate a preview: {exc}")
+
+        _, drive_id = await resolve_compliance_drive()
+        await ensure_drive_folder(drive_id, _CDT_PREVIEW_FOLDER)
+        preview_filename = f"register-{item_id}.docx"
+        await upload_bytes_to_drive(drive_id, _CDT_PREVIEW_FOLDER, preview_filename, result.document)
+        pdf_bytes = await convert_drive_item_to_pdf(drive_id, f"{_CDT_PREVIEW_FOLDER}/{preview_filename}")
+
+        return Response(content=pdf_bytes, media_type="application/pdf")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _handle_graph_error(exc, f"preview register document {item_id}")
 
 
 @router.get(

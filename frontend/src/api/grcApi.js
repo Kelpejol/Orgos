@@ -69,6 +69,27 @@ export const documentsApi = {
   /** @param {string} id */
   softDelete: (id) =>
     apiClient.delete(`/api/v1/grc/documents/${id}`).then((r) => r.data),
+
+  // CDT (v06) — cover facts editing + live PDF preview for an APPROVED
+  // register entry. Same shape as lifecycle.js's equivalent so the shared
+  // CdtCoverPanel component works unchanged against either.
+  getCover: (id) =>
+    apiClient.get(`/api/v1/grc/documents/${id}/cover`).then((r) => r.data),
+
+  updateCover: (id, body) =>
+    apiClient.patch(`/api/v1/grc/documents/${id}/cover`, body).then((r) => r.data),
+
+  previewPdf: async (id) => {
+    const resp = await fetch(`${BASE_URL}/api/v1/grc/documents/${id}/preview.pdf`, {
+      credentials: "include",
+    });
+    if (!resp.ok) {
+      let detail = `Preview failed: ${resp.status}`;
+      try { detail = (await resp.json()).detail || detail; } catch { /**/ }
+      throw new Error(detail);
+    }
+    return resp.blob();
+  },
 };
 
 // =============================================================================

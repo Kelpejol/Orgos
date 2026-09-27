@@ -14,6 +14,8 @@ import { useAlert } from "../../components/shared/AlertModal.jsx";
 import ReadOnlyBanner from "../../components/shared/ReadOnlyBanner.jsx";
 import ReviseDocumentModal from "../../components/shared/ReviseDocumentModal.jsx";
 import DocumentForm from "./DocumentForm.jsx";
+import CdtCoverPanel from "../../components/shared/CdtCoverPanel.jsx";
+import { documentsApi } from "../../api/grcApi.js";
 
 const COLS = [
   { key: "document_code", label: "Code", mono: true },
@@ -49,6 +51,7 @@ export default function DocumentRegister({ go }) {
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState(null);
   const [revising, setRevising] = useState(false);
+  const [showCdtCover, setShowCdtCover] = useState(false);
 
   const { isCompliance } = useCurrentUserRole();
   const { confirm: showConfirm, notify } = useAlert();
@@ -146,6 +149,14 @@ export default function DocumentRegister({ go }) {
               Revision in progress — see Document Lifecycle
             </span>
           )}
+          {selected.sharepoint_url && (isCompliance) && (
+            <button
+              onClick={() => setShowCdtCover(true)}
+              style={{ padding: "7px 14px", fontSize: 12, borderRadius: 8, border: "1.5px solid #AFA9EC", background: "#EEEDFE", color: "#3C3489", cursor: "pointer" }}
+            >
+              Cover & preview
+            </button>
+          )}
           {isCompliance && selected.status !== "Withdrawn" && (
             <button
               onClick={async () => {
@@ -181,6 +192,10 @@ export default function DocumentRegister({ go }) {
             refetch();
           }}
         />
+        {showCdtCover && (
+          <CdtCoverPanel docId={selected.id} docCode={selected.document_code}
+            lifecycleApi={documentsApi} onClose={() => setShowCdtCover(false)} />
+        )}
       </div>
     );
   }

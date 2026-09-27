@@ -174,7 +174,9 @@ def render_document(source_bytes: bytes, context: MergeContext) -> bytes:
         ) from exc
     except (PackageNotFoundError, zipfile.BadZipFile, KeyError) as exc:
         raise TemplateRenderError(
-            f"Source is not a readable .docx template: {type(exc).__name__}: {exc}"
+            "This document isn't a Word (.docx) file — it's likely a PDF or an old-format "
+            ".doc file. CDT cover facts, preview, and merging only work on .docx documents; "
+            "there's nothing to fix here, this document just isn't eligible for those features."
         ) from exc
     out = io.BytesIO()
     tpl.save(out)
