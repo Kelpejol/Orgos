@@ -80,6 +80,22 @@ def test_generate_doc_code_disambiguator_appends_to_id():
     assert with_disambiguator == base + "2"
 
 
+def test_combined_doc_type_gets_compound_pol_pro_code():
+    """
+    A "Combined" (policy + procedure in one) document gets the real
+    POL-PRO compound code — the legacy naming convention
+    agents.cdi_checker.service.is_valid_doc_code()/is_combined_document()
+    and the extractor's CODE_PREFIX_MAP already recognise — not a plain
+    POL code indistinguishable from an ordinary Policy.
+    """
+    from agents.cdi_checker.service import is_combined_document, is_valid_doc_code
+
+    code = generate_doc_code_base("QI", "Combined", "New Control Access Policy")
+    assert "-POL-PRO-" in code
+    assert is_valid_doc_code(code)
+    assert is_combined_document("", code)
+
+
 # -----------------------------------------------------------------------------
 #  Collision detection (_next_disambiguator) — v06 has no serial/year fallback
 # -----------------------------------------------------------------------------

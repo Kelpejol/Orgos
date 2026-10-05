@@ -24,7 +24,14 @@ logger = logging.getLogger(__name__)
 TYPE_CODES = {
     "Policy":    "POL",
     "Procedure": "PRO",
-    "Combined":  "POL",
+    # Compound type code (DRG-[DEPT]-POL-PRO-[ID]) — the real legacy naming
+    # convention for a combined policy-and-procedure document (e.g.
+    # DRG-QI-POL-PRO-NCA), which agents/cdi_checker/service.py's
+    # is_valid_doc_code()/is_combined_document() and the extractor's
+    # CODE_PREFIX_MAP already recognise. A plain "POL" code would validate
+    # fine too, but would make a Combined document indistinguishable from a
+    # plain Policy by its code alone.
+    "Combined":  "POL-PRO",
     "Manual":    "MAN",
     "Guideline": "GUI",
     "Standard":  "STD",
