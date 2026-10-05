@@ -9,7 +9,8 @@ import { FormInput, FormSelect, FormError, Btn } from "../../components/shared/F
 import { useCreateDocument, useUpdateDocument } from "../../hooks/useGrc.js";
 import OwnerField from "../../components/shared/OwnerField.jsx";
 
-const DOC_TYPES = ["Policy", "Procedure", "SOP", "Form", "Guidelines"];
+const DOC_TYPES = ["Policy", "Procedure", "SOP", "Form", "Guidelines",
+  "Combined", "Manual", "Guideline", "Standard", "SLA"];
 const STANDARDS = ["ISO 9001", "ISO 27001", "NDPA", "Internal"];
 const DEPARTMENTS = ["QI", "ISMS", "HR", "Finance", "Software Dev", "Cloud Infra", "IT Support", "Executive", "Operations"];
 

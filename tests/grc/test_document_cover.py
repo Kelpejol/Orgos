@@ -142,3 +142,22 @@ class TestPreviewRegisterDocumentPdf:
             resp = client.get("/api/v1/grc/documents/8/preview.pdf")
 
         assert resp.status_code == 422
+
+
+class TestDocumentTypeCoversAllCdtTypes:
+    """
+    Regression guard: every document type the CDT master templates and the
+    AI Drafter actually offer (scripts/build_cdt_master_templates.py's
+    DOCUMENT_TYPES / frontend DocumentLifecycle's DOC_TYPES) must be a valid
+    grc.schemas.DocumentType — otherwise approving one of them writes fine
+    but crashes on every subsequent read of its Document Register entry
+    (Pydantic rejects the unknown enum value). Caught once already: Combined,
+    Manual, Guideline, Standard, SLA were missing from this enum entirely.
+    """
+
+    CDT_DOCUMENT_TYPES = ["Policy", "Procedure", "Combined", "Manual", "Guideline", "Standard", "SLA"]
+
+    @pytest.mark.parametrize("doc_type", CDT_DOCUMENT_TYPES)
+    def test_cdt_document_type_is_valid_register_type(self, doc_type):
+        doc = _document_read(type=doc_type)
+        assert doc.type.value == doc_type

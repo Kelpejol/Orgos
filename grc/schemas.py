@@ -48,6 +48,19 @@ class DocumentType(str, Enum):
     SOP = "SOP"
     FORM = "Form"
     GUIDELINES = "Guidelines"
+    # The 5 below are the CDT master-template types (see
+    # scripts/build_cdt_master_templates.py's DOCUMENT_TYPES /
+    # frontend DocumentLifecycle's DOC_TYPES) that pre-date this enum and
+    # were never added here — approving one of these crashed on every
+    # subsequent read of its Document Register entry (Pydantic rejects an
+    # unknown enum value) until this fix. GUIDELINE (singular) is kept
+    # distinct from the legacy GUIDELINES (plural) rather than merged, so no
+    # existing Register row's stored value is reinterpreted.
+    COMBINED = "Combined"
+    MANUAL = "Manual"
+    GUIDELINE = "Guideline"
+    STANDARD = "Standard"
+    SLA = "SLA"
 
 
 class DocumentStatus(str, Enum):
