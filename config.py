@@ -50,7 +50,7 @@ class Settings(BaseSettings):
     compliance_site_url: str = Field(
     default="https://dragnetnigeria.sharepoint.com/sites/everybody"
 )
-    compliance_library_name: str = Field(default="ORGOS LIBRARY")
+    compliance_library_name: str = Field(default="GRC MASTERY LIBRARY")
     compliance_starting_folder: str = Field(
         default="Policies, Procedures, Manuals, Guidelines, Frameworks, Handbook, SOP"
     )
