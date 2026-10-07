@@ -259,6 +259,52 @@ async def walk_folder(
     return files
 
 
+async def configured_intake_roots(drive_id: str, folder_filter: Optional[str]) -> list[dict]:
+    """
+    Return the top-level SharePoint folders that this intake run may process.
+    If COMPLIANCE_INTAKE_FOLDERS is set, only those exact root folders are used.
+    Otherwise, preserve the legacy behavior of walking folders under
+    COMPLIANCE_STARTING_FOLDER.
+    """
+    allowed = settings.compliance_intake_folder_list
+    if allowed:
+        top_level = await list_folder(drive_id)
+        by_name = {
+            item.get("name", "").casefold(): item
+            for item in top_level
+            if "folder" in item
+        }
+        roots = []
+        for folder_name in allowed:
+            item = by_name.get(folder_name.casefold())
+            if not item:
+                print(f"WARNING: Intake folder not found in SharePoint: {folder_name}")
+                continue
+            if folder_filter and folder_filter.lower() not in item["name"].lower():
+                continue
+            roots.append(item)
+        return roots
+
+    headers = await get_headers()
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        root_resp = await client.get(
+            f"{settings.graph_base_url}/drives/{drive_id}/root:/{settings.compliance_starting_folder}",
+            headers=headers,
+            params={"$select": "id,name"},
+        )
+        root_resp.raise_for_status()
+        root_id = root_resp.json()["id"]
+
+    roots = []
+    for item in await list_folder(drive_id, root_id):
+        if "folder" not in item:
+            continue
+        if folder_filter and folder_filter.lower() not in item["name"].lower():
+            continue
+        roots.append(item)
+    return roots
+
+
 async def download_file(drive_id: str, item_id: str) -> tuple[bytes, str]:
     headers = await get_headers()
     async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
@@ -749,40 +795,9 @@ async def run_intake(
         lifecycle_codes, lifecycle_urls = await existing_lifecycle_keys()
         register_codes, register_urls = await existing_register_keys()
 
-        headers = await get_headers()
-        async with httpx.AsyncClient(timeout=30.0) as client:
-            root_resp = await client.get(
-                f"{settings.graph_base_url}/drives/{drive_id}/root:/{settings.compliance_starting_folder}",
-                headers=headers,
-                params={"$select": "id,name"},
-            )
-            root_resp.raise_for_status()
-            root_id = root_resp.json()["id"]
-
         all_files: list[dict] = []
-        for item in await list_folder(drive_id, root_id):
-            if "folder" in item:
-                folder_name = item["name"]
-                if folder_filter and folder_filter.lower() not in folder_name.lower():
-                    continue
-                all_files.extend(await walk_folder(drive_id, folder_name, item["id"]))
-                continue
-            if folder_filter:
-                continue
-            # Loose file at the starting-folder root. Empty folder_path so
-            # classification relies on the filename alone — the starting
-            # folder's own name is not a per-document signal.
-            name = item.get("name", "")
-            ext = os.path.splitext(name)[1].lower()
-            if ext in SUPPORTED_EXTENSIONS or ext in LEGACY_EXTENSIONS:
-                all_files.append({
-                    "id": item["id"],
-                    "name": name,
-                    "folder_path": "",
-                    "extension": ext,
-                    "size": item.get("size", 0),
-                    "web_url": item.get("webUrl", ""),
-                })
+        for root in await configured_intake_roots(drive_id, folder_filter):
+            all_files.extend(await walk_folder(drive_id, root["name"], root["id"]))
 
         remaining = [f for f in all_files if f["id"] not in processed_ids]
         if limit:

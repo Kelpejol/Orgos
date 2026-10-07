@@ -51,9 +51,22 @@ class Settings(BaseSettings):
     default="https://dragnetnigeria.sharepoint.com/sites/everybody"
 )
     # Previous library: "ORGOS LIBRARY". Restore that value to revert this routing.
-    compliance_library_name: str = Field(default="GRC MASTERY LIBRARY")
+    # SharePoint shows this URL as GRC MASTERY LIBRARY; Graph exposes the drive
+    # display name as GRC CONTROL LIBRARY.
+    compliance_library_name: str = Field(default="GRC CONTROL LIBRARY")
     compliance_starting_folder: str = Field(
         default="Policies, Procedures, Manuals, Guidelines, Frameworks, Handbook, SOP"
+    )
+    compliance_intake_folders: str = Field(
+        default=(
+            "Control of Documented Information & Records Governance;"
+            "Finance & Administration;"
+            "Information Use, Handling & Communication Governance"
+        ),
+        description=(
+            "Semicolon-separated top-level folders in the compliance library "
+            "that OrgOS is allowed to browse/intake for lifecycle review"
+        ),
     )
 
     # ── Controlled Document Templating (CDT) ──────────────────────────────
@@ -159,6 +172,11 @@ class Settings(BaseSettings):
     def allowed_origins_list(self) -> List[str]:
         """Parse comma-separated origins into a list."""
         return [o.strip() for o in self.allowed_origins.split(",") if o.strip()]
+
+    @property
+    def compliance_intake_folder_list(self) -> List[str]:
+        """Parse semicolon-separated SharePoint intake folders."""
+        return [f.strip() for f in self.compliance_intake_folders.split(";") if f.strip()]
 
     @property
     def is_development(self) -> bool:

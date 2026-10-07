@@ -7,6 +7,7 @@
 
 import logging
 from typing import Optional
+from urllib.parse import unquote
 
 import httpx
 
@@ -19,6 +20,55 @@ logger = logging.getLogger(__name__)
 # Cache the compliance site ID and drive ID after first resolution
 _compliance_site_id: Optional[str] = None
 _compliance_drive_id: Optional[str] = None
+
+
+def _allowed_intake_folders() -> set[str]:
+    """Top-level folders OrgOS may browse/intake from this library."""
+    return {name.casefold() for name in settings.compliance_intake_folder_list}
+
+
+def _relative_drive_path(parent_reference: dict) -> str:
+    """Return the decoded path after Graph's /root: marker."""
+    path = unquote(parent_reference.get("path", ""))
+    if "/root:" not in path:
+        return ""
+    return path.split("/root:", 1)[1].strip("/")
+
+
+def _item_is_in_allowed_folder(item: dict) -> bool:
+    allowed = _allowed_intake_folders()
+    if not allowed:
+        return True
+
+    relative_parent = _relative_drive_path(item.get("parentReference", {}))
+    if relative_parent:
+        top_level = relative_parent.split("/", 1)[0].casefold()
+        return top_level in allowed
+
+    return "folder" in item and item.get("name", "").casefold() in allowed
+
+
+async def _ensure_item_in_allowed_folder(drive_id: str, item_id: str) -> dict:
+    """
+    Fetch item metadata and reject access outside the configured intake folders.
+    """
+    headers = await _get_headers()
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.get(
+            f"{settings.graph_base_url}/drives/{drive_id}/items/{item_id}",
+            headers=headers,
+            params={"$select": "id,name,folder,file,parentReference"},
+        )
+        resp.raise_for_status()
+        item = resp.json()
+
+    if not _item_is_in_allowed_folder(item):
+        allowed = ", ".join(settings.compliance_intake_folder_list)
+        raise GraphAPIError(
+            403,
+            f"SharePoint item is outside the configured OrgOS intake folders: {allowed}",
+        )
+    return item
 
 
 async def _get_headers() -> dict:
@@ -138,8 +188,11 @@ async def list_folder_contents(folder_id: Optional[str] = None) -> dict:
     base = settings.graph_base_url
 
     if folder_id:
+        await _ensure_item_in_allowed_folder(drive_id, folder_id)
         # Navigate by item ID — works at any depth
         url = f"{base}/drives/{drive_id}/items/{folder_id}/children"
+    elif _allowed_intake_folders():
+        url = f"{base}/drives/{drive_id}/root/children"
     else:
         # Start from the configured starting folder by path
         starting = settings.compliance_starting_folder
@@ -180,6 +233,12 @@ async def list_folder_contents(folder_id: Optional[str] = None) -> dict:
             current_url = None
             first_page = False
 
+    if not folder_id and _allowed_intake_folders():
+        all_items = [
+            item for item in all_items
+            if "folder" in item and item.get("name", "").casefold() in _allowed_intake_folders()
+        ]
+
     classified = [_classify_item(item) for item in all_items]
     folders = sorted(
         [i for i in classified if i["type"] == "folder"],
@@ -214,10 +273,17 @@ async def get_file_bytes(item_id: str) -> tuple[bytes, str]:
         meta_resp = await client.get(
             f"{base}/drives/{drive_id}/items/{item_id}",
             headers=headers,
-            params={"$select": "id,name"},
+            params={"$select": "id,name,file,parentReference"},
         )
         meta_resp.raise_for_status()
-        filename = meta_resp.json().get("name", "document")
+        meta = meta_resp.json()
+        if not _item_is_in_allowed_folder(meta):
+            allowed = ", ".join(settings.compliance_intake_folder_list)
+            raise GraphAPIError(
+                403,
+                f"SharePoint file is outside the configured OrgOS intake folders: {allowed}",
+            )
+        filename = meta.get("name", "document")
 
         # Download content via the /content endpoint
         # Graph API returns a 302 redirect to the actual CDN URL
