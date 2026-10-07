@@ -832,10 +832,10 @@ export default function AIReviewQueue() {
       {/* Header */}
       <div style={{ marginBottom: 16 }}>
         <div style={{ fontSize: 17, fontWeight: 600, marginBottom: 3 }}>
-          AI review queue
+          Extraction review
         </div>
         <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>
-          Every AI extraction lands here for human confirmation before entering
+          Every extraction lands here for human confirmation before entering
           any register.
           {!isCompliance && (
             <span style={{ color: "#BA7517", marginLeft: 6 }}>

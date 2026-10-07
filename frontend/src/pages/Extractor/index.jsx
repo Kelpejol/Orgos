@@ -892,7 +892,7 @@ const ExtractionCard = ({
                 width: "100%",
               }}
             >
-              Submit to AI Review Queue →
+              Submit to Extraction Review →
             </button>
           )}
           {submitted && (
@@ -908,7 +908,7 @@ const ExtractionCard = ({
                 fontWeight: 500,
               }}
             >
-              Submitted to AI Review Queue
+              Submitted to Extraction Review
             </div>
           )}
         </div>

@@ -237,7 +237,7 @@ export default function WorkHub({ go }) {
 
     isCompliance && allQueue.length > 0 && { key: "queue", color: "#633806", bg: "#FAEEDA", bd: "#FAC775", icon: "◈",
       count: allQueue.length,
-      title: `item${allQueue.length > 1 ? "s" : ""} pending in AI review queue`,
+      title: `item${allQueue.length > 1 ? "s" : ""} pending in extraction review`,
       message: "Extracted controls and findings are waiting for compliance team review.",
       action: "Open queue", nav: "extraction" },
 
@@ -260,7 +260,7 @@ export default function WorkHub({ go }) {
       {/* Quick links — Compliance/Admin */}
       {isCompliance && (
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 22 }}>
-          <QuickLink icon="◈" label="AI Review Queue"    onClick={() => go("extraction")} />
+          <QuickLink icon="◈" label="Extraction Review"  onClick={() => go("extraction")} />
           <QuickLink icon="◷" label="Document Lifecycle" onClick={() => go("lifecycle")} />
           <QuickLink icon="◎" label="Gap Analysis"       onClick={() => go("gap")} />
           <QuickLink icon="◉" label="Standards Map"      onClick={() => go("standards")} />
