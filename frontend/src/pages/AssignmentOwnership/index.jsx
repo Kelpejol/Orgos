@@ -433,7 +433,7 @@ const OrphanCard = ({ item, isCompliance, onDecide, isPending }) => {
             </div>
             <div style={{ fontSize: 11, color: accentColor, opacity: 0.85, lineHeight: 1.5 }}>
               {isJDtoDoc
-                ? "Until resolved: no control governs this activity, no evidence is collected, and this responsibility is untracked in the compliance chain."
+                ? "Until resolved: no control governs this activity, no record is collected, and this responsibility is untracked in the compliance chain."
                 : isConflict
                   ? "Until resolved: reviewers cannot rely on one clear governing requirement. Select the governing document, merge the requirements, escalate, or mark the conflict false positive."
                   : "Until resolved: the control exists but the role's JD does not acknowledge this accountability. The person may not know they own this control."}

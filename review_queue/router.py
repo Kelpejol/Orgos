@@ -5,7 +5,7 @@
 # Zone 1 — Extraction Review
 #   Decisions: Accept, Edit and Accept, Reject, Mark False Positive,
 #              Request Second Review, Route to Owner
-#   Cascade on Accept: creates Control Register + Evidence Tracker + Audit Log
+#   Cascade on Accept: creates Control Register + Record Tracker + Audit Log
 #
 # Zone 2 — Assignment & Ownership (orphans from JD extraction)
 #   Decisions: Create new document, Add to existing policy, Intentional,
@@ -64,7 +64,7 @@ router = APIRouter(prefix="/api/v1/queue", tags=["AI Review Queue"])
 
 _Q_LIST  = "AI Review Queue"
 _CR_LIST = "Control Register"
-_EV_LIST = "Evidence Tracker"
+_RECORD_LIST = "Evidence Tracker"
 _AL_LIST = "Audit Log"
 _DL_LIST = "Document Lifecycle"
 _SR_LIST = "Strategic Risk Register"
@@ -72,7 +72,7 @@ _SR_LIST = "Strategic Risk Register"
 
 def _q_id():  return settings.ai_review_queue_list_id
 def _cr_id(): return settings.control_register_list_id
-def _ev_id(): return settings.evidence_tracker_list_id
+def _record_id(): return settings.evidence_tracker_list_id
 def _al_id(): return settings.audit_log_list_id
 def _dl_id(): return settings.document_lifecycle_list_id
 def _sr_id(): return settings.strategic_risk_register_list_id
@@ -268,7 +268,7 @@ async def _zone1_accept_cascade(item: dict, user: CurrentUser, overrides: dict) 
     """
     Accept cascade — creates:
       1. Control Register entry
-      2. Evidence Tracker entry (if evidence defined)
+      2. Record Tracker entry (if evidence defined)
       3. Audit Log record
     Returns a summary string for CascadeResult.
     """
@@ -305,7 +305,7 @@ async def _zone1_accept_cascade(item: dict, user: CurrentUser, overrides: dict) 
         logger.error(f"Control Register cascade failed: {exc}")
         raise CascadeError("Control Register", created, exc)
 
-    # 2. Evidence Tracker — only if evidence is defined
+    # 2. Record Tracker — only if evidence is defined
     ev_id = None
     evidence_undefined = item.get("EvidenceUndefined")
     if isinstance(evidence_undefined, str):
@@ -329,22 +329,22 @@ async def _zone1_accept_cascade(item: dict, user: CurrentUser, overrides: dict) 
                 "LinkedControlId":     cr_id or "",
                 "SourceDocument":      item.get("SourceDocumentCode", ""),
             }
-            ev_item = await create_list_item(_ev_id(), _EV_LIST, ev_fields)
+            ev_item = await create_list_item(_record_id(), _RECORD_LIST, ev_fields)
             ev_id   = str(ev_item["id"])
-            created.append(f"Evidence Tracker: {ev_id}")
+            created.append(f"Record Tracker: {ev_id}")
         except Exception as exc:
-            logger.error(f"Evidence Tracker cascade failed: {exc}")
+            logger.error(f"Record Tracker cascade failed: {exc}")
             # Compensate — withdraw the control so registers don't hold a
             # half-created chain (SharePoint has no transactions; soft-rollback).
             try:
                 await update_list_item(_cr_id(), _CR_LIST, cr_id, {
                     "Status": "Withdrawn",
-                    "DecisionRationale": "Rolled back — evidence cascade step failed.",
+                    "DecisionRationale": "Rolled back — record cascade step failed.",
                 })
                 created.append(f"Control Register {cr_id}: rolled back (Withdrawn)")
             except Exception as undo_exc:
                 logger.error(f"Rollback of control {cr_id} also failed: {undo_exc}")
-            raise CascadeError("Evidence Tracker", created, exc)
+            raise CascadeError("Record Tracker", created, exc)
 
     # 3. Audit Log
     try:
@@ -471,7 +471,7 @@ async def zone1_decide(
 
         # Idempotency guard — only decide from a non-terminal state. Without this
         # a double-click / retry re-runs the accept cascade and creates DUPLICATE
-        # Control + Evidence + Audit records. (Mirrors control_register.accept_control.)
+        # Control + Record + Audit records. (Mirrors control_register.accept_control.)
         current_status = (item.get("ReviewStatus") or "").strip()
         if current_status not in _DECIDABLE_STATUSES:
             raise HTTPException(
@@ -479,7 +479,7 @@ async def zone1_decide(
                 detail=(
                     f"This item already has a decision (status '{current_status}'). "
                     "Refresh the queue — re-deciding is blocked to prevent duplicate "
-                    "Control/Evidence records."
+                    "Control/Record records."
                 ),
             )
 
@@ -530,7 +530,7 @@ async def zone1_decide(
         try:
             await update_list_item(_q_id(), _Q_LIST, item_id, updates)
         except Exception as exc:
-            # If the create-cascade already ran, the Control/Evidence/Audit
+            # If the create-cascade already ran, the Control/Record/Audit
             # records exist but the queue item's status is now stale. Do NOT let
             # the caller retry (the guard above keys off ReviewStatus, still
             # non-terminal here) — a retry would duplicate everything.
@@ -542,7 +542,7 @@ async def zone1_decide(
                 raise HTTPException(
                     status_code=502,
                     detail=(
-                        "Decision applied — the Control and Evidence records were created — "
+                        "Decision applied — the Control and Record records were created — "
                         "but the queue item could not be updated. Do NOT retry (it would create "
                         "duplicates). The records exist; an admin should reconcile this item's status."
                     ),
@@ -1035,15 +1035,15 @@ async def _zone1_impact(item: dict, decision: str, impact: dict) -> dict:
         evidence_type = item.get("EvidenceType", "")
         if evidence_type:
             impact["creates"].append({
-                "register": "Evidence Tracker",
+                "register": "Record Tracker",
                 "detail": (
-                    f"{evidence_type} evidence — {item.get('EvidenceDescription', '')[:120] or 'per Evidence Taxonomy'}, "
+                    f"{evidence_type} record — {item.get('EvidenceDescription', '')[:120] or 'per Evidence Taxonomy'}, "
                     f"frequency: {item.get('EvidenceFrequency') or 'not set'}, status: Pending"
                 ),
             })
         else:
             impact["warnings"].append(
-                "No evidence type is defined — no Evidence Tracker entry will be created. "
+                "No evidence type is defined — no Record Tracker entry will be created. "
                 "The control chain will be incomplete until evidence is designed."
             )
 

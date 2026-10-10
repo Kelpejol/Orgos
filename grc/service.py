@@ -547,7 +547,7 @@ async def get_withdrawal_impact(item_id: str) -> dict:
 
     queue_items      = await get_list_items(LIST_IDS["ai_review_queue"],    LIST_NAMES["ai_review_queue"])
     controls         = await get_list_items(LIST_IDS["control_register"],   LIST_NAMES["control_register"])
-    evidence_items   = await get_list_items(LIST_IDS["evidence_tracker"],   LIST_NAMES["evidence_tracker"])
+    record_items     = await get_list_items(LIST_IDS["evidence_tracker"],   LIST_NAMES["evidence_tracker"])
     lifecycle_items  = await get_list_items(LIST_IDS["document_lifecycle"], LIST_NAMES["document_lifecycle"])
     obligations      = await get_list_items(LIST_IDS["compliance_calendar"], LIST_NAMES["compliance_calendar"])
 
@@ -579,14 +579,14 @@ async def get_withdrawal_impact(item_id: str) -> dict:
     ]
     affected_control_ids = {c["id"] for c in affected_controls}
 
-    affected_evidence = [
+    affected_records = [
         {
             "id":          str(i["id"]),
             "description": i.get("fields", {}).get("EvidenceDescription", "")[:100],
             "status":      i.get("fields", {}).get("Status", ""),
             "control_id":  i.get("fields", {}).get("LinkedControlId", ""),
         }
-        for i in evidence_items
+        for i in record_items
         if i.get("fields", {}).get("LinkedControlId") in affected_control_ids
         and i.get("fields", {}).get("Status") in ("Pending", "Submitted")
     ]
@@ -652,7 +652,7 @@ async def get_withdrawal_impact(item_id: str) -> dict:
         "impact": {
             "open_queue_items":            open_queue,
             "controls_to_flag":            affected_controls,
-            "evidence_items_to_flag":      affected_evidence,
+            "records_to_flag":             affected_records,
             "lifecycles_to_cancel":        active_lifecycles,
             "obligations_to_note":         linked_obligations,
             "clauses_at_risk":             clauses_at_risk,
@@ -776,7 +776,7 @@ async def withdraw_document(
     1.  Validate inputs. Resolve document. Validate replaced_by_code exists if provided.
     2.  Cancel open AI Review Queue items from this document.
     3.  Flag Active/Blocked controls to Under Review with full provenance.
-    4.  Flag Pending/Submitted evidence items linked to those controls.
+    4.  Flag Pending/Submitted record items linked to those controls.
     5.  Cancel in-progress Document Lifecycle entries; collect linked gap IDs.
     6.  Re-open gaps linked to cancelled lifecycles.
     7.  Note Compliance Calendar obligations referencing this document.
@@ -812,7 +812,7 @@ async def withdraw_document(
         "withdrawal_reason":          withdrawal_reason,
         "queue_items_cancelled":      [],
         "controls_flagged":           [],
-        "evidence_items_flagged":     [],
+        "records_flagged":           [],
         "lifecycles_cancelled":       [],
         "gaps_reopened":              [],
         "obligations_flagged":        [],
@@ -889,10 +889,10 @@ async def withdraw_document(
     except Exception as exc:
         errors.append(f"Control register scan failed: {exc}")
 
-    # ── Step 4: Flag evidence items ───────────────────────────────────────────
+    # ── Step 4: Flag record items ──────────────────────────────────────────────
     try:
-        evidence_items = await get_list_items(LIST_IDS["evidence_tracker"], LIST_NAMES["evidence_tracker"])
-        for item in evidence_items:
+        record_items = await get_list_items(LIST_IDS["evidence_tracker"], LIST_NAMES["evidence_tracker"])
+        for item in record_items:
             f = item.get("fields", {})
             if (
                 f.get("LinkedControlId") in affected_control_ids
@@ -908,15 +908,15 @@ async def withdraw_document(
                                 f"Linked control {f.get('LinkedControlId')} placed under review "
                                 f"on {today} — source document {doc.document_code} was withdrawn "
                                 f"by {user.name or user.oid}. "
-                                f"Evidence collection paused pending control confirmation."
+                                f"Record collection paused pending control confirmation."
                             ),
                         },
                     )
-                    results["evidence_items_flagged"].append(str(item["id"]))
+                    results["records_flagged"].append(str(item["id"]))
                 except Exception as exc:
-                    errors.append(f"Evidence item {item['id']} flag failed: {exc}")
+                    errors.append(f"Record item {item['id']} flag failed: {exc}")
     except Exception as exc:
-        errors.append(f"Evidence tracker scan failed: {exc}")
+        errors.append(f"Record tracker scan failed: {exc}")
 
     # ── Step 5: Cancel active lifecycle entries ───────────────────────────────
     collected_gap_ids: list[str] = []
@@ -1052,7 +1052,7 @@ async def withdraw_document(
     cascade_summary = (
         f"{len(results['queue_items_cancelled'])} queue items cancelled | "
         f"{len(results['controls_flagged'])} controls flagged Under Review | "
-        f"{len(results['evidence_items_flagged'])} evidence items flagged | "
+        f"{len(results['records_flagged'])} record items flagged | "
         f"{len(results['lifecycles_cancelled'])} lifecycles cancelled | "
         f"{len(results['gaps_reopened'])} gaps re-opened | "
         f"{len(results['obligations_flagged'])} obligations noted | "

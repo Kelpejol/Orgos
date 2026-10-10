@@ -137,7 +137,7 @@ class TestDocumentRegisterWithdraw:
             "withdrawal_reason": "Revoked",
             "queue_items_cancelled": [],
             "controls_flagged": [],
-            "evidence_items_flagged": [],
+            "records_flagged": [],
             "lifecycles_cancelled": [],
             "gaps_reopened": [],
             "obligations_flagged": [],

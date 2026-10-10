@@ -79,7 +79,7 @@ def _fallback_semantic(kind: str, candidate: dict) -> dict:
                 f"are textually similar ({round(float(candidate.get('similarity') or 0) * 100)}%)."
             ),
             "semantic_confidence": round(float(candidate.get("similarity") or 0), 2),
-            "key_difference": "Compare scope, owner, frequency, evidence, and standard mapping before merging.",
+            "key_difference": "Compare scope, owner, frequency, records, and standard mapping before merging.",
         }
     return {
         "suggested_action": "Select governing document or escalate",
@@ -140,7 +140,7 @@ Return JSON object only with exactly:
   "canonical_suggestion": "short canonical role/control name or empty string",
   "reviewer_rationale": "one sentence explaining why reviewer should inspect this",
   "semantic_confidence": 0.0,
-  "key_difference": "short note on scope/owner/frequency/evidence difference"
+  "key_difference": "short note on scope/owner/frequency/records difference"
 }}"""
     try:
         raw = await llm_generate(

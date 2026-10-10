@@ -271,7 +271,7 @@ export const useOrgRoles = () =>
     staleTime: 120_000,
   });
 
-/** Controls/evidence owned per role — "who owns what". */
+/** Controls/records owned per role — "who owns what". */
 export const useOwnershipSummary = () =>
   useQuery({
     queryKey: ["ownership-summary"],

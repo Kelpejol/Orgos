@@ -13,13 +13,13 @@ from typing import Optional
 
 
 # =============================================================================
-#  Evidence status → traffic light
+#  Record status → traffic light
 # =============================================================================
 
-def _evidence_traffic_light(evidence_items: list[dict]) -> str:
-    if not evidence_items:
+def _record_traffic_light(record_items: list[dict]) -> str:
+    if not record_items:
         return "Red"
-    statuses = [e.get("status", "Pending") for e in evidence_items]
+    statuses = [e.get("status", "Pending") for e in record_items]
     if any(s == "Accepted" for s in statuses):
         if all(s in ("Accepted", "Submitted") for s in statuses):
             return "Green"
@@ -63,15 +63,15 @@ def format_compliance_response(search_result: dict) -> dict:
             src_doc    = ctrl.get("source_document", "")
             owner      = ctrl.get("owner", {})
             owner_name = owner.get("display_name") or owner.get("email") or "Unassigned"
-            evidence   = ctrl.get("evidence", [])
-            traffic    = _evidence_traffic_light(evidence)
+            evidence   = ctrl.get("records", [])
+            traffic    = _record_traffic_light(evidence)
             traffic_emoji = {"Green": "🟢", "Amber": "🟡", "Red": "🔴"}.get(traffic, "⚪")
 
             lines.append(f"**{ctrl_stmt}**")
             if iso:
                 lines.append(f"ISO clause: {iso}")
             lines.append(f"Owner: {owner_name}")
-            lines.append(f"Evidence status: {traffic_emoji} {traffic}")
+            lines.append(f"Record status: {traffic_emoji} {traffic}")
             if src_doc:
                 lines.append(f"Source: {src_doc}")
             lines.append("")
@@ -83,12 +83,12 @@ def format_compliance_response(search_result: dict) -> dict:
                     "clause":        iso or "",
                     "link":          "",
                 })
-            # Evidence links → sources (URLs never pass through LLM)
+            # Record links → sources (URLs never pass through LLM)
             for ev in evidence:
                 ev_link = (ev.get("link") or "").strip()
                 if ev_link:
                     ev_type  = ev.get("type", "")
-                    ev_label = f"Evidence ({ev_type})" if ev_type else "Evidence"
+                    ev_label = f"Record ({ev_type})" if ev_type else "Record"
                     sources.append({
                         "title":         ev_label,
                         "document_code": src_doc or ev_label,

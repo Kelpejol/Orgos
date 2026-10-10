@@ -43,17 +43,17 @@ REQUIRED_CLAUSES = [
     {"standard": "ISO 27001", "clause": "A.5.17", "title": "Authentication information",
      "requires": "control"},
     {"standard": "ISO 27001", "clause": "A.5.18", "title": "Access rights",
-     "requires": "control+evidence"},
+     "requires": "control+record"},
     {"standard": "ISO 27001", "clause": "A.5.25", "title": "Assessment of security events",
      "requires": "control"},
     {"standard": "ISO 27001", "clause": "A.5.26", "title": "Response to incidents",
-     "requires": "control+evidence"},
+     "requires": "control+record"},
     {"standard": "ISO 27001", "clause": "A.6.1",  "title": "Screening",
      "requires": "control"},
     {"standard": "ISO 27001", "clause": "A.8.1",  "title": "User endpoint devices",
-     "requires": "control+evidence"},
+     "requires": "control+record"},
     {"standard": "ISO 27001", "clause": "A.8.24", "title": "Use of cryptography",
-     "requires": "control+evidence"},
+     "requires": "control+record"},
     {"standard": "ISO 27001", "clause": "A.8.25", "title": "Secure development life cycle",
      "requires": "control"},
     {"standard": "ISO 27001", "clause": "A.8.32", "title": "Change management",
@@ -61,11 +61,11 @@ REQUIRED_CLAUSES = [
     {"standard": "ISO 9001",  "clause": "7.5",    "title": "Documented information",
      "requires": "policy"},
     {"standard": "ISO 9001",  "clause": "9.2",    "title": "Internal audit",
-     "requires": "control+evidence"},
+     "requires": "control+record"},
     {"standard": "ISO 9001",  "clause": "10.2",   "title": "Nonconformity and corrective action",
      "requires": "control"},
     {"standard": "NDPA",      "clause": "S.39",   "title": "Breach notification to Commission",
-     "requires": "control+evidence"},
+     "requires": "control+record"},
     {"standard": "NDPA",      "clause": "S.40",   "title": "Breach notification to data subject",
      "requires": "control"},
 ]
@@ -96,7 +96,7 @@ async def _load_controls() -> list[dict]:
     ]
 
 
-async def _load_evidence() -> list[dict]:
+async def _load_records() -> list[dict]:
     items = await get_list_items(
         settings.evidence_tracker_list_id, "Evidence Tracker"
     )
@@ -146,7 +146,7 @@ def _make_gap_key(standard: str, clause: str, gap_category: str, ctrl_id: str = 
 
 def _find_gaps(
     controls: list[dict],
-    evidence: list[dict],
+    records: list[dict],
     ownership=None,
 ) -> list[dict]:
     """
@@ -154,7 +154,7 @@ def _find_gaps(
     Returns list of gap findings with type, severity, and GapKey.
     """
     gaps = []
-    evidence_by_control = {e["linked_ctrl"]: e for e in evidence}
+    records_by_control = {r["linked_ctrl"]: r for r in records}
 
     for clause_def in REQUIRED_CLAUSES:
         clause   = clause_def["clause"]
@@ -215,15 +215,15 @@ def _find_gaps(
                         f"has no assigned owner. {reason}"
                     ),
                     "impact": (
-                        "Evidence cannot be collected. Control is unroutable. "
+                        "Records cannot be collected. Control is unroutable. "
                         "Will generate an audit observation."
                     ),
                 })
 
         # Evidence gap — controls exist but no evidence requirement is defined
-        if "evidence" in requires:
+        if "record" in requires:
             for ctrl in clause_controls:
-                if ctrl["id"] not in evidence_by_control:
+                if ctrl["id"] not in records_by_control:
                     gaps.append({
                         "standard":    standard,
                         "clause":      clause,
@@ -233,11 +233,11 @@ def _find_gaps(
                         "severity":    "Major",
                         "finding": (
                             f"Control '{ctrl['statement'][:100]}' for {standard} {clause} "
-                            f"has no evidence requirement defined."
+                            f"has no record requirement defined."
                         ),
                         "impact": (
                             "The control cannot be proven to an auditor. "
-                            "Without evidence, the control may as well not exist."
+                            "Without a record, the control may as well not exist."
                         ),
                     })
 
@@ -250,7 +250,7 @@ def _find_gaps(
 #  Single Ollama call per gap produces:
 #    • finding_narrative  — contextual description specific to Dragnet
 #    • audit_risk         — what an external auditor would write
-#    • remediation package (document, controls, evidence, roles, target_date, verification)
+#    • remediation package (document, controls, records, roles, target_date, verification)
 # =============================================================================
 
 async def _ai_analyse_and_remediate(gap: dict) -> dict:
@@ -288,7 +288,7 @@ Respond with ONLY valid JSON in this exact structure (no extra text before or af
   "audit_risk": "Single sentence an external auditor would write as a nonconformity or observation",
   "document": "Specific document action required — include a suggested document title",
   "controls": ["Shall-statement control 1 specific to this clause", "Shall-statement control 2"],
-  "evidence": ["EVT_CODE — evidence description. Source: system name. Frequency: period"],
+  "records": ["EVT_CODE — evidence description. Source: system name. Frequency: period"],
   "roles": ["Specific role name that plausibly owns this remediation"],
   "risk": "Business consequence if this gap remains open beyond the target date (one sentence)",
   "standards_mapping": "{gap['standard']} {gap['clause']}",
@@ -326,12 +326,12 @@ Respond with ONLY valid JSON in this exact structure (no extra text before or af
         "remediation_json":  json.dumps({
             "document":          f"Create or revise document covering {gap['clause_title']}",
             "controls":          [f"[Role] shall implement controls for {gap['clause_title']}"],
-            "evidence":          ["REV — Review record. Source: SharePoint. Frequency: quarterly"],
+            "records":           ["REV — Review record. Source: SharePoint. Frequency: quarterly"],
             "roles":             ["Compliance"],
             "risk":              gap["impact"],
             "standards_mapping": f"{gap['standard']} {gap['clause']}",
             "target_date":       (date.today() + timedelta(days=days)).isoformat(),
-            "verification":      "Gap closed when controls confirmed and first evidence accepted.",
+            "verification":      "Gap closed when controls confirmed and first record accepted.",
         }),
     }
 
@@ -371,10 +371,10 @@ async def run_gap_analysis(triggered_by: str = "system") -> dict:
     logger.info("Gap Analyzer starting")
 
     controls    = await _load_controls()
-    evidence    = await _load_evidence()
+    records     = await _load_records()
 
     logger.info(
-        f"Loaded: {len(controls)} controls, {len(evidence)} evidence items"
+        f"Loaded: {len(controls)} controls, {len(records)} record items"
     )
 
     # Load existing open gap keys for deduplication
@@ -387,7 +387,7 @@ async def run_gap_analysis(triggered_by: str = "system") -> dict:
     from ownership.resolver import get_ownership_index
     ownership = await get_ownership_index()
 
-    gaps = _find_gaps(controls, evidence, ownership)
+    gaps = _find_gaps(controls, records, ownership)
     logger.info(f"Gap finding complete: {len(gaps)} gaps found before deduplication")
 
     if not gaps:

@@ -2,8 +2,8 @@
 // pages/StandardsMap/index.jsx
 // Standards Map — Audit Readiness View
 // Shows every clause in every standard Dragnet is certified against.
-// Traffic lights calculated from live Control Register + Evidence Tracker data.
-// Drill-down shows the full audit chain: control → evidence → owner → link.
+// Traffic lights calculated from live Control Register + Record Tracker data.
+// Drill-down shows the full audit chain: control → record → owner → link.
 // =============================================================================
 
 import { useState, useMemo } from "react";
@@ -81,7 +81,7 @@ const ClauseDetail = ({ clauseCode, onBack }) => {
     </div>
   );
 
-  const { standard, clause, title, traffic_light, controls = [], evidence = [] } = data;
+  const { standard, clause, title, traffic_light, controls = [], records = [] } = data;
 
   const tlColors = { Green: "#1D9E75", Amber: "#BA7517", Red: "#A32D2D" };
   const tlColor  = tlColors[traffic_light] || "#B4B2A9";
@@ -120,7 +120,7 @@ const ClauseDetail = ({ clauseCode, onBack }) => {
         </div>
         <div style={{ display: "flex", gap: 16, fontSize: 11, color: tlColor }}>
           <span>{controls.length} control{controls.length !== 1 ? "s" : ""}</span>
-          <span>{evidence.filter(e => e.Status === "Accepted").length} evidence accepted</span>
+          <span>{records.filter(e => e.Status === "Accepted").length} records accepted</span>
           {traffic_light === "Red" && (
             <span style={{ fontWeight: 600 }}>⚠ This clause will fail audit</span>
           )}
@@ -148,10 +148,10 @@ const ClauseDetail = ({ clauseCode, onBack }) => {
         </div>
       )}
 
-      {/* Controls with linked evidence */}
+      {/* Controls with linked records */}
       <div style={{ maxHeight: 520, overflowY: "auto" }}>
       {controls.map((control, ci) => {
-        const linkedEvidence = evidence.filter(e => e.LinkedControlId === control.id);
+        const linkedEvidence = records.filter(e => e.LinkedControlId === control.id);
         const isBlocked = control.Status === "Blocked";
 
         return (
@@ -189,13 +189,13 @@ const ClauseDetail = ({ clauseCode, onBack }) => {
               )}
             </div>
 
-            {/* Evidence items */}
+            {/* Record items */}
             {linkedEvidence.length === 0 ? (
               <div style={{ padding: "10px 14px",
                             background: "var(--color-background-secondary)",
                             borderTop: "0.5px solid var(--color-border-tertiary)",
                             fontSize: 11, color: "var(--color-text-tertiary)" }}>
-                No evidence requirement defined — this control is not yet collectable.
+                No record requirement defined — this control is not yet collectable.
               </div>
             ) : (
               linkedEvidence.map((evd, ei) => {
@@ -227,16 +227,16 @@ const ClauseDetail = ({ clauseCode, onBack }) => {
                           {evd.Status}
                         </span>
                       </div>
-                      {evd.EvidenceLink && (
-                        <a href={evd.EvidenceLink} target="_blank" rel="noreferrer"
+                      {evd.RecordLink && (
+                        <a href={evd.RecordLink} target="_blank" rel="noreferrer"
                           style={{ fontSize: 10, color: ec.color, textDecoration: "underline",
                                    fontWeight: 500 }}>
-                          View evidence ↗
+                          View record ↗
                         </a>
                       )}
                     </div>
                     <div style={{ fontSize: 12, color: ec.color, lineHeight: 1.4, marginBottom: 4 }}>
-                      {evd.EvidenceDescription}
+                      {evd.RecordDescription}
                     </div>
                     <div style={{ fontSize: 10, color: ec.color, opacity: 0.8 }}>
                       {evd.OwnerRole} · {evd.Frequency}
@@ -378,7 +378,7 @@ export default function StandardsMap() {
           padding: "7px 14px", background: "var(--color-background-secondary)",
           borderBottom: "1px solid #E8E8E8",
         }}>
-          {["Standard", "Title", "Controls", "Evidence", "Status"].map(h => (
+          {["Standard", "Title", "Controls", "Records", "Status"].map(h => (
             <div key={h} style={{ fontSize: 11, fontWeight: 500,
                                   color: "var(--color-text-secondary)" }}>
               {h}
@@ -435,7 +435,7 @@ export default function StandardsMap() {
                   {clause.controls_count}
                 </div>
                 <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>
-                  {clause.evidence_accepted}
+                  {clause.records_accepted}
                 </div>
                 <div>
                   <TrafficLight status={clause.traffic_light} />

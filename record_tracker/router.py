@@ -1,9 +1,17 @@
 # =============================================================================
-# evidence_tracker/router.py
-# GET  /api/v1/evidence              — list all evidence items
-# GET  /api/v1/evidence/{id}         — get single item
-# PATCH /api/v1/evidence/{id}/submit — owner submits evidence with link
-# PATCH /api/v1/evidence/{id}/verify — compliance verifies submission
+# record_tracker/router.py
+# GET  /api/v1/records              — list all record items
+# GET  /api/v1/records/{id}         — get single item
+# PATCH /api/v1/records/{id}/submit — owner submits a record with link
+# PATCH /api/v1/records/{id}/verify — compliance verifies submission
+#
+# NOTE — naming: this module was renamed from "Evidence Tracker" to "Record
+# Tracker" (OrgOS's own feature/API naming only). The underlying SharePoint
+# list is still literally named "Evidence Tracker" with columns like
+# EvidenceDescription/EvidenceType/EvidenceLink — those are NOT renamed here
+# (OrgOS cannot rename SharePoint columns). The 16-code "Evidence Type"
+# taxonomy (DRG-QI-REF-EVTX-01-26) also keeps its name throughout — it is a
+# separate, formally documented standard, distinct from this tracker feature.
 # =============================================================================
 
 import logging
@@ -28,12 +36,16 @@ from graph.client import resolve_user
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(tags=["Evidence Tracker"])
+router = APIRouter(tags=["Record Tracker"])
 
+# The real SharePoint list name — unchanged (see module note above).
 _LIST_NAME = "Evidence Tracker"
 
 
 def _list_id() -> str:
+    # Unchanged config attribute — renaming it would require a matching
+    # production .env update; not worth the deploy-coordination risk for an
+    # internal-only name. See module note above.
     return settings.evidence_tracker_list_id
 
 
@@ -46,23 +58,23 @@ def _handle(exc: Exception, ctx: str):
     raise HTTPException(status_code=500, detail=f"Error: {ctx}")
 
 
-def _sp_to_evd(item: dict) -> dict:
+def _sp_to_record(item: dict) -> dict:
     f = item.get("fields", {})
     return {
         "id":                  str(item["id"]),
         "Title":               f.get("Title", ""),
-        "EvidenceDescription": f.get("EvidenceDescription", ""),
+        "RecordDescription":   f.get("EvidenceDescription", ""),
         "EvidenceType":        f.get("EvidenceType", ""),
         "SourceSystem":        f.get("SourceSystem", ""),
-        "EvidenceFormat":      f.get("EvidenceFormat", ""),
+        "RecordFormat":        f.get("EvidenceFormat", ""),
         "Frequency":           f.get("Frequency", ""),
         "CollectionMethod":    f.get("CollectionMethod", ""),
         "OwnerRole":           f.get("OwnerRole", ""),
         "OwnerEntraId":        f.get("OwnerEntraId", ""),
         "ValidationCriteria":  f.get("ValidationCriteria", ""),
-        "EvidenceLink":        f.get("EvidenceLink", ""),
-        "EvidenceUrl":         f.get("EvidenceLink", ""),
-        "evidenceUrl":         f.get("EvidenceLink", ""),
+        "RecordLink":          f.get("EvidenceLink", ""),
+        "RecordUrl":           f.get("EvidenceLink", ""),
+        "recordUrl":           f.get("EvidenceLink", ""),
         "Status":              f.get("Status", "Pending"),
         "LinkedControlId":     f.get("LinkedControlId", ""),
         "NextDue":             f.get("NextDue", ""),
@@ -79,19 +91,19 @@ def _sp_to_evd(item: dict) -> dict:
 #  Endpoints
 # =============================================================================
 
-@router.get("/api/v1/evidence")
-async def list_evidence(
+@router.get("/api/v1/records")
+async def list_records(
     owner_oid:  Optional[str] = None,
     status:     Optional[str] = None,
     control_id: Optional[str] = None,
     user: CurrentUser = Depends(get_current_user),
 ) -> list[dict]:
     """
-    List evidence items. Filterable by owner OID, status, or linked control.
+    List record items. Filterable by owner OID, status, or linked control.
     """
     try:
         items = await get_list_items(_list_id(), _LIST_NAME)
-        evds  = [_sp_to_evd(i) for i in items]
+        records = [_sp_to_record(i) for i in items]
 
         # Ownership is a ROLE (job title / group / alias) — OwnerEntraId is
         # never populated. Resolve once and stamp each item so the UI can gate
@@ -99,77 +111,78 @@ async def list_evidence(
         try:
             from ownership.resolver import get_ownership_index
             ownership = await get_ownership_index()
-            for e in evds:
-                res = ownership.resolve(e["OwnerRole"])
-                e["OwnedByMe"]    = ownership.owns(e["OwnerRole"], user.oid)
-                e["OwnerKind"]    = res["kind"]           # group | job_title | unresolved
-                e["OwnerPeople"]  = res["people"]
-                e["OwnerResolved"] = res["resolved"]
-                e["OwnerCanonical"] = res["canonical"]
-                e["OwnerViaAlias"]  = res["via_alias"]
+            for r in records:
+                res = ownership.resolve(r["OwnerRole"])
+                r["OwnedByMe"]    = ownership.owns(r["OwnerRole"], user.oid)
+                r["OwnerKind"]    = res["kind"]           # group | job_title | unresolved
+                r["OwnerPeople"]  = res["people"]
+                r["OwnerResolved"] = res["resolved"]
+                r["OwnerCanonical"] = res["canonical"]
+                r["OwnerViaAlias"]  = res["via_alias"]
         except Exception as exc:
-            logger.warning(f"Could not resolve evidence ownership: {exc}")
-            for e in evds:
-                e.setdefault("OwnedByMe", False)
-                e.setdefault("OwnerKind", "unresolved")
-                e.setdefault("OwnerPeople", [])
-                e.setdefault("OwnerResolved", False)
+            logger.warning(f"Could not resolve record ownership: {exc}")
+            for r in records:
+                r.setdefault("OwnedByMe", False)
+                r.setdefault("OwnerKind", "unresolved")
+                r.setdefault("OwnerPeople", [])
+                r.setdefault("OwnerResolved", False)
 
         if owner_oid:
             # Filter by who actually holds the owning role.
-            evds = [e for e in evds
-                    if any((p.get("oid") or "") == owner_oid for p in e.get("OwnerPeople", []))]
+            records = [r for r in records
+                       if any((p.get("oid") or "") == owner_oid for p in r.get("OwnerPeople", []))]
         if status:
-            evds = [e for e in evds if e["Status"] == status]
+            records = [r for r in records if r["Status"] == status]
         if control_id:
-            evds = [e for e in evds if e["LinkedControlId"] == control_id]
+            records = [r for r in records if r["LinkedControlId"] == control_id]
 
         # Sort: overdue and due soon first
         status_order = {
             "Overdue": 0, "Due Soon": 1, "Submitted": 2,
             "Pending": 3, "Rejected": 4, "Accepted": 5,
         }
-        evds.sort(key=lambda e: status_order.get(e["Status"], 9))
-        return evds
+        records.sort(key=lambda r: status_order.get(r["Status"], 9))
+        return records
     except Exception as exc:
-        _handle(exc, "list evidence")
+        _handle(exc, "list records")
 
 
-@router.get("/api/v1/evidence/{item_id}")
-async def get_evidence(
+@router.get("/api/v1/records/{item_id}")
+async def get_record(
     item_id: str,
     user: CurrentUser = Depends(get_current_user),
 ) -> dict:
     try:
         item = await get_list_item(_list_id(), _LIST_NAME, item_id)
-        return _sp_to_evd(item)
+        return _sp_to_record(item)
     except Exception as exc:
-        _handle(exc, f"get evidence {item_id}")
+        _handle(exc, f"get record {item_id}")
 
 
-class SubmitEvidence(BaseModel):
-    evidence_link:    str   # Mandatory — link to the actual artefact
+class SubmitRecord(BaseModel):
+    record_link:      str   # Mandatory — link to the actual artefact
     submission_notes: Optional[str] = None
 
 
-class VerifyEvidence(BaseModel):
+class VerifyRecord(BaseModel):
     accepted:      bool
     rejection_note: Optional[str] = None  # Required if accepted=False
 
 
 def _safe_filename(filename: str) -> str:
     cleaned = "".join(c if c.isalnum() or c in (" ", ".", "-", "_") else "_" for c in filename)
-    return cleaned.strip(" .") or "evidence-file"
+    return cleaned.strip(" .") or "record-file"
 
 
-async def _upload_evidence_to_sharepoint(
+async def _upload_record_to_sharepoint(
     item_id: str,
     filename: str,
     file_bytes: bytes,
 ) -> str:
     """
-    Upload evidence to SharePoint and return the source webUrl.
-    Path: /EVID-{item_id}-{filename}
+    Upload a record file to SharePoint and return the source webUrl.
+    Path: /EVID-{item_id}-{filename} — kept as-is, matches the already-
+    uploaded files' naming convention on the live drive.
     """
     token = await get_graph_access_token()
     headers = {
@@ -187,24 +200,24 @@ async def _upload_evidence_to_sharepoint(
         resp.raise_for_status()
 
     web_url = resp.json().get("webUrl", "")
-    logger.info(f"Uploaded evidence '{filename}' for item {item_id}: {web_url}")
+    logger.info(f"Uploaded record '{filename}' for item {item_id}: {web_url}")
     return web_url
 
 
-@router.patch("/api/v1/evidence/{item_id}/submit")
-async def submit_evidence(
+@router.patch("/api/v1/records/{item_id}/submit")
+async def submit_record(
     item_id: str,
-    body: SubmitEvidence,
+    body: SubmitRecord,
     user: CurrentUser = Depends(get_current_user),
 ) -> dict:
     """
-    Owner submits collected evidence with a mandatory link to the artefact.
+    Owner submits a collected record with a mandatory link to the artefact.
     Sets status to Submitted for Compliance team verification.
     """
-    if not body.evidence_link.strip():
+    if not body.record_link.strip():
         raise HTTPException(
             status_code=422,
-            detail="evidence_link is mandatory. Paste the URL to the artefact in SharePoint, Intune, GitHub, or the relevant source system.",
+            detail="record_link is mandatory. Paste the URL to the artefact in SharePoint, Intune, GitHub, or the relevant source system.",
         )
 
     try:
@@ -212,12 +225,12 @@ async def submit_evidence(
         if ((current.get("fields", {}) or {}).get("Status", "") or "") == "Accepted":
             raise HTTPException(
                 status_code=409,
-                detail="This evidence is already Accepted. Someone with the Compliance role "
-                       "must reopen it (reject) before new evidence can be submitted.",
+                detail="This record is already Accepted. Someone with the Compliance role "
+                       "must reopen it (reject) before a new record can be submitted.",
             )
 
         fields: dict = {
-            "EvidenceLink":   body.evidence_link.strip(),
+            "EvidenceLink":   body.record_link.strip(),
             "Status":         "Submitted",
             "LastCollected":  date.today().isoformat(),
             "RejectionNote":  "",  # Clear any previous rejection
@@ -227,34 +240,34 @@ async def submit_evidence(
 
         await update_list_item(_list_id(), _LIST_NAME, item_id, fields)
         updated = await get_list_item(_list_id(), _LIST_NAME, item_id)
-        return _sp_to_evd(updated)
+        return _sp_to_record(updated)
     except HTTPException:
         raise
     except Exception as exc:
-        _handle(exc, f"submit evidence {item_id}")
+        _handle(exc, f"submit record {item_id}")
 
 
-@router.post("/api/v1/evidence/{item_id}/upload")
-async def upload_evidence(
+@router.post("/api/v1/records/{item_id}/upload")
+async def upload_record(
     item_id: str,
     file: UploadFile = File(...),
     submission_notes: Optional[str] = Form(None),
     user: CurrentUser = Depends(get_current_user),
 ) -> dict:
     """
-    Owner uploads collected evidence to SharePoint.
-    The returned SharePoint webUrl is stored as the evidence source URL.
+    Owner uploads a collected record to SharePoint.
+    The returned SharePoint webUrl is stored as the record's source URL.
     """
     file_bytes = await file.read()
     if not file_bytes:
-        raise HTTPException(status_code=422, detail="Evidence file is required.")
+        raise HTTPException(status_code=422, detail="Record file is required.")
 
-    filename = file.filename or f"evidence_{item_id}"
+    filename = file.filename or f"record_{item_id}"
 
     try:
-        evidence_url = await _upload_evidence_to_sharepoint(item_id, filename, file_bytes)
+        record_url = await _upload_record_to_sharepoint(item_id, filename, file_bytes)
     except Exception as exc:
-        logger.exception(f"SharePoint evidence upload failed for {item_id}")
+        logger.exception(f"SharePoint record upload failed for {item_id}")
         raise HTTPException(status_code=503, detail=f"SharePoint upload failed: {exc}")
 
     try:
@@ -262,12 +275,12 @@ async def upload_evidence(
         if ((current.get("fields", {}) or {}).get("Status", "") or "") == "Accepted":
             raise HTTPException(
                 status_code=409,
-                detail="This evidence is already Accepted. Someone with the Compliance role "
-                       "must reopen it (reject) before new evidence can be uploaded.",
+                detail="This record is already Accepted. Someone with the Compliance role "
+                       "must reopen it (reject) before a new record can be uploaded.",
             )
 
         fields: dict = {
-            "EvidenceLink":   evidence_url,
+            "EvidenceLink":   record_url,
             "Status":         "Submitted",
             "LastCollected":  date.today().isoformat(),
             "RejectionNote":  "",
@@ -277,28 +290,28 @@ async def upload_evidence(
 
         await update_list_item(_list_id(), _LIST_NAME, item_id, fields)
         updated = await get_list_item(_list_id(), _LIST_NAME, item_id)
-        return _sp_to_evd(updated)
+        return _sp_to_record(updated)
     except HTTPException:
         raise
     except Exception as exc:
-        _handle(exc, f"save uploaded evidence {item_id}")
+        _handle(exc, f"save uploaded record {item_id}")
 
 
-@router.patch("/api/v1/evidence/{item_id}/verify")
-async def verify_evidence(
+@router.patch("/api/v1/records/{item_id}/verify")
+async def verify_record(
     item_id: str,
-    body: VerifyEvidence,
+    body: VerifyRecord,
     user: CurrentUser = Depends(require_compliance_lead),
 ) -> dict:
     """
-    Compliance team verifies a submitted evidence item.
+    Compliance team verifies a submitted record item.
     Accept → status becomes Accepted.
     Reject → status returns to Pending with rejection note visible to owner.
     """
     if not body.accepted and not body.rejection_note:
         raise HTTPException(
             status_code=422,
-            detail="rejection_note is required when rejecting evidence.",
+            detail="rejection_note is required when rejecting a record.",
         )
 
     try:
@@ -308,8 +321,8 @@ async def verify_evidence(
             raise HTTPException(
                 status_code=409,
                 detail=(
-                    f"Only submitted evidence can be verified (current status: "
-                    f"'{cur_status or 'Pending'}'). The owner must submit the evidence first."
+                    f"Only submitted records can be verified (current status: "
+                    f"'{cur_status or 'Pending'}'). The owner must submit the record first."
                 ),
             )
 
@@ -322,25 +335,25 @@ async def verify_evidence(
 
         await update_list_item(_list_id(), _LIST_NAME, item_id, fields)
         updated = await get_list_item(_list_id(), _LIST_NAME, item_id)
-        return _sp_to_evd(updated)
+        return _sp_to_record(updated)
     except HTTPException:
         raise
     except Exception as exc:
-        _handle(exc, f"verify evidence {item_id}")
+        _handle(exc, f"verify record {item_id}")
 
 
-class ReassignEvidenceOwner(BaseModel):
+class ReassignRecordOwner(BaseModel):
     owner_role: str
 
 
-@router.patch("/api/v1/evidence/{item_id}/reassign-owner")
-async def reassign_evidence_owner(
+@router.patch("/api/v1/records/{item_id}/reassign-owner")
+async def reassign_record_owner(
     item_id: str,
-    body: ReassignEvidenceOwner,
+    body: ReassignRecordOwner,
     user: CurrentUser = Depends(require_compliance_lead),
 ) -> dict:
     """
-    Reassign the evidence owner role to a (real) job title. Compliance only.
+    Reassign the record owner role to a (real) job title. Compliance only.
     """
     owner = (body.owner_role or "").strip()
     if not owner:
@@ -348,8 +361,8 @@ async def reassign_evidence_owner(
     try:
         await update_list_item(_list_id(), _LIST_NAME, item_id, {"OwnerRole": owner})
         updated = await get_list_item(_list_id(), _LIST_NAME, item_id)
-        return _sp_to_evd(updated)
+        return _sp_to_record(updated)
     except HTTPException:
         raise
     except Exception as exc:
-        _handle(exc, f"reassign evidence owner {item_id}")
+        _handle(exc, f"reassign record owner {item_id}")

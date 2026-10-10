@@ -202,11 +202,11 @@ export default function OrgRoles() {
                         const o = ownsFor(u.job_title);
                         if (!o) return <span style={{ color: "var(--color-text-tertiary)" }}>—</span>;
                         return (
-                          <span title={`${o.controls} control(s), ${o.evidence} evidence item(s) owned by "${u.job_title}"`}
+                          <span title={`${o.controls} control(s), ${o.records} record(s) owned by "${u.job_title}"`}
                                 style={{ fontSize: 11 }}>
                             {o.controls > 0 && <b>{o.controls}</b>} {o.controls > 0 ? "ctrl" : ""}
-                            {o.controls > 0 && o.evidence > 0 ? " · " : ""}
-                            {o.evidence > 0 && <b>{o.evidence}</b>} {o.evidence > 0 ? "evid" : ""}
+                            {o.controls > 0 && o.records > 0 ? " · " : ""}
+                            {o.records > 0 && <b>{o.records}</b>} {o.records > 0 ? "rec" : ""}
                           </span>
                         );
                       })()}

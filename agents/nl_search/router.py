@@ -50,7 +50,7 @@ def _conversational_fallback(question: str) -> str:
 
     # "how are you"
     if "how are you" in q or "how are u" in q:
-        return "I'm doing great, thanks for asking! What can I help you with — a policy question, evidence requirement, or a how-to procedure?"
+        return "I'm doing great, thanks for asking! What can I help you with — a policy question, record requirement, or a how-to procedure?"
 
     # Thank-you acknowledgement
     if any(w in q for w in ("thank", "thanks")):
@@ -61,7 +61,7 @@ def _conversational_fallback(question: str) -> str:
         return "I'd be happy to elaborate — could you ask a specific question about the policy, control, or procedure you're interested in?"
 
     # Generic greeting or short social phrase
-    return "Hi! I'm your OrgOS GRC assistant. Ask me about Dragnet's compliance policies, controls, evidence requirements, or how-to procedures."
+    return "Hi! I'm your OrgOS GRC assistant. Ask me about Dragnet's compliance policies, controls, record requirements, or how-to procedures."
 
 
 # =============================================================================

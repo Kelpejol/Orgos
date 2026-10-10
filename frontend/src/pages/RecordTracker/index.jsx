@@ -1,8 +1,8 @@
 // =============================================================================
-// pages/EvidenceTracker/index.jsx
-// Evidence Tracker — wired to SharePoint.
-// Shows evidence items created by the Zone 1 cascade.
-// Owner view: my evidence items to collect and submit.
+// pages/RecordTracker/index.jsx
+// Record Tracker — wired to SharePoint.
+// Shows record items created by the Zone 1 cascade.
+// Owner view: my record items to collect and submit.
 // Compliance view: submitted items to verify, overdue items to chase.
 // =============================================================================
 
@@ -21,9 +21,9 @@ import apiClient from "../../api/grcApi.js";
 //  API
 // =============================================================================
 
-const evidenceApi = {
+const recordApi = {
   list: (params) =>
-    apiClient.get("/api/v1/evidence", { params }).then(r => r.data),
+    apiClient.get("/api/v1/records", { params }).then(r => r.data),
 
   submit: async (id, file, notes) => {
     const form = new FormData();
@@ -31,7 +31,7 @@ const evidenceApi = {
     if (notes) form.append("submission_notes", notes);
 
     const BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
-    const resp = await fetch(`${BASE}/api/v1/evidence/${id}/upload`, {
+    const resp = await fetch(`${BASE}/api/v1/records/${id}/upload`, {
       method: "POST",
       credentials: "include",
       body: form,
@@ -43,22 +43,22 @@ const evidenceApi = {
     return resp.json();
   },
 
-  // Evidence that lives in another system (Intune, Entra, CPR, GitHub…) is
+  // A record that lives in another system (Intune, Entra, CPR, GitHub…) is
   // submitted as a link to the artefact's location — no copy uploaded.
   submitLink: (id, link, notes) =>
-    apiClient.patch(`/api/v1/evidence/${id}/submit`, {
-      evidence_link: link,
+    apiClient.patch(`/api/v1/records/${id}/submit`, {
+      record_link: link,
       submission_notes: notes || undefined,
     }).then(r => r.data),
 
   verify: (id, accepted, rejectionNote) =>
-    apiClient.patch(`/api/v1/evidence/${id}/verify`, {
+    apiClient.patch(`/api/v1/records/${id}/verify`, {
       accepted,
       rejection_note: rejectionNote || undefined,
     }).then(r => r.data),
 
   reassignOwner: (id, ownerRole) =>
-    apiClient.patch(`/api/v1/evidence/${id}/reassign-owner`, {
+    apiClient.patch(`/api/v1/records/${id}/reassign-owner`, {
       owner_role: ownerRole,
     }).then(r => r.data),
 };
@@ -67,10 +67,10 @@ const evidenceApi = {
 //  Hooks
 // =============================================================================
 
-function useEvidence() {
+function useRecords() {
   return useQuery({
-    queryKey: ["evidence"],
-    queryFn:  () => evidenceApi.list({}),
+    queryKey: ["records"],
+    queryFn:  () => recordApi.list({}),
     staleTime: 30_000,
   });
 }
@@ -88,6 +88,8 @@ const STATUS_STYLES = {
   "Rejected":  { color: "#791F1F", bg: "#FCEBEB", bd: "#F09595" },
 };
 
+// The 16-code Evidence Type taxonomy (DRG-QI-REF-EVTX-01-26) — a separate,
+// formally documented standard, not renamed with the rest of this feature.
 const EVID_TYPE_LABELS = {
   LOG: "System log export",
   CFG: "Configuration evidence",
@@ -135,7 +137,7 @@ const SubmitPanel = ({ item, onSubmit, onSubmitLink, onClose, isPending }) => {
 
   const handleSubmit = async () => {
     if (mode === "file") {
-      if (!file) { setError("Evidence file is required."); return; }
+      if (!file) { setError("Record file is required."); return; }
       setError("");
       await onSubmit(item.id, file, notes.trim());
     } else {
@@ -149,7 +151,7 @@ const SubmitPanel = ({ item, onSubmit, onSubmitLink, onClose, isPending }) => {
     <div style={{ marginTop: 12, padding: "14px", background: "#E6F1FB",
                   borderRadius: 10, border: "1px solid #85B7EB" }}>
       <div style={{ fontSize: 12, fontWeight: 600, color: "#0C447C", marginBottom: 8 }}>
-        Submit evidence
+        Submit record
       </div>
       {item.ValidationCriteria && (
         <div style={{ fontSize: 11, color: "#0C447C", marginBottom: 10,
@@ -158,7 +160,7 @@ const SubmitPanel = ({ item, onSubmit, onSubmitLink, onClose, isPending }) => {
         </div>
       )}
 
-      {/* Mode toggle — upload a copy, or link to where the evidence lives */}
+      {/* Mode toggle — upload a copy, or link to where the record lives */}
       <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
         {[
           { k: "file", l: "Upload file" },
@@ -184,7 +186,7 @@ const SubmitPanel = ({ item, onSubmit, onSubmitLink, onClose, isPending }) => {
           <label style={{ display: "block", fontSize: 10, fontWeight: 500,
                           color: "var(--color-text-secondary)", marginBottom: 3,
                           textTransform: "uppercase", letterSpacing: "0.4px" }}>
-            Evidence file <span style={{ color: "#A32D2D" }}>*</span>
+            Record file <span style={{ color: "#A32D2D" }}>*</span>
           </label>
           <input
             type="file"
@@ -222,7 +224,7 @@ const SubmitPanel = ({ item, onSubmit, onSubmitLink, onClose, isPending }) => {
             onBlur={e => (e.target.style.borderColor = linkOk ? "#5DCAA5" : "#C0C0C0")}
           />
           <div style={{ fontSize: 10, color: "#0C447C", marginTop: 4 }}>
-            Use this when the evidence lives in another system — the reviewer follows the link to verify it.
+            Use this when the record lives in another system — the reviewer follows the link to verify it.
           </div>
         </div>
       )}
@@ -289,11 +291,11 @@ const VerifyPanel = ({ item, onVerify, onClose, isPending }) => {
           Check: {item.ValidationCriteria}
         </div>
       )}
-      {(item.EvidenceUrl || item.EvidenceLink) && (
+      {(item.RecordUrl || item.RecordLink) && (
         <div style={{ marginBottom: 10 }}>
-          <a href={item.EvidenceUrl || item.EvidenceLink} target="_blank" rel="noreferrer"
+          <a href={item.RecordUrl || item.RecordLink} target="_blank" rel="noreferrer"
             style={{ fontSize: 12, color: "#3C3489", textDecoration: "underline" }}>
-            Open submitted evidence ↗
+            Open submitted record ↗
           </a>
         </div>
       )}
@@ -321,7 +323,7 @@ const VerifyPanel = ({ item, onVerify, onClose, isPending }) => {
                    background: isPending ? "#E8E8E8" : "#1D9E75",
                    color: isPending ? "#999" : "#fff",
                    cursor: isPending ? "not-allowed" : "pointer" }}>
-          {isPending ? "Saving..." : "Accept evidence"}
+          {isPending ? "Saving..." : "Accept record"}
         </button>
         <button onClick={handleReject} disabled={isPending}
           style={{ padding: "8px 14px", fontSize: 12, borderRadius: 8, border: "none",
@@ -342,10 +344,10 @@ const VerifyPanel = ({ item, onVerify, onClose, isPending }) => {
 };
 
 // =============================================================================
-//  Evidence card
+//  Record card
 // =============================================================================
 
-const EvidenceCard = ({ item, currentOid, isCompliance, onSubmit, onSubmitLink, onVerify, onReassignOwner, actionItemId }) => {
+const RecordCard = ({ item, currentOid, isCompliance, onSubmit, onSubmitLink, onVerify, onReassignOwner, actionItemId }) => {
   const [expanded, setExpanded]     = useState(false);
   const [showSubmit, setShowSubmit] = useState(false);
   const [showVerify, setShowVerify] = useState(false);
@@ -409,7 +411,7 @@ const EvidenceCard = ({ item, currentOid, isCompliance, onSubmit, onSubmitLink, 
         </div>
 
         <div style={{ fontSize: 12, fontWeight: 600, lineHeight: 1.4, marginBottom: 3 }}>
-          {item.EvidenceDescription || item.Title}
+          {item.RecordDescription || item.Title}
         </div>
 
         <div style={{ display: "flex", justifyContent: "space-between",
@@ -457,19 +459,19 @@ const EvidenceCard = ({ item, currentOid, isCompliance, onSubmit, onSubmitLink, 
           )}
           <Field l="Owner"          v={<OwnerDisplay item={item} />} />
           <Field l="Source system"  v={item.SourceSystem} />
-          <Field l="Format"         v={item.EvidenceFormat} />
+          <Field l="Format"         v={item.RecordFormat} />
           <Field l="Frequency"      v={item.Frequency} />
           {item.ValidationCriteria && <Field l="Acceptance criteria" v={item.ValidationCriteria} />}
           {item.NextDue && <Field l="Next due"       v={formatDateOnly(item.NextDue)} />}
           {item.LastCollected && <Field l="Last collected" v={formatDateOnly(item.LastCollected)} />}
           {item.VerifiedBy && <Field l="Verified by"   v={item.VerifiedBy} />}
 
-          {/* Evidence source URL */}
-          {(item.EvidenceUrl || item.EvidenceLink) && (
+          {/* Record source URL */}
+          {(item.RecordUrl || item.RecordLink) && (
             <div style={{ marginTop: 8 }}>
-              <a href={item.EvidenceUrl || item.EvidenceLink} target="_blank" rel="noreferrer"
+              <a href={item.RecordUrl || item.RecordLink} target="_blank" rel="noreferrer"
                 style={{ fontSize: 12, color: "var(--color-text-info)", textDecoration: "underline" }}>
-                View submitted evidence ↗
+                View submitted record ↗
               </a>
             </div>
           )}
@@ -480,7 +482,7 @@ const EvidenceCard = ({ item, currentOid, isCompliance, onSubmit, onSubmitLink, 
               style={{ marginTop: 10, width: "100%", padding: "9px", fontSize: 12,
                        borderRadius: 8, border: "none", fontWeight: 500,
                        background: "#0C447C", color: "#fff", cursor: "pointer" }}>
-              Submit evidence
+              Submit record
             </button>
           )}
           {showSubmit && (
@@ -579,7 +581,7 @@ const EvidenceCard = ({ item, currentOid, isCompliance, onSubmit, onSubmitLink, 
 //  Main component
 // =============================================================================
 
-export default function EvidenceTracker() {
+export default function RecordTracker() {
   const [view, setView]     = useState("mine");
   const [search, setSearch] = useState("");
   const [actionItemId, setActionItemId] = useState(null);
@@ -587,7 +589,7 @@ export default function EvidenceTracker() {
   const { oid, isCompliance } = useCurrentUserRole();
   const { notify } = useAlert();
   const qc = useQueryClient();
-  const { data: all = [], isLoading, error, refetch } = useEvidence();
+  const { data: all = [], isLoading, error, refetch } = useRecords();
   // Ownership is resolved server-side (job title, group, or group alias) and
   // stamped on each item as OwnedByMe — OwnerEntraId is never populated.
   const ownsIt = (e) => e.OwnedByMe === true;
@@ -608,7 +610,7 @@ export default function EvidenceTracker() {
     if (search.trim()) {
       const q = search.toLowerCase();
       list = list.filter(e =>
-        (e.EvidenceDescription || "").toLowerCase().includes(q) ||
+        (e.RecordDescription  || "").toLowerCase().includes(q) ||
         (e.EvidenceType        || "").toLowerCase().includes(q) ||
         (e.OwnerRole           || "").toLowerCase().includes(q) ||
         (e.SourceSystem        || "").toLowerCase().includes(q)
@@ -620,8 +622,8 @@ export default function EvidenceTracker() {
   const handleSubmit = async (id, file, notes) => {
     setActionItemId(id);
     try {
-      await evidenceApi.submit(id, file, notes);
-      qc.invalidateQueries({ queryKey: ["evidence"] });
+      await recordApi.submit(id, file, notes);
+      qc.invalidateQueries({ queryKey: ["records"] });
     } catch (err) {
       notify({
         tone: "danger",
@@ -636,8 +638,8 @@ export default function EvidenceTracker() {
   const handleSubmitLink = async (id, link, notes) => {
     setActionItemId(id);
     try {
-      await evidenceApi.submitLink(id, link, notes);
-      qc.invalidateQueries({ queryKey: ["evidence"] });
+      await recordApi.submitLink(id, link, notes);
+      qc.invalidateQueries({ queryKey: ["records"] });
     } catch (err) {
       notify({
         tone: "danger",
@@ -652,8 +654,8 @@ export default function EvidenceTracker() {
   const handleVerify = async (id, accepted, rejectionNote) => {
     setActionItemId(id);
     try {
-      await evidenceApi.verify(id, accepted, rejectionNote);
-      qc.invalidateQueries({ queryKey: ["evidence"] });
+      await recordApi.verify(id, accepted, rejectionNote);
+      qc.invalidateQueries({ queryKey: ["records"] });
     } catch (err) {
       notify({
         tone: "danger",
@@ -668,9 +670,9 @@ export default function EvidenceTracker() {
   const handleReassignOwner = async (id, ownerRole) => {
     setActionItemId(id);
     try {
-      await evidenceApi.reassignOwner(id, ownerRole);
-      qc.invalidateQueries({ queryKey: ["evidence"] });
-      notify({ tone: "success", title: "Owner updated", message: `Evidence owner set to ${ownerRole}.` });
+      await recordApi.reassignOwner(id, ownerRole);
+      qc.invalidateQueries({ queryKey: ["records"] });
+      notify({ tone: "success", title: "Owner updated", message: `Record owner set to ${ownerRole}.` });
     } catch (err) {
       notify({
         tone: "danger",
@@ -683,7 +685,7 @@ export default function EvidenceTracker() {
   };
 
   const tabViews = [
-    { k: "mine",      l: `My evidence (${views.mine.length})` },
+    { k: "mine",      l: `My records (${views.mine.length})` },
     ...(isCompliance ? [
       { k: "submitted", l: `Submitted (${views.submitted.length})` },
       { k: "overdue",   l: `Overdue (${views.overdue.length})` },
@@ -691,7 +693,7 @@ export default function EvidenceTracker() {
     { k: "all", l: `All (${all.length})` },
   ];
 
-  if (isLoading) return <LoadingState message="Loading evidence tracker..." />;
+  if (isLoading) return <LoadingState message="Loading record tracker..." />;
   if (error)     return <ErrorState error={error} onRetry={refetch} />;
 
   return (
@@ -700,9 +702,9 @@ export default function EvidenceTracker() {
       <div style={{ marginBottom: 16 }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
           <div>
-            <div style={{ fontSize: 17, fontWeight: 600, marginBottom: 3 }}>Evidence tracker</div>
+            <div style={{ fontSize: 17, fontWeight: 600, marginBottom: 3 }}>Record tracker</div>
             <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>
-              Every evidence requirement created by the Zone 1 cascade lives here.
+              Every record requirement created by the Zone 1 cascade lives here.
               Collect, submit, and get verified — that is the proof of compliance.
             </div>
           </div>
@@ -728,7 +730,7 @@ export default function EvidenceTracker() {
         ))}
         <input
           type="text" value={search} onChange={e => setSearch(e.target.value)}
-          placeholder="Search evidence..."
+          placeholder="Search records..."
           style={{ flex: 1, minWidth: 180, fontSize: 12, padding: "6px 12px", borderRadius: 8,
                    border: "1.5px solid #C0C0C0", background: "var(--color-background-primary)",
                    color: "var(--color-text-primary)", outline: "none" }}
@@ -741,13 +743,13 @@ export default function EvidenceTracker() {
       {activeItems.length === 0 ? (
         <EmptyState message={
           all.length === 0
-            ? "No evidence items yet. Accept extraction items in the Extraction Review screen to create evidence requirements here."
+            ? "No record items yet. Accept extraction items in the Extraction Review screen to create record requirements here."
             : `No items in this view.`
         } />
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {activeItems.map(item => (
-            <EvidenceCard
+            <RecordCard
               key={item.id}
               item={item}
               currentOid={oid}

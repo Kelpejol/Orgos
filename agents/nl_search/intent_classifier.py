@@ -2,7 +2,7 @@
 # agents/nl_search/intent_classifier.py — Query intent classification
 #
 # Returns one of four intents:
-#   "compliance"     — rules, controls, ownership, evidence, ISO/NDPA clauses
+#   "compliance"     — rules, controls, ownership, records, ISO/NDPA clauses
 #   "procedural"     — how-to, steps, forms, who to contact, process flows
 #   "both"           — spans both categories
 #   "conversational" — greetings, follow-ups, social phrases, no GRC topic
@@ -49,7 +49,7 @@ _PROMPT = """\
 Classify the question into exactly one of these four categories:
 
 compliance   — the user is asking about: policies, rules, controls, who is
-               responsible, evidence required, compliance status, ISO or NDPA
+               responsible, records required, compliance status, ISO or NDPA
                clauses, gaps, gap findings, gap status, remediation packages,
                strategic risks, risk register, risk score, risk treatment, risk
                level, risk owner, deadlines, standards, what is due, how long

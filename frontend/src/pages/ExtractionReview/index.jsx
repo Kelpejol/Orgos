@@ -2,7 +2,7 @@
 // pages/ExtractionReview/index.jsx
 // Zone 1 — Extraction Review
 // Reviews controls and evidence extracted from policies and contracts.
-// Accept triggers full cascade: Control Register + Evidence Tracker + Audit Log.
+// Accept triggers full cascade: Control Register + Record Tracker + Audit Log.
 // Per DRG-QI-REF-DINT-01-26 Section 4.1
 // =============================================================================
 
@@ -165,12 +165,12 @@ const ChainPreview = ({ item }) => {
         </div>
         {hasEvidence && (
           <div style={{ fontSize: 11, color: "#0C447C" }}>
-            → Evidence Tracker entry — {item.EvidenceType} · {item.EvidenceFrequency || "frequency TBD"} · From: {item.EvidenceSourceSystem || "source TBD"}
+            → Record Tracker entry — {item.EvidenceType} · {item.EvidenceFrequency || "frequency TBD"} · From: {item.EvidenceSourceSystem || "source TBD"}
           </div>
         )}
         {!hasEvidence && (
           <div style={{ fontSize: 11, color: "#BA7517" }}>
-            → No evidence entry — evidence fields undefined on this item
+            → No record entry — evidence fields undefined on this item
           </div>
         )}
         <div style={{ fontSize: 11, color: "#0C447C" }}>
@@ -951,7 +951,7 @@ export default function ExtractionReview() {
             </div>
             <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>
               Zone 1 — Controls and evidence extracted from policies and contracts.
-              Accept creates permanent Control Register and Evidence Tracker entries.
+              Accept creates permanent Control Register and Record Tracker entries.
             </div>
           </div>
           <div style={{ padding: "3px 10px", background: "#E6F1FB", borderRadius: 6,

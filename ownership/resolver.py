@@ -3,7 +3,7 @@
 #
 # WHY THIS EXISTS
 #   OrgOS expresses ownership as a role STRING on the record:
-#       Control Register / Evidence Tracker → OwnerRole  ("ISMS Lead",
+#       Control Register / Record Tracker → OwnerRole  ("ISMS Lead",
 #       "Compliance team", …) and OwnerEntraId is left empty.
 #   Everything that asks "is this owned?" or "can this user act?" must
 #   therefore resolve the role to people. Testing OwnerEntraId directly is

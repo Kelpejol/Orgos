@@ -156,7 +156,7 @@ def _classify_item(item: dict) -> dict:
     if is_folder:
         action = "browse"
     elif ext == "eml":
-        action = "link_evidence"   # EML = evidence, not extraction
+        action = "link_record"   # EML = evidence/record, not extraction
     elif ext in ("pdf", "docx", "txt"):
         action = "extract"
     else:

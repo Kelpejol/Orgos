@@ -2,7 +2,7 @@
 // GroupsPanel.jsx — manage OrgOS people groups (e.g. "Compliance Team").
 //
 // Compliance/Admin can create groups, add/remove people, and delete groups.
-// A group's name is usable as an owner in documents/controls/evidence, so any
+// A group's name is usable as an owner in documents/controls/records, so any
 // member can act on it. Everyone can view; only Compliance/Admin can edit.
 // =============================================================================
 
@@ -123,7 +123,7 @@ function GroupCard({ group, canEdit, owns }) {
           <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginTop: 3 }}>
             {group.member_count} member{group.member_count === 1 ? "" : "s"}
             {group.category ? ` · ${group.category}` : ""}
-            {owns ? ` · owns ${owns.controls} control${owns.controls === 1 ? "" : "s"}, ${owns.evidence} evidence` : ""}
+            {owns ? ` · owns ${owns.controls} control${owns.controls === 1 ? "" : "s"}, ${owns.records} records` : ""}
           </div>
         </div>
         {canEdit && (

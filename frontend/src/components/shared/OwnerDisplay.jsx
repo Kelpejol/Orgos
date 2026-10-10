@@ -7,7 +7,7 @@
 //   • the people who hold it (click to expand)
 //   • an alias note when the document's wording matched via an alias
 //
-// Expects the resolved fields the API stamps on controls/evidence:
+// Expects the resolved fields the API stamps on controls/records:
 //   OwnerRole, OwnerKind, OwnerPeople, OwnerResolved, OwnerCanonical, OwnerViaAlias
 // =============================================================================
 

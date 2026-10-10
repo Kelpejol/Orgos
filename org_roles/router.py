@@ -32,7 +32,7 @@ async def ownership_summary(
     user: CurrentUser = Depends(require_compliance_lead),
 ) -> dict:
     """
-    How many controls and evidence items each role owns, keyed by the
+    How many controls and record items each role owns, keyed by the
     lower-cased role name. Lets the UI show ownership load per job title /
     group — and surface roles that own nothing before the Gap Analyzer does.
     """
@@ -53,13 +53,13 @@ async def ownership_summary(
                 k = _key(role)
                 if not k:
                     continue
-                entry = counts.setdefault(k, {"label": role, "controls": 0, "evidence": 0})
+                entry = counts.setdefault(k, {"label": role, "controls": 0, "records": 0})
                 entry[bucket] += 1
         except Exception as exc:
             logger.warning(f"Ownership summary: could not read {list_name}: {exc}")
 
     await _tally(settings.control_register_list_id, "Control Register", "controls")
-    await _tally(settings.evidence_tracker_list_id, "Evidence Tracker", "evidence")
+    await _tally(settings.evidence_tracker_list_id, "Evidence Tracker", "records")
     return counts
 
 

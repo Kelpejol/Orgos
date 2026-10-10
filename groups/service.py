@@ -2,7 +2,7 @@
 # groups/service.py — OrgOS-managed people groups
 #
 # A group is a named set of people (e.g. "Compliance Team") that can be used as
-# an owner in documents/controls/evidence — the same name is written in docs, so
+# an owner in documents/controls/records — the same name is written in docs, so
 # any member can act on it and (later) all members can be notified.
 #
 # Storage: a dedicated SharePoint list "OrgOS Groups", AUTO-PROVISIONED — this

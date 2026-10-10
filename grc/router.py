@@ -319,7 +319,7 @@ async def get_withdrawal_impact(
 ) -> dict:
     """
     Returns every item that will be affected by withdrawing this document:
-    open queue items, active controls, evidence items, lifecycle entries,
+    open queue items, active controls, record items, lifecycle entries,
     compliance obligations, and which Standards Map clauses will lose coverage.
     Call this before POST /withdraw to show the reviewer the full impact.
     """
@@ -342,7 +342,7 @@ async def withdraw_document(
     Withdraws the document and cascades to all dependent records:
     - Cancels open AI Review Queue items from this document (with provenance)
     - Flags sourced controls to Under Review (with provenance)
-    - Flags linked pending/submitted evidence items
+    - Flags linked pending/submitted record items
     - Cancels in-progress Document Lifecycle entries
     - Re-opens Gap Analysis items whose lifecycle was cancelled
     - Notes Compliance Calendar obligations referencing this document

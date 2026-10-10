@@ -75,7 +75,9 @@ function normalizePkg(raw) {
   return {
     document:          toStr(raw.document),
     controls:          toArr(raw.controls),
-    evidence:          toArr(raw.evidence),
+    // The backend renamed this key "evidence" → "records"; read both so
+    // already-stored remediation packages (old key) still display.
+    records:           toArr(raw.records ?? raw.evidence),
     roles:             toArr(raw.roles),
     risk:              toStr(raw.risk),
     target_date:       toStr(raw.target_date),
@@ -132,13 +134,13 @@ const RemediationPackage = ({ packageJson, onApprove, onClose, isPending, approv
         </div>
       )}
 
-      {pkg.evidence?.length > 0 && (
+      {pkg.records?.length > 0 && (
         <div style={{ marginBottom: 10 }}>
           <div style={{ fontSize: 10, fontWeight: 600, color: "#085041",
                         textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 4 }}>
-            Evidence requirements
+            Record requirements
           </div>
-          {pkg.evidence.map((e, i) => (
+          {pkg.records.map((e, i) => (
             <div key={i} style={{ fontSize: 12, color: "#085041", marginBottom: 4,
                                   padding: "5px 8px", background: "#C8ECD8",
                                   borderRadius: 6 }}>
@@ -749,7 +751,7 @@ export default function GapAnalysis() {
       {filtered.length === 0 ? (
         <EmptyState message={
           gaps.length === 0
-            ? "No gap findings yet. The Gap Analyzer agent reads confirmed register data and identifies gaps clause by clause. It will run after the Control Register and Evidence Tracker are sufficiently populated."
+            ? "No gap findings yet. The Gap Analyzer agent reads confirmed register data and identifies gaps clause by clause. It will run after the Control Register and Record Tracker are sufficiently populated."
             : "No gaps match your filter."
         } />
       ) : (

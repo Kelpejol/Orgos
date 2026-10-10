@@ -3,7 +3,7 @@
 #
 # Handles compliance-intent queries against six SharePoint registers:
 #   Gap Analysis, Control Register, Strategic Risk Register,
-#   Compliance Calendar, Document Register, Evidence Tracker.
+#   Compliance Calendar, Document Register, Record Tracker.
 #
 # Retrieval approach:
 #   All registers are fetched in full (no OData $filter) because:
@@ -79,7 +79,7 @@ _GRAPH_SEARCH_MAX_IDS = 40
 #   CurrentVersion, EffectiveDate, NextReviewDate, ApplicableStandards, Status
 #   Status values: "Active" | "Under Review" | "Superseded" | "Withdrawn"
 #
-# Evidence Tracker:
+# Record Tracker (the real SharePoint list is still named "Evidence Tracker"):
 #   Title, EvidenceDescription, EvidenceType, SourceSystem, EvidenceFormat,
 #   Frequency, OwnerRole, OwnerEntraId, EvidenceLink, Status, LinkedControlId,
 #   LastCollected, VerifiedBy, SubmissionNotes
@@ -170,7 +170,7 @@ Rules:
   Gap Analysis statuses:      "Open" | "In progress" | "Accepted risk" | "Closed"
   Strategic Risk statuses:    "Open" | "Accepted" | "Closed" | "In progress"
   Control/Document statuses:  "Active" | "Blocked" | "Under Review" | "Superseded" | "Withdrawn"
-  Evidence statuses:          "Pending" | "Submitted" | "Accepted" | "Rejected"
+  Record statuses:            "Pending" | "Submitted" | "Accepted" | "Rejected"
   Examples:
     "closed gaps"              → ["Closed"]
     "accepted by excos"        → ["Accepted risk", "Accepted"]
@@ -405,7 +405,7 @@ def _map_document(item: dict) -> dict:
     }
 
 
-def _map_evidence(item: dict) -> dict:
+def _map_record(item: dict) -> dict:
     f = item.get("fields", item)
     return {
         "id":                str(item.get("id", "")),
@@ -785,18 +785,18 @@ async def _search_controls(
 
 
 # =============================================================================
-#  Evidence fetching
+#  Record fetching
 # =============================================================================
 
-async def _get_all_evidence() -> list[dict]:
+async def _get_all_records() -> list[dict]:
     list_id = settings.evidence_tracker_list_id
     if not settings.is_list_configured(list_id):
         return []
     try:
         items = await get_list_items(list_id=list_id, list_name="Evidence Tracker", top=500)
-        return [_map_evidence(i) for i in items]
+        return [_map_record(i) for i in items]
     except Exception as exc:
-        logger.warning(f"Evidence fetch: {exc}")
+        logger.warning(f"Record fetch: {exc}")
         return []
 
 
@@ -890,22 +890,22 @@ async def search_compliance(
     if not controls_raw:
         controls_raw = await _vector_search_controls(question)
 
-    # Enrich top N controls with evidence
+    # Enrich top N controls with records
     enriched = list(controls_raw[:_CONTROLS_ENRICH_LIMIT])
     if enriched:
-        all_ev = await _get_all_evidence()
+        all_ev = await _get_all_records()
         ev_by_ctrl: dict[str, list] = {}
         for ev in all_ev:
             cid = ev.get("linked_control_id", "")
             if cid:
                 ev_by_ctrl.setdefault(cid, []).append(ev)
         for ctrl in enriched:
-            ctrl["evidence"] = ev_by_ctrl.get(ctrl["id"], [])[:_EVIDENCE_PER_CONTROL]
+            ctrl["records"] = ev_by_ctrl.get(ctrl["id"], [])[:_EVIDENCE_PER_CONTROL]
 
     # Resolve all OIDs in a single parallel batch
     all_oids = (
         [c["owner_oid"] for c in enriched if c.get("owner_oid")] +
-        [ev.get("owner_oid", "") for c in enriched for ev in c.get("evidence", []) if ev.get("owner_oid")] +
+        [ev.get("owner_oid", "") for c in enriched for ev in c.get("records", []) if ev.get("owner_oid")] +
         [o["owner_oid"] for o in obligations if o.get("owner_oid")] +
         [g["owner_oid"] for g in gaps if g.get("owner_oid")] +
         [d["owner_oid"] for d in documents if d.get("owner_oid")] +
@@ -991,7 +991,7 @@ async def debug_compliance_pipeline(question: str) -> dict:
     )
     result["stages"]["2_register_counts"] = dict(zip(
         ["gap_analysis", "control_register", "strategic_risks",
-         "compliance_calendar", "document_register", "evidence_tracker"],
+         "compliance_calendar", "document_register", "record_tracker"],
         counts,
     ))
 

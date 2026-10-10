@@ -28,11 +28,11 @@ const useLifecycleDocs = () =>
     staleTime: 60_000,
   });
 
-const useOverdueEvidence = () =>
+const useOverdueRecords = () =>
   useQuery({
-    queryKey: ["evidence", "overdue"],
+    queryKey: ["records", "overdue"],
     queryFn: () =>
-      apiClient.get("/api/v1/evidence", { params: { status: "Overdue" } }).then((r) => r.data),
+      apiClient.get("/api/v1/records", { params: { status: "Overdue" } }).then((r) => r.data),
     staleTime: 60_000,
   });
 
@@ -157,7 +157,7 @@ export default function WorkHub({ go }) {
 
   const queueQ       = usePendingQueue();
   const lifecycleQ   = useLifecycleDocs();
-  const overdueEvidQ = useOverdueEvidence();
+  const overdueEvidQ = useOverdueRecords();
   const overdueObligQ= useOverdueObligations();
   const expiringQ    = useExpiringContracts();
   const gapsQ        = useOpenGaps();
@@ -170,8 +170,8 @@ export default function WorkHub({ go }) {
   const allGaps    = gapsQ.data         || [];
 
   // Standard Users see only their own items.
-  // Evidence ownership is a ROLE (job title / group / alias) resolved
-  // server-side into OwnedByMe — OwnerEntraId is never populated on evidence.
+  // Record ownership is a ROLE (job title / group / alias) resolved
+  // server-side into OwnedByMe — OwnerEntraId is never populated on records.
   const myEvid  = isStandard
     ? allEvid.filter((e) => e.OwnedByMe === true)
     : allEvid;
@@ -193,13 +193,13 @@ export default function WorkHub({ go }) {
     // Blocking — shown to all roles (scoped)
     myEvid.length > 0   && { key: "evid",    color: "#A32D2D", bg: "#FFF8F8", bd: "#F09595", icon: "◎",
       count: myEvid.length,
-      title: `evidence item${myEvid.length > 1 ? "s" : ""} overdue`,
+      title: `record item${myEvid.length > 1 ? "s" : ""} overdue`,
       message: isStandard
-        ? `You have ${myEvid.length} overdue evidence item${myEvid.length > 1 ? "s" : ""} assigned to you. Submit as soon as possible.`
-        : `${myEvid.length} control${myEvid.length > 1 ? "s are" : " is"} missing evidence. ` +
-          myEvid.slice(0, 3).map((e) => e.evidence_description || e.EvidenceDescription || "Item").join(", ") +
+        ? `You have ${myEvid.length} overdue record item${myEvid.length > 1 ? "s" : ""} assigned to you. Submit as soon as possible.`
+        : `${myEvid.length} control${myEvid.length > 1 ? "s are" : " is"} missing a record. ` +
+          myEvid.slice(0, 3).map((e) => e.RecordDescription || "Item").join(", ") +
           (myEvid.length > 3 ? ` +${myEvid.length - 3} more.` : "."),
-      action: "View evidence", nav: "evidence" },
+      action: "View records", nav: "records" },
 
     myOblig.length > 0  && { key: "oblig",   color: "#A32D2D", bg: "#FFF8F8", bd: "#F09595", icon: "⊘",
       count: myOblig.length,
@@ -271,7 +271,7 @@ export default function WorkHub({ go }) {
       {/* Stats */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 10, marginBottom: 24 }}>
         <Stat
-          label={isStandard ? "My overdue evidence" : "Overdue evidence"}
+          label={isStandard ? "My overdue records" : "Overdue records"}
           value={myEvid.length}
           color={myEvid.length > 0 ? "#A32D2D" : undefined}
         />
@@ -302,7 +302,7 @@ export default function WorkHub({ go }) {
       {urgencies.length === 0 ? (
         <div style={{ padding: "28px", textAlign: "center", border: "1px dashed var(--color-border-tertiary)", borderRadius: 12, fontSize: 13, color: "var(--color-text-tertiary)" }}>
           {isStandard
-            ? "No overdue evidence or obligations assigned to you. Keep it up."
+            ? "No overdue records or obligations assigned to you. Keep it up."
             : "No urgent items right now."}
         </div>
       ) : (

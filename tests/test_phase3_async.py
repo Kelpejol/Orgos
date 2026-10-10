@@ -53,7 +53,7 @@ def test_conflict_scan_flags_frequency_difference():
 
 
 # -----------------------------------------------------------------------------
-#  Standards-map traffic light (A4 — now takes pre-scoped clause_evidence)
+#  Standards-map traffic light (A4 — now takes pre-scoped clause_records)
 # -----------------------------------------------------------------------------
 
 # Ownership is a ROLE (job title / group / alias) resolved to people —

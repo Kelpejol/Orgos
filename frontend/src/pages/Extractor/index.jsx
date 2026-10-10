@@ -2,7 +2,7 @@
 // pages/Extractor/index.jsx
 // Document Extractor — SharePoint browser is the primary interface.
 // Upload from device is a secondary fallback option.
-// Supports recursive folder navigation, EML evidence linking,
+// Supports recursive folder navigation, EML record linking,
 // pagination via Load more, and 10 minute React Query cache.
 // NEW SCREEN — requires CCO sign-off. DRG-AUTO-BRIEF-GRC-01-26
 // =============================================================================
@@ -94,11 +94,11 @@ const ActionBadge = ({ action }) => {
       bd: "#5DCAA5",
       label: "Extract",
     },
-    link_evidence: {
+    link_record: {
       bg: "#F0EAFF",
       color: "#5B21B6",
       bd: "#C4B5FD",
-      label: "Link as evidence",
+      label: "Link as record",
     },
     browse: {
       bg: "var(--color-background-secondary)",
@@ -220,7 +220,7 @@ const SharePointBrowser = ({ onSelectFile, selectedFile }) => {
 
   const handleItemClick = (item) => {
     if (item.type === "folder") handleNavigate(item.id, item.name);
-    else if (item.action === "extract" || item.action === "link_evidence")
+    else if (item.action === "extract" || item.action === "link_record")
       onSelectFile(item);
   };
 
@@ -337,7 +337,7 @@ const SharePointBrowser = ({ onSelectFile, selectedFile }) => {
                 const clickable =
                   item.type === "folder" ||
                   item.action === "extract" ||
-                  item.action === "link_evidence";
+                  item.action === "link_record";
                 const isSelected = selectedFile?.id === item.id;
                 return (
                   <div
@@ -489,7 +489,7 @@ const UploadFromDevice = ({ onSelectFile }) => {
     const ext = f.name.split(".").pop().toLowerCase();
     const action =
       ext === "eml"
-        ? "link_evidence"
+        ? "link_record"
         : ["pdf", "docx", "txt"].includes(ext)
           ? "extract"
           : "unsupported";
@@ -561,7 +561,7 @@ const SelectedFilePanel = ({
   loading,
   error,
 }) => {
-  const isEml = file.action === "link_evidence";
+  const isEml = file.action === "link_record";
   const isUnsupported = file.action === "unsupported";
   const borderColor = isEml ? "#C4B5FD" : isUnsupported ? "#B4B2A9" : "#5DCAA5";
   const bg = isEml ? "#F0EAFF" : isUnsupported ? "#F1EFE8" : "#E1F5EE";
@@ -626,8 +626,8 @@ const SelectedFilePanel = ({
             color: "#5B21B6",
           }}
         >
-          EML files are evidence documents. <strong>Link as evidence</strong>{" "}
-          connects this file to a control in the Evidence Tracker. This feature
+          EML files are record documents. <strong>Link as record</strong>{" "}
+          connects this file to a control in the Record Tracker. This feature
           is coming in Tier 2.
         </div>
       )}

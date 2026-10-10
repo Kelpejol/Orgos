@@ -28,7 +28,7 @@ async def trigger_gap_analysis(
 ) -> dict:
     """
     Trigger the Gap Analyzer agent.
-    Reads confirmed Control Register and Evidence Tracker.
+    Reads confirmed Control Register and Record Tracker.
     Compares against ISO 27001, ISO 9001, and NDPA clause requirements.
     Writes gap findings with proposed remediation packages to the Gap Analysis list.
     Per Bobby's amendment: findings include complete remediation packages.

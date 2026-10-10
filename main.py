@@ -28,7 +28,7 @@ from sharepoint.router import router as sharepoint_router
 from review_queue.router import router as queue_router
 from lifecycle.router import router as lifecycle_router
 from control_register.router import router as control_router
-from evidence_tracker.router import router as evidence_router
+from record_tracker.router import router as record_router
 from standards_map.router import router as standards_router
 from strategic_risks.router import router as risks_router
 from gap_analysis.router import router as gap_router
@@ -136,7 +136,7 @@ app.include_router(sharepoint_router)
 app.include_router(queue_router)
 app.include_router(lifecycle_router)
 app.include_router(control_router)
-app.include_router(evidence_router)
+app.include_router(record_router)
 app.include_router(standards_router)
 app.include_router(risks_router)
 app.include_router(gap_router)

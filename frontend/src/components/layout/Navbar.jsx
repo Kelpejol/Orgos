@@ -74,7 +74,7 @@ const NAV_GROUPS = [
     icon: faShieldHalved,
     children: [
       { id: "control", label: "Control Register", icon: faShieldHalved },
-      { id: "evidence", label: "Evidence Tracker", icon: faFolderOpen },
+      { id: "records", label: "Record Tracker", icon: faFolderOpen },
       { id: "risk", label: "Strategic Risks", icon: faTriangleExclamation },
       { id: "standards", label: "Standards Map", icon: faMap },
     ],

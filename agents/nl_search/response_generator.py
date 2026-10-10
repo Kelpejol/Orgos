@@ -54,7 +54,7 @@ You are OrgOS, the GRC and HR assistant for Dragnet Solutions Limited.
 You help employees understand compliance policies and how-to procedures.
 
 CRITICAL RULES:
-1. For Dragnet-specific data (who owns a control, what the deadline is, evidence status,
+1. For Dragnet-specific data (who owns a control, what the deadline is, record status,
    exact policy wording, ISO/NDPA clause numbers, source documents): answer ONLY from
    the provided OrgOS context. Never substitute your own knowledge for these fields.
    ISO clause numbers in the OrgOS context are Dragnet's official registered mapping —
@@ -62,7 +62,7 @@ CRITICAL RULES:
    know about that topic. The same applies to source document codes and control types.
    Evidence details (type, description, source system, frequency, collection method,
    validation criteria): answer ONLY from the "Evidence type" lines in the OrgOS context.
-   If the evidence status says "No evidence on file" and no "Evidence type" lines follow,
+   If the record status says "No record on file" and no "Evidence type" lines follow,
    say "The evidence requirements for this control haven't been configured in OrgOS yet"
    — never invent evidence types, source systems, or collection steps from general knowledge.
    For general GRC/IT terminology, acronyms, and industry concepts (e.g. what an acronym
@@ -85,7 +85,7 @@ GRC or HR question. Example: "Hi! Ask me about Dragnet's policies, controls, or 
 completely outside that scope say you can only help with Dragnet GRC matters.
 
 REGISTERS IN CONTEXT:
-- [CONTROL] — active GRC control with evidence, ownership, ISO clause.
+- [CONTROL] — active GRC control with records, ownership, ISO clause.
 - [OBLIGATIONS] — statutory/regulatory/licensing deadlines from the Compliance Calendar.
 - [GAP FINDINGS] — compliance gaps found by audit or AI gap analysis.
 - [DOCUMENT REGISTER] — policy/procedure documents with version, review dates, owner.
@@ -100,8 +100,8 @@ STYLE:
 - Dates: show dates as YYYY-MM-DD. Never add time, timezone, or "at" suffix — the data contains dates only.
 - Conversational and clear — explain the rule or process, not just state it.
 - For procedures: numbered steps, mention key roles and forms naturally in the step text.
-- For compliance: 2–4 sentences covering what the rule is, its ISO/NDPA reference, who owns it, and evidence status.
-- If evidence is 🔴 Red or overdue, explicitly flag it — the user needs to know.
+- For compliance: 2–4 sentences covering what the rule is, its ISO/NDPA reference, who owns it, and record status.
+- If the record is 🔴 Red or overdue, explicitly flag it — the user needs to know.
 - Use **bold** for key terms, policy names, and ISO clauses.
 - No markdown headers (###, ##). For a single item, use prose. When listing multiple items (e.g. "list all gaps"), use `- ` bullet points — never numbered lists.
 - Reference prior conversation or memory naturally when relevant.
@@ -151,20 +151,20 @@ def _extract_link_label(raw_url: str, fallback: str = "View document") -> str:
 
 
 # =============================================================================
-#  Evidence helper
+#  Record helper
 # =============================================================================
 
-def _evidence_status(evidence_items: list[dict]) -> str:
-    if not evidence_items:
-        return "🔴 No evidence on file"
-    statuses = [e.get("status", "Pending") for e in evidence_items]
+def _record_status(record_items: list[dict]) -> str:
+    if not record_items:
+        return "🔴 No record on file"
+    statuses = [r.get("status", "Pending") for r in record_items]
     if any(s == "Overdue" for s in statuses):
-        return "🔴 Evidence overdue"
+        return "🔴 Record overdue"
     if any(s == "Accepted" for s in statuses):
-        return "🟢 Evidence accepted"
+        return "🟢 Record accepted"
     if any(s == "Submitted" for s in statuses):
         return "🟡 Submitted — awaiting review"
-    return "🟡 Evidence pending"
+    return "🟡 Record pending"
 
 
 # =============================================================================
@@ -204,7 +204,7 @@ def _context_from_compliance(result: dict) -> str:
     header says "N total" and the footer says "+N-M more", so the LLM can answer
     quantity questions correctly and advise the user to check the dashboard for the rest.
 
-    Controls are a special case: they have rich evidence data and are capped at 8
+    Controls are a special case: they have rich record data and are capped at 8
     enriched items (per _CONTROLS_ENRICH_LIMIT in compliance_search.py), which fit
     fine in full detail — no count summary needed for controls.
     """
@@ -229,7 +229,7 @@ def _context_from_compliance(result: dict) -> str:
         role_title = (ctrl.get("owner_role_title") or "").strip()
         owner      = (ctrl.get("owner") or {})
         person     = (owner.get("display_name") or "").strip()
-        ev         = ctrl.get("evidence", [])
+        ev         = ctrl.get("records", [])
 
         if role_title and person and person != role_title:
             owner_str = f"{role_title} (held by {person})"
@@ -251,8 +251,8 @@ def _context_from_compliance(result: dict) -> str:
         if risk:
             lines.append(f"Risk if fails: {risk}")
         lines.append(f"Type: {ctype or 'N/A'} | Owner role: {owner_str}")
-        ev_status = _evidence_status(ev)
-        lines.append(f"Evidence status: {ev_status}")
+        ev_status = _record_status(ev)
+        lines.append(f"Record status: {ev_status}")
         if ev:
             for e in ev[:2]:
                 etype      = e.get("type", "")
@@ -293,7 +293,7 @@ def _context_from_compliance(result: dict) -> str:
                 if evalid:
                     extras.append(f"Validation criteria: {evalid}")
                 if elink:
-                    extras.append("Evidence link: attached (see sources below)")
+                    extras.append("Record link: attached (see sources below)")
                 eline += " [" + " | ".join(extras) + "]"
                 lines.append(eline)
         lines.append("")

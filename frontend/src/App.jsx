@@ -25,7 +25,7 @@ import DocumentLifecycle from "./pages/DocumentLifecycle/index.jsx";
 import WorkHub from "./pages/WorkHub/index.jsx";
 import ExtractionReview from "./pages/ExtractionReview/index.jsx";
 import ControlRegister from "./pages/ControlRegister/index.jsx";
-import EvidenceTracker from "./pages/EvidenceTracker/index.jsx";
+import RecordTracker from "./pages/RecordTracker/index.jsx";
 import AssignmentOwnership from "./pages/AssignmentOwnership/index.jsx";
 import Harmonisation from "./pages/Harmonisation/index.jsx";
 import StrategicRisks from "./pages/StrategicRisks/index.jsx";
@@ -361,8 +361,8 @@ function OrgOSShell() {
         return <ControlRegister />;
       case "risk":
         return <StrategicRisks />;
-      case "evidence":
-        return <EvidenceTracker />;
+      case "records":
+        return <RecordTracker />;
       case "standards":
         return <StandardsMap />;
       case "gap":

@@ -2,7 +2,7 @@
 # standards_map/router.py — Standards Map API
 # GET /api/v1/standards/map           — all clauses with traffic lights
 # GET /api/v1/standards/map/{clause}  — full chain for one clause
-# Traffic lights calculated live from Control Register + Evidence Tracker
+# Traffic lights calculated live from Control Register + Record Tracker
 # Per DRG-QI-REF-DINT-01-26 Section 5.4
 # =============================================================================
 
@@ -112,18 +112,18 @@ CLAUSES = [
 
 def _calculate_traffic_light(
     controls: list[dict],
-    clause_evidence: list[dict],
+    clause_records: list[dict],
     ownership=None,
 ) -> str:
     """
     Calculate traffic light per DINT Section 5.4.
-    Green:  all controls have accepted evidence, all owners assigned, nothing overdue
-    Amber:  evidence due soon (≤7 days), submitted but not verified, or new control with no evidence yet
-    Red:    evidence overdue, no controls, owner unassigned, evidence rejected
+    Green:  all controls have accepted records, all owners assigned, nothing overdue
+    Amber:  record due soon (≤7 days), submitted but not verified, or new control with no record yet
+    Red:    record overdue, no controls, owner unassigned, record rejected
     Returns: "Green" | "Amber" | "Red"
 
-    `clause_evidence` must already be scoped to `controls` (the caller indexes
-    evidence by control id — this avoids an O(controls × evidence) scan here).
+    `clause_records` must already be scoped to `controls` (the caller indexes
+    records by control id — this avoids an O(controls × records) scan here).
 
     Ownership is judged by resolving the control's OwnerRole (job title, group
     name, or group alias) to real people via `ownership` — NOT by OwnerEntraId,
@@ -143,18 +143,18 @@ def _calculate_traffic_light(
             # No index available — fall back to "a role is named at all".
             return "Red"
 
-    if not clause_evidence:
-        return "Amber"  # Controls exist but no evidence defined yet
+    if not clause_records:
+        return "Amber"  # Controls exist but no record defined yet
 
-    for e in clause_evidence:
-        status = e.get("Status", "Pending")
+    for r in clause_records:
+        status = r.get("Status", "Pending")
         if status == "Overdue":
             return "Red"
         if status == "Rejected":
             return "Red"
 
-    for e in clause_evidence:
-        status = e.get("Status", "Pending")
+    for r in clause_records:
+        status = r.get("Status", "Pending")
         if status in ("Pending", "Due Soon"):
             return "Amber"
         if status == "Submitted":
@@ -183,11 +183,11 @@ async def get_standards_map(
         return cached[1]
 
     try:
-        # Fetch all controls and evidence items
+        # Fetch all controls and record items
         cr_items = await get_list_items(
             settings.control_register_list_id, "Control Register"
         )
-        evd_items = await get_list_items(
+        record_items = await get_list_items(
             settings.evidence_tracker_list_id, "Evidence Tracker"
         )
 
@@ -204,7 +204,7 @@ async def get_standards_map(
             for i in cr_items
         ]
 
-        evidence = [
+        records = [
             {
                 "id": str(i["id"]),
                 "EvidenceDescription": i.get("fields", {}).get(
@@ -218,14 +218,14 @@ async def get_standards_map(
                 "OwnerRole": i.get("fields", {}).get("OwnerRole", ""),
                 "OwnerEntraId": i.get("fields", {}).get("OwnerEntraId", ""),
             }
-            for i in evd_items
+            for i in record_items
         ]
 
-        # Index evidence by the control it's linked to — once, O(E) — so each
-        # clause is O(its controls) instead of scanning all evidence per clause.
-        evidence_by_control: dict[str, list[dict]] = {}
-        for e in evidence:
-            evidence_by_control.setdefault(e.get("LinkedControlId", ""), []).append(e)
+        # Index records by the control they're linked to — once, O(R) — so each
+        # clause is O(its controls) instead of scanning all records per clause.
+        records_by_control: dict[str, list[dict]] = {}
+        for r in records:
+            records_by_control.setdefault(r.get("LinkedControlId", ""), []).append(r)
 
         # Ownership is a role (job title / group / alias) → resolve once and
         # reuse for every clause rather than per-control Graph calls.
@@ -243,18 +243,18 @@ async def get_standards_map(
             clause_controls = [
                 c for c in controls if c.get("ISOClause", "").startswith(clause_code)
             ]
-            clause_evidence = [
-                e for c in clause_controls for e in evidence_by_control.get(c["id"], [])
+            clause_records = [
+                r for c in clause_controls for r in records_by_control.get(c["id"], [])
             ]
-            traffic = _calculate_traffic_light(clause_controls, clause_evidence, ownership)
-            evidence_accepted = sum(
-                1 for e in clause_evidence if e.get("Status") == "Accepted"
+            traffic = _calculate_traffic_light(clause_controls, clause_records, ownership)
+            records_accepted = sum(
+                1 for r in clause_records if r.get("Status") == "Accepted"
             )
             result.append(
                 {
                     **clause_def,
                     "controls_count": len(clause_controls),
-                    "evidence_accepted": evidence_accepted,
+                    "records_accepted": records_accepted,
                     "traffic_light": traffic,
                 }
             )
@@ -273,7 +273,7 @@ async def get_clause_detail(
     user: CurrentUser = Depends(get_current_user),
 ) -> dict:
     """
-    Full chain for one clause: controls, evidence items, owners, evidence links.
+    Full chain for one clause: controls, record items, owners, record links.
     This is what an auditor sees when they drill down on a clause.
     """
     try:
@@ -286,7 +286,7 @@ async def get_clause_detail(
         cr_items = await get_list_items(
             settings.control_register_list_id, "Control Register"
         )
-        evd_items = await get_list_items(
+        record_items = await get_list_items(
             settings.evidence_tracker_list_id, "Evidence Tracker"
         )
 
@@ -296,9 +296,9 @@ async def get_clause_detail(
             if i.get("fields", {}).get("ISOClause", "").startswith(clause_code)
         ]
         control_ids = {str(c["id"]) for c in controls}
-        evidence = [
+        records = [
             i
-            for i in evd_items
+            for i in record_items
             if i.get("fields", {}).get("LinkedControlId", "") in control_ids
         ]
 
@@ -317,16 +317,16 @@ async def get_clause_detail(
                 "SourceClause": f.get("SourceClause", ""),
             }
 
-        def fmt_evidence(item):
+        def fmt_record(item):
             f = item.get("fields", {})
             return {
                 "id": str(item["id"]),
-                "EvidenceDescription": f.get("EvidenceDescription", ""),
+                "RecordDescription": f.get("EvidenceDescription", ""),
                 "EvidenceType": f.get("EvidenceType", ""),
                 "SourceSystem": f.get("SourceSystem", ""),
                 "Frequency": f.get("Frequency", ""),
                 "Status": f.get("Status", "Pending"),
-                "EvidenceLink": f.get("EvidenceLink", ""),
+                "RecordLink": f.get("EvidenceLink", ""),
                 "ValidationCriteria": f.get("ValidationCriteria", ""),
                 "OwnerRole": f.get("OwnerRole", ""),
                 "LinkedControlId": f.get("LinkedControlId", ""),
@@ -334,12 +334,12 @@ async def get_clause_detail(
             }
 
         fmt_controls = [fmt_control(c) for c in controls]
-        fmt_evidence = [fmt_evidence(e) for e in evidence]
+        fmt_records = [fmt_record(r) for r in records]
         from ownership.resolver import get_ownership_index
         ownership = await get_ownership_index()
         traffic = _calculate_traffic_light(
             [{"id": str(c["id"]), **c.get("fields", {})} for c in controls],
-            [{"id": str(e["id"]), **e.get("fields", {})} for e in evidence],
+            [{"id": str(r["id"]), **r.get("fields", {})} for r in records],
             ownership,
         )
 
@@ -347,7 +347,7 @@ async def get_clause_detail(
             **clause_def,
             "traffic_light": traffic,
             "controls": fmt_controls,
-            "evidence": fmt_evidence,
+            "records": fmt_records,
         }
 
     except HTTPException:

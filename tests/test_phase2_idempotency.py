@@ -3,7 +3,7 @@
 #
 # Covers: Zone 1 decide is blocked once an item is already decided (no
 # duplicate cascade); extraction skips already-queued statements on re-run;
-# evidence submit/verify enforce state transitions.
+# record submit/verify enforce state transitions.
 # =============================================================================
 
 from unittest.mock import AsyncMock, patch
@@ -73,22 +73,22 @@ async def test_write_to_queue_skips_already_queued_statements():
 
 
 # -----------------------------------------------------------------------------
-#  Evidence state-transition guards (I7)
+#  Record state-transition guards (I7)
 # -----------------------------------------------------------------------------
 
-def test_submit_evidence_blocked_when_already_accepted():
+def test_submit_record_blocked_when_already_accepted():
     accepted = {"id": "9", "fields": {"Status": "Accepted"}}
-    with patch("evidence_tracker.router.get_list_item", new_callable=AsyncMock, return_value=accepted), \
-         patch("evidence_tracker.router.update_list_item", new_callable=AsyncMock) as mk_update:
-        resp = client.patch("/api/v1/evidence/9/submit", json={"evidence_link": "https://x/y"})
+    with patch("record_tracker.router.get_list_item", new_callable=AsyncMock, return_value=accepted), \
+         patch("record_tracker.router.update_list_item", new_callable=AsyncMock) as mk_update:
+        resp = client.patch("/api/v1/records/9/submit", json={"record_link": "https://x/y"})
     assert resp.status_code == 409
     mk_update.assert_not_called()
 
 
-def test_verify_evidence_requires_submitted_state():
+def test_verify_record_requires_submitted_state():
     pending = {"id": "9", "fields": {"Status": "Pending"}}
-    with patch("evidence_tracker.router.get_list_item", new_callable=AsyncMock, return_value=pending), \
-         patch("evidence_tracker.router.update_list_item", new_callable=AsyncMock) as mk_update:
-        resp = client.patch("/api/v1/evidence/9/verify", json={"accepted": True})
+    with patch("record_tracker.router.get_list_item", new_callable=AsyncMock, return_value=pending), \
+         patch("record_tracker.router.update_list_item", new_callable=AsyncMock) as mk_update:
+        resp = client.patch("/api/v1/records/9/verify", json={"accepted": True})
     assert resp.status_code == 409
     mk_update.assert_not_called()
