@@ -161,3 +161,66 @@ class TestDocumentTypeCoversAllCdtTypes:
     def test_cdt_document_type_is_valid_register_type(self, doc_type):
         doc = _document_read(type=doc_type)
         assert doc.type.value == doc_type
+
+
+class TestSuggestRegisterCover:
+    """
+    The register's half of the suggestion endpoint. It must behave exactly
+    like the Lifecycle one so the shared Cover & control facts panel can be
+    pointed at either — and, above all, it must not write.
+    """
+
+    def test_suggesting_never_writes(self):
+        with patch("grc.router.service.get_document", new_callable=AsyncMock) as mock_get, \
+             patch("grc.router.service.get_documents", new_callable=AsyncMock) as mock_list, \
+             patch("grc.router.service.update_document", new_callable=AsyncMock) as mock_update:
+
+            mock_get.return_value = _document_read()
+            mock_list.return_value = []
+
+            resp = client.get("/api/v1/grc/documents/8/cover/suggest")
+
+        assert resp.status_code == 200
+        mock_update.assert_not_called()
+
+    def test_response_shape_matches_the_lifecycle_endpoint(self):
+        with patch("grc.router.service.get_document", new_callable=AsyncMock) as mock_get, \
+             patch("grc.router.service.get_documents", new_callable=AsyncMock) as mock_list:
+
+            mock_get.return_value = _document_read()
+            mock_list.return_value = []
+
+            body = client.get("/api/v1/grc/documents/8/cover/suggest").json()
+
+        assert set(body) == {"document_id", "suggestions", "unresolved"}
+        for field, suggestion in body["suggestions"].items():
+            assert set(suggestion) == {"value", "source", "confidence", "note"}, field
+
+    def test_confirmed_domain_drives_the_approval_route(self):
+        """The register entry already carries a confirmed domain, so the
+        route follows it rather than being re-derived."""
+        with patch("grc.router.service.get_document", new_callable=AsyncMock) as mock_get, \
+             patch("grc.router.service.get_documents", new_callable=AsyncMock) as mock_list:
+
+            mock_get.return_value = _document_read()
+            mock_list.return_value = []
+
+            s = client.get("/api/v1/grc/documents/8/cover/suggest").json()["suggestions"]
+
+        assert s["domain"]["value"] == "Quality & Compliance"
+        assert s["first_pass_approval"]["value"] == "Chief Compliance Officer"
+        assert s["final_approval"]["value"] == "Managing Director / CEO"
+
+    def test_effective_date_comes_from_the_published_date(self):
+        """A register entry is already approved, so its effective date is a
+        fact, not a proposal — and the next review follows from it."""
+        with patch("grc.router.service.get_document", new_callable=AsyncMock) as mock_get, \
+             patch("grc.router.service.get_documents", new_callable=AsyncMock) as mock_list:
+
+            mock_get.return_value = _document_read(cdt_cover=CdtCoverFacts(domain="Quality & Compliance"))
+            mock_list.return_value = []
+
+            s = client.get("/api/v1/grc/documents/8/cover/suggest").json()["suggestions"]
+
+        assert s["effective_date"]["value"] == "January 2026"
+        assert s["next_review_due"]["value"] == "January 2027"

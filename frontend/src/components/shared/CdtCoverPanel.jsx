@@ -7,11 +7,25 @@
 // "Compliance Team"), never a specific person — reuses JobTitleInput, which
 // already suggests both real job titles and OrgOS groups.
 //
+// Blank fields are filled automatically from .../cover/suggest when the panel
+// opens, each one labelled with where the value came from and how much to
+// trust it. A value already on the document is never overwritten — a
+// differing proposal is offered beside it instead. Nothing is saved until
+// the person clicks "Save cover facts": CDI-014 reserves approving and
+// changing a document's status to people, and a field the platform cannot
+// resolve is left blank with the reason, rather than filled plausibly.
+//
+// Domain is a controlled list (CDI Annex B, served by /cdi/domains) rather
+// than a text box, because V05 blocks approval unless the domain comes from
+// Annex B — and picking one fills the approval route it implies.
+//
 // "Preview PDF" merges the document's CURRENT cover facts into its source
 // .docx server-side and returns a PDF (Microsoft Graph's native conversion —
 // no local converter). The source file itself is never modified.
 //
 // Depends on: GET/PATCH /api/v1/lifecycle/documents/{id}/cover,
+//             GET /api/v1/lifecycle/documents/{id}/cover/suggest,
+//             GET /api/v1/lifecycle/cdi/domains,
 //             GET /api/v1/lifecycle/documents/{id}/preview.pdf
 // =============================================================================
 
@@ -24,6 +38,14 @@ const EMPTY_COVER = {
   distribution: "", owner: "", first_pass_approval: "", final_approval: "",
   version: "", effective_date: "", next_review_due: "",
 };
+
+const FIELD_LABELS = {
+  domain: "Domain", type_layer: "Document Type / Layer", parent_document: "Parent Document",
+  classification: "Classification", distribution: "Distribution", owner: "Owner",
+  first_pass_approval: "First Pass Approval", final_approval: "Final Approval",
+  effective_date: "Effective Date", next_review_due: "Next Review Due",
+};
+const fieldLabel = (key) => FIELD_LABELS[key] || key;
 
 const inputStyle = {
   width: "100%", padding: "8px 10px", fontSize: 12.5, borderRadius: 8,
@@ -39,7 +61,46 @@ const btn = (bg, fg = "#fff", bd = "none") => ({
   border: bd, background: bg, color: fg, cursor: "pointer",
 });
 
-function Field({ label, value, onChange, roleInput }) {
+// Confidence tells the reviewer how hard to look at a proposed value. The
+// backend never proposes a value it can't justify, so "unresolved" means an
+// empty field with a reason attached — not a bad guess.
+const CONFIDENCE_TONE = {
+  high:   { bg: "#E7F5F0", fg: "#085041", bd: "#9FD9C8" },
+  medium: { bg: "#FDF4E3", fg: "#8A5A00", bd: "#EBCF8F" },
+  low:    { bg: "#FBEEE6", fg: "#8A3D12", bd: "#EEC0A4" },
+};
+
+function Provenance({ suggestion, applied }) {
+  if (!suggestion) return null;
+  const { source, confidence, note } = suggestion;
+
+  if (confidence === "unresolved") {
+    return (
+      <div style={{ fontSize: 10.5, color: "var(--color-text-tertiary)", marginTop: 3, lineHeight: 1.4 }}>
+        {note || source}
+      </div>
+    );
+  }
+  if (!applied) return null;
+
+  const tone = CONFIDENCE_TONE[confidence] || CONFIDENCE_TONE.low;
+  return (
+    <div style={{ marginTop: 4, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+      <span style={{ fontSize: 9.5, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.3px",
+        padding: "2px 6px", borderRadius: 5, background: tone.bg, color: tone.fg, border: `1px solid ${tone.bd}` }}>
+        {confidence} confidence
+      </span>
+      <span style={{ fontSize: 10.5, color: "var(--color-text-tertiary)" }}>{source}</span>
+    </div>
+  );
+}
+
+function Field({ label, value, onChange, roleInput, suggestion, applied, onAccept }) {
+  // A proposal that differs from what's already there is offered, never
+  // applied — the stored value was put there by a person.
+  const differs =
+    suggestion && suggestion.value && value && suggestion.value !== value && !applied;
+
   return (
     <div>
       <label style={labelStyle}>{label}</label>
@@ -47,6 +108,57 @@ function Field({ label, value, onChange, roleInput }) {
         <JobTitleInput value={value} onChange={(e) => onChange(e.target.value)} style={inputStyle} />
       ) : (
         <input value={value} onChange={(e) => onChange(e.target.value)} style={inputStyle} />
+      )}
+      <Provenance suggestion={suggestion} applied={applied} />
+      {differs && (
+        <div style={{ fontSize: 10.5, color: "var(--color-text-tertiary)", marginTop: 3 }}>
+          Suggests “{suggestion.value}”{" "}
+          <button onClick={() => onAccept(suggestion.value)} style={{
+            border: "none", background: "transparent", padding: 0, cursor: "pointer",
+            color: "#3C3489", fontWeight: 700, fontSize: 10.5 }}>Use this</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DomainField({ value, onChange, options, suggestion, applied, onAccept }) {
+  // Annex B's table is exhaustive and V05 blocks approval on anything not in
+  // it — so this is a list, not a text box. An existing value that isn't in
+  // the list is kept as an option so a legacy document still opens, visibly
+  // flagged rather than silently dropped.
+  const known = options.some((o) => o.domain === value);
+
+  // If the domain list couldn't be fetched, fall back to a text box: an empty
+  // dropdown would be a field nobody can fill.
+  if (options.length === 0) {
+    return (
+      <Field label="Domain" value={value} onChange={onChange}
+        suggestion={suggestion} applied={applied} onAccept={onAccept} />
+    );
+  }
+
+  return (
+    <div>
+      <label style={labelStyle}>Domain</label>
+      <select value={value} onChange={(e) => onChange(e.target.value)} style={inputStyle}>
+        <option value="">— Select a domain —</option>
+        {options.map((o) => <option key={o.domain} value={o.domain}>{o.domain}</option>)}
+        {value && !known && <option value={value}>{value} (not in Annex B)</option>}
+      </select>
+      {value && !known && (
+        <div style={{ fontSize: 10.5, color: "#8A3D12", marginTop: 3 }}>
+          Not an Annex B domain — approval is blocked until this is one of the listed domains.
+        </div>
+      )}
+      <Provenance suggestion={suggestion} applied={applied} />
+      {suggestion?.value && value && suggestion.value !== value && !applied && (
+        <div style={{ fontSize: 10.5, color: "var(--color-text-tertiary)", marginTop: 3 }}>
+          Suggests “{suggestion.value}”{" "}
+          <button onClick={() => onAccept(suggestion.value)} style={{
+            border: "none", background: "transparent", padding: 0, cursor: "pointer",
+            color: "#3C3489", fontWeight: 700, fontSize: 10.5 }}>Use this</button>
+        </div>
       )}
     </div>
   );
@@ -135,6 +247,9 @@ export default function CdtCoverPanel({ docId, docCode, lifecycleApi, onClose })
   const [cover, setCover] = useState(EMPTY_COVER);
   const [standards, setStandards] = useState([]);
   const [history, setHistory] = useState([]);
+  const [suggestions, setSuggestions] = useState({});
+  const [applied, setApplied] = useState([]);   // fields filled from a suggestion, not yet edited
+  const [domains, setDomains] = useState([]);
 
   useEffect(() => {
     let live = true;
@@ -142,19 +257,93 @@ export default function CdtCoverPanel({ docId, docCode, lifecycleApi, onClose })
       try {
         const data = await lifecycleApi.getCover(docId);
         if (!live) return;
-        setCover({ ...EMPTY_COVER, ...(data.cover || {}) });
+        const loaded = { ...EMPTY_COVER, ...(data.cover || {}) };
+        setCover(loaded);
         setStandards(data.cover?.standards || []);
         setHistory(data.revision_history || []);
+        setLoading(false);
+
+        // Fill the blanks from the platform's own records. Deliberately after
+        // the cover has loaded and rendered: the panel must open even if this
+        // fails, because a proposal is a convenience, not a prerequisite.
+        if (lifecycleApi.cdiDomains) {
+          lifecycleApi.cdiDomains()
+            .then((rows) => { if (live) setDomains(rows || []); })
+            .catch(() => { /* fall back to a free-text domain */ });
+        }
+        if (lifecycleApi.suggestCover) {
+          try {
+            const proposed = (await lifecycleApi.suggestCover(docId)).suggestions || {};
+            if (!live) return;
+            setSuggestions(proposed);
+            const filled = [];
+            const next = { ...loaded };
+            for (const [key, s] of Object.entries(proposed)) {
+              if (!s?.value) continue;
+              if (String(next[key] ?? "").trim()) continue;  // never overwrite a stored value
+              next[key] = s.value;
+              filled.push(key);
+            }
+            setCover(next);
+            setApplied(filled);
+          } catch {
+            /* No proposal is fine — every field is still editable by hand. */
+          }
+        }
       } catch (e) {
-        if (live) setError(e?.response?.data?.detail || e.message || "Could not load cover facts.");
-      } finally {
-        if (live) setLoading(false);
+        if (live) {
+          setError(e?.response?.data?.detail || e.message || "Could not load cover facts.");
+          setLoading(false);
+        }
       }
     })();
     return () => { live = false; };
   }, [docId]);
 
-  const set = (key) => (val) => setCover((c) => ({ ...c, [key]: val }));
+  // Editing a field makes it the person's value, so its "suggested" label goes.
+  const set = (key) => (val) => {
+    setCover((c) => ({ ...c, [key]: val }));
+    setApplied((a) => a.filter((k) => k !== key));
+  };
+
+  const accept = (key) => (val) => {
+    setCover((c) => ({ ...c, [key]: val }));
+    setApplied((a) => (a.includes(key) ? a : [...a, key]));
+  };
+
+  // CDI Annex B fixes the approval route per domain (V05/V06), so choosing a
+  // domain fills the route rather than asking for the same decision twice.
+  // Roles a person has already typed are left alone.
+  const setDomain = (val) => {
+    const route = domains.find((d) => d.domain === val);
+    setCover((c) => {
+      const next = { ...c, domain: val };
+      if (route) {
+        next.first_pass_approval = route.first_pass_approval;
+        next.final_approval = route.final_approval;
+      }
+      return next;
+    });
+    setApplied((a) => {
+      const without = a.filter((k) => k !== "domain");
+      return route ? [...new Set([...without, "first_pass_approval", "final_approval"])] : without;
+    });
+    if (route) {
+      // Re-label the two roles so their provenance names the domain actually
+      // chosen, not the one that was proposed.
+      const from = { source: `CDI Annex B route for ${val}`, confidence: "high", note: "" };
+      setSuggestions((s) => ({
+        ...s,
+        first_pass_approval: { ...from, value: route.first_pass_approval },
+        final_approval:      { ...from, value: route.final_approval },
+      }));
+    }
+  };
+
+  const suggestedCount = applied.length;
+  const unresolved = Object.entries(suggestions)
+    .filter(([, s]) => s?.confidence === "unresolved")
+    .map(([key]) => key);
 
   const save = async () => {
     setSaving(true); setError("");
@@ -231,19 +420,53 @@ export default function CdtCoverPanel({ docId, docCode, lifecycleApi, onClose })
 
           {!loading && (
             <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              {suggestedCount > 0 && (
+                <div style={{ fontSize: 11.5, color: "#085041", background: "#E7F5F0",
+                  border: "1px solid #9FD9C8", borderRadius: 8, padding: "9px 12px", lineHeight: 1.5 }}>
+                  <strong>{suggestedCount} field{suggestedCount === 1 ? "" : "s"} filled</strong> from this
+                  document&rsquo;s code, its parent document and the library. Each is labelled with where it
+                  came from — check them, then save. Nothing is stored until you do.
+                  {unresolved.length > 0 && (
+                    <div style={{ marginTop: 4, color: "var(--color-text-secondary)" }}>
+                      Left blank because they couldn&rsquo;t be worked out: {unresolved.map(fieldLabel).join(", ")}.
+                    </div>
+                  )}
+                </div>
+              )}
+
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-                <Field label="Domain" value={cover.domain} onChange={set("domain")} />
-                <Field label="Document Type / Layer" value={cover.type_layer} onChange={set("type_layer")} />
-                <Field label="Parent Document" value={cover.parent_document} onChange={set("parent_document")} />
-                <Field label="Classification" value={cover.classification} onChange={set("classification")} />
-                <Field label="Distribution" value={cover.distribution} onChange={set("distribution")} />
+                <DomainField value={cover.domain} onChange={setDomain} options={domains}
+                  suggestion={suggestions.domain} applied={applied.includes("domain")}
+                  onAccept={setDomain} />
+                <Field label="Document Type / Layer" value={cover.type_layer} onChange={set("type_layer")}
+                  suggestion={suggestions.type_layer} applied={applied.includes("type_layer")}
+                  onAccept={accept("type_layer")} />
+                <Field label="Parent Document" value={cover.parent_document} onChange={set("parent_document")}
+                  suggestion={suggestions.parent_document} applied={applied.includes("parent_document")}
+                  onAccept={accept("parent_document")} />
+                <Field label="Classification" value={cover.classification} onChange={set("classification")}
+                  suggestion={suggestions.classification} applied={applied.includes("classification")}
+                  onAccept={accept("classification")} />
+                <Field label="Distribution" value={cover.distribution} onChange={set("distribution")}
+                  suggestion={suggestions.distribution} applied={applied.includes("distribution")}
+                  onAccept={accept("distribution")} />
                 <Field label="Version" value={cover.version} onChange={set("version")} />
-                <Field label="Owner (role or group)" value={cover.owner} onChange={set("owner")} roleInput />
+                <Field label="Owner (role or group)" value={cover.owner} onChange={set("owner")} roleInput
+                  suggestion={suggestions.owner} applied={applied.includes("owner")}
+                  onAccept={accept("owner")} />
                 <div />
-                <Field label="First Pass Approval" value={cover.first_pass_approval} onChange={set("first_pass_approval")} roleInput />
-                <Field label="Final Approval" value={cover.final_approval} onChange={set("final_approval")} roleInput />
-                <Field label="Effective Date" value={cover.effective_date} onChange={set("effective_date")} />
-                <Field label="Next Review Due" value={cover.next_review_due} onChange={set("next_review_due")} />
+                <Field label="First Pass Approval" value={cover.first_pass_approval} onChange={set("first_pass_approval")} roleInput
+                  suggestion={suggestions.first_pass_approval} applied={applied.includes("first_pass_approval")}
+                  onAccept={accept("first_pass_approval")} />
+                <Field label="Final Approval" value={cover.final_approval} onChange={set("final_approval")} roleInput
+                  suggestion={suggestions.final_approval} applied={applied.includes("final_approval")}
+                  onAccept={accept("final_approval")} />
+                <Field label="Effective Date" value={cover.effective_date} onChange={set("effective_date")}
+                  suggestion={suggestions.effective_date} applied={applied.includes("effective_date")}
+                  onAccept={accept("effective_date")} />
+                <Field label="Next Review Due" value={cover.next_review_due} onChange={set("next_review_due")}
+                  suggestion={suggestions.next_review_due} applied={applied.includes("next_review_due")}
+                  onAccept={accept("next_review_due")} />
               </div>
 
               <StandardsEditor standards={standards} setStandards={setStandards} />

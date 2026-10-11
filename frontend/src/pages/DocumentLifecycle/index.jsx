@@ -80,6 +80,14 @@ const lifecycleApi = {
   updateCover: (id, body) =>
     apiClient.patch(`/api/v1/lifecycle/documents/${id}/cover`, body).then(r => r.data),
 
+  // Proposed cover facts, each with its provenance. Writes nothing — the
+  // panel fills blanks from this and a person still saves.
+  suggestCover: (id) =>
+    apiClient.get(`/api/v1/lifecycle/documents/${id}/cover/suggest`).then(r => r.data),
+
+  cdiDomains: () =>
+    apiClient.get(`/api/v1/lifecycle/cdi/domains`).then(r => r.data),
+
   attachCover: (id) =>
     apiClient.post(`/api/v1/lifecycle/documents/${id}/attach-cover`).then(r => r.data),
 

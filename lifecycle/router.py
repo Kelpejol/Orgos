@@ -9,8 +9,8 @@ import asyncio
 import json
 import logging
 import re
-from datetime import date, datetime, timezone
-from typing import Optional
+from datetime import date, datetime, timedelta, timezone
+from typing import Any, Optional
 from urllib.parse import unquote, urlparse
 
 import httpx
@@ -41,6 +41,8 @@ from graph.client import (
     upload_bytes_to_drive,
 )
 from graph.exceptions import GraphAPIError, GraphNotFoundError
+from lifecycle.cover_suggest import REVIEW_PERIOD_DAYS, library_path_from_url, suggest_cover_facts
+from lifecycle.domains import APPROVAL_ROUTES, Domain
 from lifecycle.graft import graft_cover_onto_document
 from lifecycle.merge import MergeError, merge, scan_markers
 from lifecycle.schemas import CdtCoverFacts, MergeContext, RevisionHistoryEntry, StandardEntry
@@ -1104,6 +1106,12 @@ async def _finalize_document_approval(
     cdt_history = _load_revision_history(doc)
     cdt_cover.version = _next_cdt_version(cdt_cover.version)
     cdt_cover.effective_date = effective_date.strftime("%B %Y")
+    # The review date follows from the effective date — a document approved
+    # today is due for review a review period later, so it is set here rather
+    # than left for someone to work out and type. Always recomputed, because
+    # a date carried over from the previous revision would read as a document
+    # already overdue the day it is published.
+    cdt_cover.next_review_due = (effective_date + timedelta(days=REVIEW_PERIOD_DAYS)).strftime("%B %Y")
     if not cdt_cover.final_approval:
         cdt_cover.final_approval = approver_name or cdt_cover.final_approval
     cdt_history = cdt_history + [RevisionHistoryEntry(
@@ -1704,6 +1712,98 @@ async def _resolve_parent_document_link(parent_document_text: str) -> tuple[str,
         if d.document_code and d.document_code.strip().lower() == text.lower():
             return d.title, d.sharepoint_url or ""
     return "", ""
+
+
+@router.get("/cdi/domains", summary="The CDI Annex B Primary Domains and their approval routes")
+async def list_cdi_domains(user: CurrentUser = Depends(get_current_user)) -> list[dict]:
+    """
+    Annex B's domain table, served so the cover panel can offer a controlled
+    list instead of a free-text box. Annex B states the table is exhaustive,
+    and V05 blocks approval unless the domain comes from it — so a typed
+    domain is a document that cannot be approved.
+
+    Each entry carries its approval route, which lets the panel fill First
+    Pass / Final Approval from the domain rather than asking twice for the
+    same decision.
+    """
+    return [
+        {
+            "domain": domain.value,
+            "first_pass_approval": APPROVAL_ROUTES[domain].first_pass,
+            "final_approval": APPROVAL_ROUTES[domain].final_approval,
+        }
+        for domain in Domain
+    ]
+
+
+@router.get("/documents/{item_id}/cover/suggest")
+async def suggest_cover(
+    item_id: str,
+    folder_path: Optional[str] = None,
+    user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    """
+    Propose this document's cover facts, each with its provenance, so the
+    reviewer confirms a filled panel instead of retyping facts the platform
+    already holds.
+
+    This writes NOTHING. CDI-014 reserves approving, publishing and changing a
+    document's status to people, and Procedure 18.4 requires a person to
+    confirm extracted items — so the values land on the document only when
+    somebody saves them through PATCH .../cover. A field that cannot be
+    resolved comes back as "unresolved" rather than filled with something
+    plausible: a guessed domain routes the document to the wrong approver.
+
+    `folder_path` is optional. The library is organised by control family, and
+    the family is only ever a weak hint (several families share one domain),
+    so it is used last — after the parent document and the function code,
+    which both travel with the document and survive a file move.
+    """
+    try:
+        item = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
+        doc  = await _sp_to_doc(item)
+        doc["cover"] = _load_cdt_cover(doc).model_dump()
+
+        register_docs: list[dict] = []
+        try:
+            from grc import service as grc_service
+            for d in await grc_service.get_documents():
+                register_docs.append({
+                    "document_code": d.document_code,
+                    "title": d.title,
+                    "cdt_cover": d.cdt_cover.model_dump() if d.cdt_cover else {},
+                })
+        except Exception as exc:
+            # Without the Register we simply lose the parent signal — the
+            # function code still resolves most documents, so degrade rather
+            # than fail the whole panel.
+            logger.warning(f"Cover suggestion for {item_id}: could not read the Document Register: {exc}")
+
+        resolved_path = folder_path or library_path_from_url(doc.get("SharePointFileUrl", ""))
+        approved_on = _parse_iso_date(doc.get("ApprovedDate"))
+        suggestions = suggest_cover_facts(
+            doc, register_docs, folder_path=resolved_path, approved_on=approved_on,
+        )
+        return {
+            "document_id": item_id,
+            "suggestions": suggestions.as_dict(),
+            "unresolved": suggestions.unresolved_fields,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _handle_error(exc, f"suggest cover facts {item_id}")
+
+
+def _parse_iso_date(value: Any) -> Optional[date]:
+    """Read a SharePoint date field, tolerating the full ISO timestamp form."""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        return None
 
 
 @router.get("/documents/{item_id}/cover")

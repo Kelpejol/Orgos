@@ -28,6 +28,7 @@ from graph.exceptions import (
 from grc import schemas
 from grc import service
 from config import settings
+from lifecycle.cover_suggest import library_path_from_url, suggest_cover_facts
 from lifecycle.merge import MergeError, merge
 from lifecycle.schemas import MergeContext, RevisionHistoryEntry, StandardEntry
 
@@ -232,6 +233,62 @@ async def get_register_cover(
         }
     except Exception as exc:
         _handle_graph_error(exc, f"get register cover facts {item_id}")
+
+
+@router.get("/documents/{item_id}/cover/suggest", summary="Propose a Document Register item's CDT cover facts")
+async def suggest_register_cover(
+    item_id: str,
+    folder_path: Optional[str] = None,
+    user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    """
+    Propose this document's cover facts, each with its provenance. Mirrors the
+    Lifecycle endpoint (lifecycle/router.py) so the shared Cover & control
+    facts panel works identically on a published register entry.
+
+    Writes nothing: CDI-014 reserves approving and changing a document's
+    status to people, so the values only land when somebody saves them
+    through PATCH .../cover. Unresolvable fields come back empty rather than
+    plausibly filled — a guessed domain routes a document to the wrong
+    approver (Procedure 11.2).
+    """
+    try:
+        doc = await service.get_document(item_id)
+        cover = (doc.cdt_cover or schemas.CdtCoverFacts()).model_dump()
+
+        register_docs: list[dict] = []
+        try:
+            for d in await service.get_documents():
+                register_docs.append({
+                    "document_code": d.document_code,
+                    "title": d.title,
+                    "cdt_cover": d.cdt_cover.model_dump() if d.cdt_cover else {},
+                })
+        except Exception as exc:
+            logger.warning(f"Register cover suggestion for {item_id}: could not read the Register: {exc}")
+
+        lifecycle_shape = {
+            "Title": doc.title,
+            "DocumentCode": doc.document_code,
+            "DocumentType": doc.type.value if doc.type else "",
+            "OwnerName": doc.owner.display_name if doc.owner else "",
+            "cover": cover,
+        }
+        suggestions = suggest_cover_facts(
+            lifecycle_shape,
+            register_docs,
+            folder_path=folder_path or library_path_from_url(doc.sharepoint_url or ""),
+            approved_on=doc.effective_date,
+        )
+        return {
+            "document_id": item_id,
+            "suggestions": suggestions.as_dict(),
+            "unresolved": suggestions.unresolved_fields,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _handle_graph_error(exc, f"suggest register cover facts {item_id}")
 
 
 @router.patch("/documents/{item_id}/cover", summary="Update a Document Register item's CDT cover facts")

@@ -151,3 +151,45 @@ async def test_approval_falls_back_to_source_when_merge_fails():
     create_fields = mock_create.call_args.args[2]
     cover = CdtCoverFacts.from_json(create_fields["CDTCoverFacts"])
     assert cover.version == "06"
+
+
+# -----------------------------------------------------------------------------
+#  Approval sets the review date, not just the effective date
+# -----------------------------------------------------------------------------
+
+async def test_approval_sets_next_review_due_from_the_effective_date():
+    """A document is published with a review date already on its cover: the
+    effective date is the day it was approved, and the review falls a review
+    period later. Leaving it for someone to type is how documents end up
+    published with the PREVIOUS revision's review date — i.e. overdue on day
+    one."""
+    from datetime import date, timedelta
+    from lifecycle.cover_suggest import REVIEW_PERIOD_DAYS
+
+    doc = _lifecycle_doc()
+    # A stale date carried over from the last revision must be replaced.
+    stale = CdtCoverFacts.from_json(doc["CDTCoverFacts"])
+    stale.next_review_due = "January 2020"
+    doc["CDTCoverFacts"] = stale.to_json()
+
+    with patch("lifecycle.router.get_list_item", new_callable=AsyncMock), \
+         patch("lifecycle.router.update_list_item", new_callable=AsyncMock), \
+         patch("lifecycle.router.create_list_item", new_callable=AsyncMock) as mock_create, \
+         patch("lifecycle.router.download_file_from_sharepoint", new_callable=AsyncMock) as mock_dl, \
+         patch("lifecycle.router.resolve_user", new_callable=AsyncMock) as mock_resolve, \
+         patch("lifecycle.router._upload_to_sharepoint", new_callable=AsyncMock) as mock_upload, \
+         patch("lifecycle.router.merge") as mock_merge, \
+         patch("lifecycle.router._background_extract_and_flag", new_callable=AsyncMock):
+
+        mock_resolve.return_value = {"display_name": "Jane Approver", "email": "jane@x.com"}
+        mock_dl.return_value = (b"SOURCE-BYTES", "cdi.docx")
+        mock_merge.return_value = type("R", (), {"document": b"M", "sha256": "x", "doc_code": "DRG-QI-PRO-CDI"})()
+        mock_upload.return_value = "https://sp/published.docx"
+        mock_create.return_value = {"id": "99", "fields": {}}
+
+        await lr._finalize_document_approval("10", doc, approver_oid="approver-oid", approver_email="")
+
+    cover = CdtCoverFacts.from_json(mock_create.call_args.args[2]["CDTCoverFacts"])
+    today = date.today()
+    assert cover.effective_date == today.strftime("%B %Y")
+    assert cover.next_review_due == (today + timedelta(days=REVIEW_PERIOD_DAYS)).strftime("%B %Y")

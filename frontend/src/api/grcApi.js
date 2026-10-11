@@ -79,6 +79,14 @@ export const documentsApi = {
   updateCover: (id, body) =>
     apiClient.patch(`/api/v1/grc/documents/${id}/cover`, body).then((r) => r.data),
 
+  // Proposed cover facts with provenance (writes nothing), and the Annex B
+  // domain list the panel offers instead of a free-text box.
+  suggestCover: (id) =>
+    apiClient.get(`/api/v1/grc/documents/${id}/cover/suggest`).then((r) => r.data),
+
+  cdiDomains: () =>
+    apiClient.get(`/api/v1/lifecycle/cdi/domains`).then((r) => r.data),
+
   previewPdf: async (id) => {
     const resp = await fetch(`${BASE_URL}/api/v1/grc/documents/${id}/preview.pdf`, {
       credentials: "include",
