@@ -259,6 +259,11 @@ async def _sp_to_doc(item: dict) -> dict:
         "SensitisationDeadline":    f.get("SensitisationDeadline", ""),
         "StakeholderResponseCount": int(f.get("StakeholderResponseCount", 0) or 0),
         "Stakeholders":             stakeholders,
+        # Resolved once, when stakeholders are assigned (see progress_doc) —
+        # absent/blank until the ParentDocumentTitle/ParentDocumentUrl columns
+        # have been added by an admin and/or no match was found in the Register.
+        "ParentDocumentTitle":      f.get("ParentDocumentTitle", ""),
+        "ParentDocumentUrl":        f.get("ParentDocumentUrl", ""),
         # CDT control facts (v06) — absent/blank until the CDTCoverFacts column
         # has been added by an admin (OrgOS cannot create columns itself) and/or
         # until Compliance has entered any cover facts for this document.
@@ -781,10 +786,22 @@ async def progress_doc(
 
         fields: dict = {"Stage": next_stage}
 
+        _parent_doc_fields: dict = {}   # best-effort write, see below
         if body.current_stage == "Review" and body.stakeholders:
             fields["Stakeholders"] = json.dumps(body.stakeholders)
             if body.sensitisation_deadline:
                 fields["SensitisationDeadline"] = body.sensitisation_deadline
+
+            # Stakeholders are about to be notified (Power Automate) that this
+            # document needs review — surface which document it's a revision
+            # OF (the cover's Parent Document) as a real, clickable link so
+            # the notification can show the family, not just this one item.
+            cover = _load_cdt_cover(doc)
+            if cover.parent_document:
+                parent_title, parent_url = await _resolve_parent_document_link(cover.parent_document)
+                _parent_doc_fields["ParentDocumentTitle"] = parent_title or cover.parent_document
+                if parent_url:
+                    _parent_doc_fields["ParentDocumentUrl"] = parent_url
 
         _approver_email_pg: str = ""   # saved for best-effort Person/Group write below
         if body.current_stage == "Sensitisation":
@@ -795,6 +812,21 @@ async def progress_doc(
 
         # ── Critical write — text columns always succeed ───────────────────────
         await update_list_item(_get_list_id(), _LIST_NAME, item_id, fields)
+
+        # ── Best-effort: Parent Document link, separate write ───────────────────
+        # An admin must have added the ParentDocumentTitle/ParentDocumentUrl
+        # columns to the Document Lifecycle list; if not yet, this simply
+        # doesn't land — it must never block the stage progression itself
+        # (same reasoning as the CDT cover-facts seeding in the drafter router).
+        if _parent_doc_fields:
+            try:
+                await update_list_item(_get_list_id(), _LIST_NAME, item_id, _parent_doc_fields)
+            except Exception as exc:
+                logger.info(
+                    f"Lifecycle {item_id} progressed, but Parent Document link was not "
+                    f"saved (are the 'ParentDocumentTitle'/'ParentDocumentUrl' columns "
+                    f"present on the Document Lifecycle list yet?): {exc}"
+                )
 
         # ── Best-effort: write the Person/Group column in a separate PATCH ─────
         # Person/Group columns require the SP site user lookup ID (integer), not
@@ -1623,6 +1655,55 @@ def _load_cdt_cover(doc: dict) -> CdtCoverFacts:
 
 def _load_revision_history(doc: dict) -> list[RevisionHistoryEntry]:
     return RevisionHistoryEntry.list_from_json(doc.get("RevisionHistory", ""))
+
+
+_LAYER_SUFFIX_RE = re.compile(r"\(layer\s*\d+\)", re.IGNORECASE)
+
+
+def _normalize_doc_title(text: str) -> str:
+    """
+    Normalise a document title/reference for matching: drop a trailing
+    "(Layer N)" tag (the cover's Parent Document field carries one, e.g.
+    "Information Security Policy (Layer 2)", but the actual registered
+    document's title usually doesn't), collapse whitespace, lowercase.
+    """
+    text = _LAYER_SUFFIX_RE.sub("", text or "")
+    return " ".join(text.strip().lower().split())
+
+
+async def _resolve_parent_document_link(parent_document_text: str) -> tuple[str, str]:
+    """
+    Best-effort: the cover's "Parent Document" field is free text (see
+    lifecycle/schemas.py's CdtCoverFacts.parent_document — there is no real
+    link from a document to its parent, just a name someone typed). This
+    looks that name up against the Document Register by normalised title
+    (falling back to an exact document-code match) so stakeholders get a
+    real link, not just a name they'd have to search for themselves.
+
+    Returns (matched_title, sharepoint_url) — ("", "") if nothing matches or
+    the lookup fails. Never raises; a failed match just means no link, not a
+    blocked progress action.
+    """
+    text = (parent_document_text or "").strip()
+    if not text:
+        return "", ""
+    target = _normalize_doc_title(text)
+    if not target:
+        return "", ""
+    try:
+        from grc import service as grc_service
+        docs = await grc_service.get_documents()
+    except Exception as exc:
+        logger.warning(f"Could not resolve parent document '{text}': {exc}")
+        return "", ""
+
+    for d in docs:
+        if _normalize_doc_title(d.title) == target:
+            return d.title, d.sharepoint_url or ""
+    for d in docs:
+        if d.document_code and d.document_code.strip().lower() == text.lower():
+            return d.title, d.sharepoint_url or ""
+    return "", ""
 
 
 @router.get("/documents/{item_id}/cover")
