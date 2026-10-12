@@ -11,7 +11,7 @@ import logging
 import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
-from urllib.parse import unquote, urlparse
+from urllib.parse import parse_qs, unquote, urlparse
 
 import httpx
 from fastapi import (
@@ -99,16 +99,34 @@ def _field_text(value) -> str:
     return str(value).strip()
 
 
+_VIEWER_PAGES = {"doc.aspx", "doc2.aspx", "wopiframe.aspx", "onedrive.aspx", "viewer.aspx"}
+
+
 def _filename_from_sharepoint_url(url: str, content_type: str = "") -> str:
-    """Best-effort filename for extraction based on SharePoint URL/content type."""
-    path_name = unquote(urlparse(url or "").path.rsplit("/", 1)[-1])
-    if "." in path_name:
+    """
+    Best-effort filename for a SharePoint file, from its URL or content type.
+
+    Graph returns a viewer link for Office files — ".../_layouts/15/Doc.aspx?
+    sourcedoc={GUID}&file=Name.docx&action=default" — whose last path segment
+    is the viewer page, not the file. The real name is in the `file` query
+    parameter, so that is read first; taking the last path segment instead
+    produced "Doc.aspx", which the extractor rejects as an unsupported type.
+    """
+    parsed = urlparse(url or "")
+    from_query = parse_qs(parsed.query).get("file", [""])[0].strip()
+    if from_query and "." in from_query:
+        return unquote(from_query)
+
+    path_name = unquote(parsed.path.rsplit("/", 1)[-1])
+    if "." in path_name and path_name.lower() not in _VIEWER_PAGES:
         return path_name
+
+    stem = "" if path_name.lower() in _VIEWER_PAGES else path_name
     if "pdf" in (content_type or "").lower():
-        return f"{path_name or 'document'}.pdf"
+        return f"{stem or 'document'}.pdf"
     if "text" in (content_type or "").lower():
-        return f"{path_name or 'document'}.txt"
-    return f"{path_name or 'document'}.docx"
+        return f"{stem or 'document'}.txt"
+    return f"{stem or 'document'}.docx"
 
 
 def _extractor_type_for_lifecycle(document_type: str) -> Optional[str]:
@@ -464,8 +482,8 @@ async def _get_document_text(doc: dict) -> str:
     try:
         from agents.extractor.service import extract_text_from_docx, extract_text_from_pdf
         from graph.client import download_file_from_sharepoint
-        file_bytes, filename = await download_file_from_sharepoint(url)
-        name = (filename or "").lower()
+        file_bytes, content_type = await download_file_from_sharepoint(url)
+        name = _filename_from_sharepoint_url(url, content_type).lower()
         if name.endswith(".pdf"):
             return await extract_text_from_pdf(file_bytes)
         return await extract_text_from_docx(file_bytes)
@@ -1124,7 +1142,12 @@ async def _finalize_document_approval(
     published_url = doc.get("SharePointFileUrl", "")  # fallback: reuse the source as-is
     if doc.get("SharePointFileUrl"):
         try:
-            source_bytes, filename = await download_file_from_sharepoint(doc["SharePointFileUrl"])
+            source_bytes, content_type = await download_file_from_sharepoint(doc["SharePointFileUrl"])
+            # download_file_from_sharepoint returns (bytes, CONTENT TYPE) — not a
+            # filename. Using the content type as the name uploaded the published
+            # copy to ".../application/vnd.openxmlformats…" and left the Register
+            # pointing at a folder.
+            filename = _filename_from_sharepoint_url(doc["SharePointFileUrl"], content_type)
             merge_ctx = MergeContext.from_lifecycle_dict({
                 **doc, "CDTCoverFacts": cdt_cover.to_json(),
                 "RevisionHistory": RevisionHistoryEntry.list_to_json(cdt_history),
@@ -2448,8 +2471,8 @@ async def _download_doc_bytes(doc: dict) -> tuple[bytes, str]:
     url = doc.get("SharePointFileUrl")
     if not url:
         raise HTTPException(status_code=404, detail="No file uploaded for this document yet.")
-    file_bytes, filename = await download_file_from_sharepoint(url)
-    return file_bytes, (filename or "document.docx")
+    file_bytes, content_type = await download_file_from_sharepoint(url)
+    return file_bytes, _filename_from_sharepoint_url(url, content_type)
 
 
 class ConfirmedFix(BaseModel):

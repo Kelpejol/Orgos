@@ -28,10 +28,8 @@ def _match(items, field, value):
 
 
 def _filename_from_url(web_url: str, content_type: str) -> str:
-    name = unquote(urlparse(web_url).path.split("/")[-1]) or "document"
-    if not name.lower().endswith((".pdf", ".docx", ".doc", ".txt")):
-        name += ".pdf" if "pdf" in (content_type or "").lower() else ".docx"
-    return name
+    from lifecycle.router import _filename_from_sharepoint_url
+    return _filename_from_sharepoint_url(web_url, content_type)
 
 
 async def main(doc_code: str) -> int:

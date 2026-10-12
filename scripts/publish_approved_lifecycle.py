@@ -50,14 +50,10 @@ def field_text(fields: dict, key: str) -> str:
 
 
 def filename_from_sharepoint_url(url: str, content_type: str = "") -> str:
-    path_name = unquote(urlparse(url or "").path.rsplit("/", 1)[-1])
-    if "." in path_name:
-        return path_name
-    if "pdf" in (content_type or "").lower():
-        return f"{path_name or 'document'}.pdf"
-    if "text" in (content_type or "").lower():
-        return f"{path_name or 'document'}.txt"
-    return f"{path_name or 'document'}.docx"
+    # One implementation, shared with the approval path: Graph's viewer links
+    # (".../Doc.aspx?...&file=Name.docx") carry the real name in a query parameter.
+    from lifecycle.router import _filename_from_sharepoint_url
+    return _filename_from_sharepoint_url(url, content_type)
 
 
 def extractor_type_for_lifecycle(document_type: str) -> Optional[str]:
