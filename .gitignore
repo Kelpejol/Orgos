@@ -56,3 +56,6 @@ Thumbs.db
 
 # Kortex — auto-generated context file
 .kortex/
+
+# Local pre-purge list exports
+backups/

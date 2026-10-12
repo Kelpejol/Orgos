@@ -50,22 +50,20 @@ class Settings(BaseSettings):
     compliance_site_url: str = Field(
     default="https://dragnetnigeria.sharepoint.com/sites/everybody"
 )
-    # Previous library: "ORGOS LIBRARY". Restore that value to revert this routing.
-    # SharePoint shows this URL as GRC MASTERY LIBRARY; Graph exposes the drive
-    # display name as GRC CONTROL LIBRARY.
-    compliance_library_name: str = Field(default="GRC CONTROL LIBRARY")
-    compliance_starting_folder: str = Field(
-        default="Policies, Procedures, Manuals, Guidelines, Frameworks, Handbook, SOP"
-    )
+    # Documents are read from the "ORGOS CONTROL LIBRARY" folder inside the
+    # ORGOS LIBRARY document library. The CDT templates sit at that library's
+    # root, beside the folder, so one drive serves both.
+    # Previous libraries: "GRC CONTROL LIBRARY" (family folders at its root,
+    # restricted by COMPLIANCE_INTAKE_FOLDERS) and before that "ORGOS LIBRARY"
+    # with the "Policies, Procedures, Manuals, ..." starting folder.
+    compliance_library_name: str = Field(default="ORGOS LIBRARY")
+    compliance_starting_folder: str = Field(default="ORGOS CONTROL LIBRARY")
     compliance_intake_folders: str = Field(
-        default=(
-            "Control of Documented Information & Records Governance;"
-            "Finance & Administration;"
-            "Information Use, Handling & Communication Governance"
-        ),
+        default="",
         description=(
-            "Semicolon-separated top-level folders in the compliance library "
-            "that OrgOS is allowed to browse/intake for lifecycle review"
+            "Optional semicolon-separated top-level folders in the compliance "
+            "library that OrgOS is allowed to browse/intake for lifecycle review. "
+            "Empty means every folder under COMPLIANCE_STARTING_FOLDER."
         ),
     )
 
