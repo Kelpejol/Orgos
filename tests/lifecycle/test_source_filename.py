@@ -75,3 +75,10 @@ async def test_approval_uploads_the_published_copy_under_a_real_filename():
     uploaded_name = mock_upload.call_args.args[1]
     assert "/" not in uploaded_name
     assert uploaded_name == "BCDR Impact, Register and Process Continuity Procedure.docx"
+
+
+# ── media type: a PDF must never be served as a .docx ────────────────────────
+def test_media_type_follows_the_real_extension():
+    assert lr._media_type_for("Policy.pdf") == "application/pdf"
+    assert lr._media_type_for("Policy.docx").endswith("wordprocessingml.document")
+    assert lr._media_type_for("Doc.aspx") == "application/octet-stream"

@@ -17,6 +17,7 @@ import UserSearchField from "../../components/shared/UserSearchField.jsx";
 import { CascadeImpactPreview } from "../../components/shared/CascadeImpactModal.jsx";
 import ReviseDocumentModal from "../../components/shared/ReviseDocumentModal.jsx";
 import CdiFixPanel from "../../components/shared/CdiFixPanel.jsx";
+import DocumentViewer from "../../components/shared/DocumentViewer.jsx";
 import FeedbackAmendPanel from "../../components/shared/FeedbackAmendPanel.jsx";
 import CdtCoverPanel from "../../components/shared/CdtCoverPanel.jsx";
 import apiClient from "../../api/grcApi.js";
@@ -1205,6 +1206,7 @@ const LifecycleCard = ({
   const [claiming,        setClaiming]        = useState(false);
   const [claimError,      setClaimError]      = useState("");
   const [showCdiFix,      setShowCdiFix]      = useState(false);
+  const [showViewer,      setShowViewer]      = useState(false);
   const [showAmend,       setShowAmend]       = useState(false);
   const [showCdtCover,    setShowCdtCover]    = useState(false);
   const [attachingCover,  setAttachingCover]  = useState(false);
@@ -1344,6 +1346,10 @@ const LifecycleCard = ({
 
   return (
    <>
+    {showViewer && (
+      <DocumentViewer doc={doc} onClose={() => setShowViewer(false)}
+        onDownload={handleDownload} />
+    )}
     {showCdiFix && (
       <CdiFixPanel docId={doc.id} docCode={doc.DocumentCode}
         onClose={() => setShowCdiFix(false)} />
@@ -1798,12 +1804,11 @@ const LifecycleCard = ({
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
               {/* View */}
               {doc.SharePointFileUrl || doc.Revised ? (
-                <button onClick={handleDownload} disabled={downloading} style={{
+                <button onClick={() => setShowViewer(true)} style={{
                   padding: "7px", fontSize: 11, borderRadius: 7,
                   border: "1.5px solid #C0C0C0", background: "transparent",
-                  color: downloading ? "#999" : "var(--color-text-primary)",
-                  cursor: downloading ? "not-allowed" : "pointer",
-                }}>{downloading ? "Opening..." : "View ↗"}</button>
+                  color: "var(--color-text-primary)", cursor: "pointer",
+                }}>View</button>
               ) : (
                 <div style={{
                   padding: "7px", fontSize: 10, borderRadius: 7, textAlign: "center",
@@ -1903,12 +1908,11 @@ const LifecycleCard = ({
           {isApproval && !isApproved && (
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
               {doc.SharePointFileUrl && (
-                <button onClick={handleDownload} disabled={downloading} style={{
+                <button onClick={() => setShowViewer(true)} style={{
                   padding: "7px", fontSize: 11, borderRadius: 7,
                   border: "1.5px solid #C0C0C0", background: "transparent",
-                  color: downloading ? "#999" : "var(--color-text-primary)",
-                  cursor: downloading ? "not-allowed" : "pointer",
-                }}>{downloading ? "Opening..." : "View ↗"}</button>
+                  color: "var(--color-text-primary)", cursor: "pointer",
+                }}>View</button>
               )}
               <button onClick={() => onReassign(doc)} style={{
                 padding: "7px", fontSize: 11, borderRadius: 7,

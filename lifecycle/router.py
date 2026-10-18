@@ -1973,6 +1973,106 @@ async def preview_document_pdf(
         _handle_error(exc, f"preview document {item_id}")
 
 
+_PDF_MEDIA = "application/pdf"
+_DOCX_MEDIA = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+_MEDIA_BY_EXT = {
+    "pdf": _PDF_MEDIA,
+    "docx": _DOCX_MEDIA,
+    "doc": "application/msword",
+    "txt": "text/plain; charset=utf-8",
+}
+
+
+def _media_type_for(filename: str) -> str:
+    """The real media type, so a PDF is never served as a .docx (which makes
+    the browser download an opaque octet-stream instead of displaying it)."""
+    ext = (filename or "").lower().rsplit(".", 1)[-1]
+    return _MEDIA_BY_EXT.get(ext, "application/octet-stream")
+
+
+async def _document_bytes_for_display(item_id: str, doc: dict) -> tuple[bytes, str]:
+    """
+    The document as a person should see it: cover facts merged in when it
+    carries live {{ markers }}, never the raw marker-visible source.
+    Returns (bytes, filename). Merge failure falls back to the raw file.
+    """
+    url = doc.get("SharePointFileUrl") or ""
+    if not url:
+        raise HTTPException(
+            status_code=404,
+            detail="No file has been uploaded for this lifecycle item yet.",
+        )
+    try:
+        source_bytes, content_type = await download_file_from_sharepoint(url)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Could not fetch the document: {exc}")
+
+    # The stored URL is usually a Word viewer link (".../Doc.aspx?file=X.docx"),
+    # whose last path segment is the viewer page — so the real name comes from
+    # the helper, not from the path. Naming it "Doc.aspx" made every download
+    # arrive as an unopenable file.
+    filename = _filename_from_sharepoint_url(url, content_type)
+
+    content = source_bytes
+    if filename.lower().endswith(".docx") and scan_markers(source_bytes):
+        try:
+            content = merge(source_bytes, MergeContext.from_lifecycle_dict(doc)).document
+        except Exception as exc:
+            logger.warning(f"Display merge fell back to the raw file for {item_id}: {exc}")
+    return content, filename
+
+
+@router.get("/documents/{item_id}/view.pdf")
+async def view_document_pdf(
+    item_id: str,
+    user: CurrentUser = Depends(get_current_user),
+) -> Response:
+    """
+    The document rendered for READING in the browser — a PDF served inline,
+    so "View" opens the document instead of downloading a file the reviewer
+    then has to find and open by hand.
+
+    A .docx is converted by Microsoft Graph (the same conversion the CDT
+    preview uses); a PDF is served as it is. Cover facts are merged first,
+    so a templated document never displays raw {{ markers }}.
+    """
+    try:
+        item = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
+        doc  = await _sp_to_doc(item)
+        content, filename = await _document_bytes_for_display(item_id, doc)
+
+        if not filename.lower().endswith(".pdf"):
+            try:
+                _, drive_id = await resolve_compliance_drive()
+                await ensure_drive_folder(drive_id, _CDT_PREVIEW_FOLDER)
+                scratch = f"view_{item_id}.docx"
+                await upload_bytes_to_drive(drive_id, _CDT_PREVIEW_FOLDER, scratch, content)
+                content = await convert_drive_item_to_pdf(
+                    drive_id, f"{_CDT_PREVIEW_FOLDER}/{scratch}")
+            except Exception as exc:
+                logger.warning(f"View conversion failed for {item_id}: {exc}")
+                raise HTTPException(
+                    status_code=503,
+                    detail=("Could not render this document for viewing. "
+                            "Download it instead, or open it in SharePoint."),
+                )
+            filename = filename.rsplit(".", 1)[0] + ".pdf"
+
+        return Response(
+            content=content,
+            media_type=_PDF_MEDIA,
+            headers={
+                "Content-Disposition": f'inline; filename="{filename}"',
+                "Cache-Control": "no-store",
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _handle_error(exc, f"view lifecycle document {item_id}")
+
+
 @router.post("/documents/{item_id}/attach-cover")
 async def attach_cdt_cover(
     item_id: str,
@@ -2209,31 +2309,10 @@ async def download_doc_file(
     try:
         item = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
         doc  = await _sp_to_doc(item)
-        url  = doc.get("SharePointFileUrl")
-        if not url:
-            raise HTTPException(
-                status_code=404,
-                detail="No file has been uploaded for this lifecycle item yet.",
-            )
-
-        try:
-            source_bytes, _ = await download_file_from_sharepoint(url)
-        except Exception as exc:
-            raise HTTPException(status_code=503, detail=f"Could not fetch the document: {exc}")
-
-        content = source_bytes
-        if scan_markers(source_bytes):
-            try:
-                ctx = MergeContext.from_lifecycle_dict(doc)
-                content = merge(source_bytes, ctx).document
-            except Exception as exc:
-                logger.warning(f"Download merge fell back to raw file for {item_id}: {exc}")
-                content = source_bytes
-
-        filename = urlparse(url).path.rsplit("/", 1)[-1] or f"document_{item_id}.docx"
+        content, filename = await _document_bytes_for_display(item_id, doc)
         return Response(
             content=content,
-            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            media_type=_media_type_for(filename),
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
     except HTTPException:
