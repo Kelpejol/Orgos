@@ -262,6 +262,42 @@ _ADVISORY_CHECKS = {"CDI-02", "CDI-03", "CDI-04", "CDI-10", "CDI-11", "CDI-12"}
 _DATE_CHECK = "CDI-14"
 
 
+# What each check actually requires, in plain words. Surfaced in the fix modal
+# so a reviewer never has to guess the accepted form — the version check in
+# particular was failing documents whose cover said "Draft" or "Initial Draft",
+# with nothing on screen to say that a first issue is numbered v1.0.
+_CHECK_RULES: dict[str, str] = {
+    "CDI-01": "Code reads DRG-[Function]-[Type]-[Mnemonic], e.g. DRG-ISMS-PRO-CMIG. "
+              "Legacy codes with a trailing serial and/or year are still accepted.",
+    "CDI-02": "A revision history table with the columns Version, Date, Author, "
+              "Change and Approved by. The first row is the initial issue.",
+    "CDI-03": "A Purpose heading (or 'The purpose of this document is...') saying "
+              "what the document is for.",
+    "CDI-04": "A Scope heading (or 'This document applies to...') saying who and "
+              "what it covers.",
+    "CDI-05": "A Responsibilities (or Roles and Responsibilities) section naming "
+              "the role accountable for each activity.",
+    "CDI-06": "Requirements are stated as obligations — 'shall' or 'must', never "
+              "'should endeavour to', 'may wish to' or 'where possible'.",
+    "CDI-07": "Name a controlled job title or an OrgOS group, not 'management', "
+              "'relevant staff' or 'appropriate personnel'.",
+    "CDI-08": "Say which record proves the control — its name, who holds it and "
+              "how often — not just 'records shall be maintained'.",
+    "CDI-09": "At least one standards reference, e.g. '(ISO 27001 A.5.18)', "
+              "'(ISO 9001 7.5)' or '(NDPA S.39)'.",
+    "CDI-10": "A Related Documents section listing each referenced document by "
+              "its code and title.",
+    "CDI-11": "A classification label: Internal Use Only, Confidential or "
+              "Restricted. Internal Use Only is the minimum.",
+    "CDI-12": "An owner on the cover, named as a ROLE (e.g. 'Head of IT'), never "
+              "as a person.",
+    "CDI-14": "An effective date with a real date value, e.g. 'Effective Date: "
+              "March 2026'. OrgOS stamps this for you when the document is approved.",
+    "CDI-15": "A version NUMBER, not a word: v1.0, Version 2, Rev 1.2. A first "
+              "issue is v1.0 — 'Draft' or 'Initial Draft' is not a version.",
+}
+
+
 def _classify_fixable(check_id: str, find: str, needs_choice: bool, insert: Optional[dict] = None) -> str:
     """
     How the reviewer applies this fix:
@@ -272,13 +308,14 @@ def _classify_fixable(check_id: str, find: str, needs_choice: bool, insert: Opti
       "structural" — a control-block / metadata correction, not body text.
       "manual"     — no locatable text; reviewer edits the document by hand.
     """
+    # An exact, located swap is the best fix available, whatever the check —
+    # so a structural check that DID find offending text (e.g. a cover reading
+    # "Version: Draft") is a one-click fix, not advice to edit by hand.
+    if (find or "").strip():
+        return "choice" if (needs_choice or check_id in _CHOICE_CHECKS) else "auto"
     if check_id in _STRUCTURAL_CHECKS:
         return "insert" if insert and (insert.get("text") or "").strip() else "structural"
-    if not (find or "").strip():
-        return "structural" if check_id in _STRUCTURAL_CHECKS else "manual"
-    if needs_choice or check_id in _CHOICE_CHECKS:
-        return "choice"
-    return "auto"
+    return "manual"
 
 
 def _pass(check_id: str, check_name: str) -> dict:
@@ -299,6 +336,7 @@ def _pass(check_id: str, check_name: str) -> dict:
         "choices":      [],
         "fixable":      "none",
         "insert":       None,
+        "rule":         _CHECK_RULES.get(check_id, ""),
     }
 
 
@@ -344,6 +382,7 @@ def _fail(
         "needs_choice": needs_choice,
         "choices":      choices,
         "fixable":      _classify_fixable(check_id, find, needs_choice, insert),
+        "rule":         _CHECK_RULES.get(check_id, ""),
         # Missing-content fixes: {heading, text, kind, position}. The text is a
         # template the reviewer edits; [bracketed] parts must be filled in.
         "insert":       insert or None,
@@ -731,6 +770,16 @@ def check_14_effective_date(text: str) -> dict:
     return _pass("CDI-14", "Effective date")
 
 
+# A version LABEL carrying a word instead of a number — "Version: Draft",
+# "Revision: Initial Draft". Anchored to its own line so cover/header metadata
+# matches but prose ("...the draft version of the policy") does not.
+_WORDY_VERSION_RE = re.compile(
+    r"(?im)^[ \t]*((?:document[ \t]+)?(?:version|revision|rev|ver)[ \t]*\.?[ \t]*:[ \t]*)"
+    r"((?:initial[ \t]+|first[ \t]+|final[ \t]+)?(?:draft|issue|release|final|current|n/?a|tbc|tbd))"
+    r"[ \t]*$"
+)
+
+
 def check_15_version_number(text: str) -> dict:
     """CDI-15: Version number present.
 
@@ -743,6 +792,23 @@ def check_15_version_number(text: str) -> dict:
         re.IGNORECASE,
     )
     if not pattern.search(text):
+        # The cover often DOES carry a version field, filled with a word
+        # ("Version: Draft"). That is a located, exact swap — one click — not a
+        # missing line the reviewer has to write out.
+        wordy = _WORDY_VERSION_RE.search(text)
+        if wordy:
+            label, value = wordy.group(1), wordy.group(2)
+            found = f"{label}{value}".strip()
+            return _fail(
+                "CDI-15", "Version number",
+                f"The version field reads '{value.strip()}', which is not a version number.",
+                current_text=found,
+                proposed_fix=f"Number the version: '{label.strip()} 1.0'. A first issue is always v1.0.",
+                fix_source="Document Creation Standards §4",
+                find=found,
+                replace=f"{label.rstrip()} 1.0",
+                anchor=found,
+            )
         return _fail(
             "CDI-15", "Version number",
             "No version number found.",

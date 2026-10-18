@@ -2651,6 +2651,7 @@ async def cdi_fix_plan(
                 "contexts":      contexts.get(fid, []),
                 "can_apply":     can_apply,
                 "insert":        f.get("insert"),
+                "rule":          f.get("rule", ""),
                 "severity":      "warning" if _is_warning(f) else "error",
             })
 
@@ -2784,7 +2785,7 @@ def _cdi_result_to_storage(cdi_result: dict) -> tuple[str, str]:
             "replace": c.get("replace", ""), "anchor": c.get("anchor", ""),
             "needs_choice": c.get("needs_choice", False), "choices": c.get("choices", []),
             "fixable": c.get("fixable", "manual"), "insert": c.get("insert"),
-            "confidence": c.get("confidence", 0),
+            "rule": c.get("rule", ""), "confidence": c.get("confidence", 0),
             "severity": "warning" if c["result"] == "WARN" else "error",
         }
         for c in flagged

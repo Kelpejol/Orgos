@@ -67,6 +67,29 @@ const badge = (kind) => {
   );
 };
 
+// ── the rule behind a check — collapsed by default, one click to read ───────
+function RuleHint({ rule }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div style={{ marginTop: 6 }}>
+      <button onClick={() => setOpen((v) => !v)} title={rule}
+        style={{ display: "inline-flex", alignItems: "center", gap: 5, padding: 0,
+          border: "none", background: "transparent", cursor: "pointer",
+          fontSize: 11, fontWeight: 600, color: "var(--color-text-tertiary)" }}>
+        <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center",
+          width: 13, height: 13, borderRadius: "50%", fontSize: 9, fontWeight: 800,
+          border: "1.2px solid currentColor" }}>i</span>
+        What this check requires
+      </button>
+      {open && (
+        <div style={{ marginTop: 5, fontSize: 11.5, lineHeight: 1.5, padding: "7px 10px",
+          borderRadius: 8, background: "var(--color-background-secondary)",
+          color: "var(--color-text-secondary)" }}>{rule}</div>
+      )}
+    </div>
+  );
+}
+
 // ── one finding card ──────────────────────────────────────────────────────────
 function FixCard({ f, decision, onChange }) {
   const kind = kindOf(f);
@@ -105,6 +128,11 @@ function FixCard({ f, decision, onChange }) {
           <span style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>{f.confidence}% conf.</span>
         )}
       </div>
+
+      {/* The rule, in the reviewer's own words — so the accepted form is never
+          a guess (a cover reading "Draft" failed the version check with nothing
+          on screen to say a first issue is v1.0). */}
+      {f.rule && <RuleHint rule={f.rule} />}
 
       {/* finding */}
       <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 6 }}>{f.finding}</div>

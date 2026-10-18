@@ -195,3 +195,24 @@ def test_advisory_checks_warn_and_dont_count_as_failures():
     assert c["CDI-09"]["result"] == "FAIL"           # feeds the Standards Map
     assert res["fail_count"] == sum(1 for x in res["checks"] if x["result"] == "FAIL")
     assert res["warn_count"] >= 6
+
+
+# ── CDI-15: a worded version field resolves to a one-click swap ──────────────
+def test_wordy_version_becomes_a_located_swap():
+    from agents.cdi_checker.service import check_15_version_number
+    r = check_15_version_number("Access Policy\nVersion: Draft\nBody text.")
+    assert r["result"] == "FAIL" and r["fixable"] == "auto"
+    assert r["find"] == "Version: Draft" and r["replace"] == "Version: 1.0"
+
+
+def test_version_in_prose_is_not_mistaken_for_the_field():
+    from agents.cdi_checker.service import check_15_version_number
+    r = check_15_version_number("Staff may read the draft version of the policy.")
+    assert r["result"] == "FAIL" and r["fixable"] == "insert"   # nothing to swap
+
+
+def test_every_failing_check_states_its_rule():
+    res, c = _run("Change Management Procedure", "Body text.")
+    flagged = [x for x in res["checks"] if x["result"] in ("FAIL", "WARN")]
+    assert flagged and all(x["rule"] for x in flagged)
+    assert "v1.0" in c["CDI-15"]["rule"]
