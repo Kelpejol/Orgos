@@ -1,6 +1,6 @@
 # GRC Control Framework — Architecture Plan
 
-**Audience:** Paul and Adekunle, as the build plan; the open decisions in §13 go to Bobby and Compliance.
+**Audience:** Paul and Adekunle, as the build plan.
 **Companion to:** [GRC-EXTRACTION-AND-RECORDS-EXPLAINER.md](GRC-EXTRACTION-AND-RECORDS-EXPLAINER.md), which explains *why*. This document is *what we build, in what order, and what it touches*.
 **Basis:** Bobby's brief; the CDI Standard (DRG-QI-STD-CDI) and Procedure (DRG-QI-PRO-CDI); the BCDR Procedure (DRG-ISMS-PRO-BCI); the Enterprise Records Catalogue; the records-governance review package; and a read of every OrgOS module the change reaches. Every claim about current code below was checked against the code.
 
@@ -125,7 +125,7 @@ Storage stays SharePoint Lists via Graph. No new infrastructure. Joins happen in
 | Control definition | **Control Register** | **Evolved** — additive columns | `ControlId` | Defining document, confirmed by a reviewer |
 | Implementation step | **Control Implementations** | New | `ControlId` + `DocCode` + `Section` | Implementing document |
 | Control ↔ record | **Control Record Links** | New (many-to-many) | `ControlId` + `RecordId` | Defining doc, confirmed |
-| Record | **Records Catalogue** | New | `RecordId` (REC-nnnn) | The Catalogue — see decision D1 |
+| Record | **Records Catalogue** | New | `RecordId` (REC-nnnn) | The Catalogue, imported into OrgOS |
 | Evidence obligation | **Evidence Tracker** (Record Tracker) | **Evolved** | item id | OrgOS, generated |
 | Role | **OrgOS Groups** → *Role Catalogue* | **Evolved** | name | Organogram, confirmed |
 | Role assignment | **Role Assignments** | New | role + scope + person | Verified by Compliance / HR |
@@ -173,7 +173,7 @@ Each stage is a pure function with its own tests, using the real documents as fi
 
 ### Stage 1 — Scope and identify
 - Walk the configured domain folders.
-- **Exclude WIP and superseded copies.** Today `scripts/intake_sharepoint_to_lifecycle.py` walks every subfolder with no exclusion. We need to know how they're marked — decision D3.
+- **Exclude WIP and superseded copies.** Today `scripts/intake_sharepoint_to_lifecycle.py` walks every subfolder with no exclusion. Skip them by folder and file naming, checked against the real library first (§13).
 - Read the document code → layer via `lifecycle/domains.py`, which already knows the CDI type codes.
 - Parse the document's **own control block**: title, code, layer, domain, parent, child documents, related documents, owner, approval authority, classification, issue status, supersedes, standards, *Standard controls implemented*.
 
@@ -320,7 +320,7 @@ Built in Phase 4, after the vocabulary exists (§12), because a score needs desc
 
 ### The Catalogue in OrgOS
 - Imported from the Excel master, with every validation column intact.
-- Read-only in OrgOS to begin with — see decision D1 on whether OrgOS later becomes the master.
+- Imported into OrgOS, which the Catalogue's own entry (REC-0632) names as its home.
 - **The disposition gate is built before any disposition feature** (P9).
 - A `REC-nnnn` cited in a document but absent from the Catalogue becomes a **Record admission request** to the Compliance Executive — the CDI Standard defines that request and says who assigns IDs.
 
@@ -389,22 +389,20 @@ Nothing is deleted. Everything is reversible until cut-over.
 
 ## 12. Delivery plan
 
-Ordered so each phase is useful on its own, and so Bobby sees the demonstration he asked for **before** we change any register. Durations are rough and assume one developer full-time; they move with what we learn in Phase 1.
+Each phase is useful on its own. Durations are rough and assume one developer full-time.
 
-### Phase 1 — Parser and demonstration · ~2–3 weeks · writes nothing
+### Phase 1 — Parser · ~2–3 weeks
 - The deterministic parser: document control block, Standard control blocks, implementing sections in both syntaxes, Annex A/B/C, mapping lines.
-- Catalogue import as an in-memory reference.
-- **Library census:** run the parser across every in-scope document and report how many are parseable, partially parseable, or prose. This sizes the fallback problem with data rather than assumption.
-- **Demonstration report** on the documents Bobby named — the CDI Standard, its Procedure, the Records Governance Procedure, the BCDR Standard and Procedure, and the Catalogue — showing every control's nine fields, resolution status per field, and every gap.
+- Run it across the whole Control Library to measure how many documents are in the clear v06 style and how many are prose, so we know how much fallback the rest of the build has to carry.
 
-**Exit:** Bobby has reviewed the report; the census tells us how much fallback we need.
+**Exit:** the parser reads the CDI Standard and Procedure correctly, with tests on the real documents.
 
 ### Phase 2 — Reference data · ~1–2 weeks
 - `reference/clauses.yaml` with ISO 27001 (clauses and Annex A), ISO 9001, ISO 22301 and NDPA. Point the Standards Map and Gap Analyzer at it — **this fixes both Standards Map bugs**, and can ship on its own.
-- Records Catalogue list, imported, with the disposition gate.
+- Records Catalogue list, imported from the spreadsheet, with the disposition gate.
 - Role Catalogue fields on Groups; Role Assignments list; seeded from Procedure Roles tables, then the organogram.
 
-**Exit:** every REC ID and role in the demonstration documents resolves, or is flagged with a reason.
+**Exit:** every record ID and role in the library resolves, or is flagged with a reason.
 
 ### Phase 3 — Model, review and cascade · ~2–3 weeks
 - New columns and lists provisioned.
@@ -421,40 +419,33 @@ Ordered so each phase is useful on its own, and so Bobby sees the demonstration 
 - Obligations from links; two frequencies; reference at source; freshness; routing through the scheduler, Power Automate and gap findings.
 
 ### Phase 6 — Migration and cut-over · ~2 weeks, domain by domain
-- Shadow run, matching batches, legacy triage, cut-over starting with CDI and BCDR.
+- Shadow run, matching batches, legacy triage, cut-over domain by domain.
 
-**Total: roughly 12–17 weeks**, front-loaded with the parts that prove the approach.
+**Total: roughly 12–17 weeks.**
 
 ---
 
-## 13. What I need from you
+## 13. What's needed
 
-### Documents
-| # | What | Why |
-|---|---|---|
-| R1 | **Records Retention Rule Schedule** (DRG-QI-REG-RRS) | Defines RR-01…RR-31. Without it "RR-26" is an opaque code |
-| R2 | ~~Records Systems Register~~ (DRG-QI-REG-RSR) | **Not needed after all.** The Catalogue's *Location & Retention Basis* sheet already names every system (S01 = SharePoint, S05 = SeamlessHR, …). Only useful later, if OrgOS fetches evidence from those systems automatically |
-| R3 | **Controlled organogram** — roles, reporting lines, holders, people with several roles, vacancies and acting holders | The Recognised role vocabulary |
-| R4 | **BCDR Standard** (DRG-ISMS-STD-BCDR) | Defines BCDR-01…06; we only have the Procedure that implements them |
-| R5 | **Records Governance Procedure** (DRG-QI-PRO-IRG) | Implements the IRG controls; part of the demonstration Bobby asked for |
+### From you: the organogram
+Roles, who each reports to, who holds each role (including people with several), and vacant posts with who is covering. This is the one input the system can't get on its own, and it's what fixes the roles problem.
 
-### Decisions — mostly for Bobby and Compliance
-| # | Decision | Why it matters |
-|---|---|---|
-| **D1** | **Is OrgOS the system of record for the Records Catalogue?** The Catalogue's own entry for itself, REC-0632, gives its location as *"S09 OrgOS GRC"*. If yes, OrgOS hosts the master, with admission and validation workflows. If no, OrgOS mirrors a master held elsewhere. | Decides whether Phase 2 builds a mirror or a governed register — a much bigger module. |
-| **D2** | **Which governing set is current?** The consolidated **CDI Standard** (DRG-QI-STD-CDI) holds CDI-001…021 *and* IRG-001…024 in the labelled format, with new-style codes. The **review package** has a separate IRG Standard (DRG-QI-STD-IRG-01-26) in prose, with no control IDs and old-style codes. I read the consolidated Standard as the newer one. | Decides which document we build the IRG controls from. |
-| **D3** | **How are WIP and superseded copies marked** in the Control Library — a folder, a filename convention, or the control block's `Issue Status`? Note the current CDI and BCDR documents themselves say `Issue Status: Draft`. | Ingestion must exclude them, and today excludes nothing. |
-| **D4** | **The resolution rule for each functional role:** Document Owner, Control Owner, Custodian Role, Accountable Department Head, Contract-owning Department Head. | A short, one-off governance decision. Without it these stay Blocked. |
-| **D5** | **Who sets an evidence check frequency** when the document doesn't state one? | The scheduling half of field 7. |
-| **D6** | **Evidence type taxonomy.** OrgOS enforces the 16-code taxonomy (DRG-QI-REF-EVTX-01-26). The CDI Standard's IRG-002 says the **Enterprise Record Type Taxonomy** "MUST be the authorised set of Types" — the Catalogue uses 85 types. Do the 16 codes retire? | Two taxonomies can't both be authoritative. |
-| **D7** | **May an Entra job title still own a control**, or only a Recognised role? I recommend only Recognised roles, per Bobby's line on job titles. | Decides how many existing controls go Blocked at migration. |
-| **D8** | **Who approves role vocabulary changes** — new roles, aliases, functional resolution rules? | The Role Catalogue needs an owner, as the Catalogue does. |
-| **D9** | **Existing evidence copied into OrgOS** under `Evidence/` — leave, or re-point to source? | Bobby §3. |
+### Not needed from anyone
+OrgOS already reads the SharePoint Control Library, so it picks up every Standard, Procedure and register there by itself — including the BCDR Standard and the Records Governance Procedure. If a Procedure points to a document that isn't in the library, the system flags it.
 
-### Access and time
-- Continued Graph read access to every domain folder in the GRC Control Library.
-- About **an hour with Compliance** for D4 and D8, and a **review session with Bobby** on the Phase 1 report.
-- Someone to confirm the Phase 6 matching batches for each domain — that's the slow, human part, and it's also where the data becomes trustworthy.
+### Defaults chosen — anyone can change these later
+| Question | Default |
+|---|---|
+| Where the Records Catalogue lives | Imported into OrgOS from the spreadsheet. The Catalogue's own entry (REC-0632) already names OrgOS as its home |
+| Which governing documents are current | Whatever the library holds; documents state their own status, version and what they supersede |
+| Draft and replaced documents | Skipped by folder and file naming, checked against the real library before ingestion is switched on |
+| Who "Accountable Department Head", "Document Owner" etc. is | Chosen per process or document by the reviewer when the control is confirmed |
+| Evidence check frequency the document doesn't state | Set by the reviewer at confirmation; never guessed |
+| Evidence types | New records use the Catalogue's record type; existing items keep their 16-code type |
+| Job title as a control owner | Not on its own — Bobby's email says so; only official roles |
+| Who approves role changes | Compliance lead, as for other compliance decisions today |
+| Evidence already uploaded into OrgOS | Left where it is; new evidence points to where the original is kept |
+| Retention periods | Shown as the rule code (e.g. RR-26) until the retention schedule is in the library |
 
 ---
 
