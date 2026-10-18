@@ -83,32 +83,9 @@ def _unresolved(source: str, note: str) -> Suggestion:
 #  Document code parsing
 # =============================================================================
 
-# Display code: DRG-[Function]-[Type]-[Mnemonic] (CDI Procedure Annex A, CDI-002).
-# Legacy codes carry up to two trailing 2-digit groups (serial and/or year),
-# which agents/cdi_checker/service.py's is_valid_doc_code tolerates
-# indefinitely — so they are stripped here rather than rejected.
-_TWO_DIGITS = re.compile(r"^\d{2}$")
-
-
-def parse_doc_code(code: str | None) -> tuple[str, str, str]:
-    """
-    Split a display code into (function, type, mnemonic). Returns blanks for
-    any part that cannot be read — this never raises, because a malformed code
-    should degrade the suggestion, not break the panel.
-    """
-    parts = [p for p in (code or "").strip().upper().split("-") if p]
-    if len(parts) < 3 or parts[0] != "DRG":
-        return "", "", ""
-    function = parts[1]
-    body = parts[2:]
-    # Drop legacy trailing serial / year groups.
-    while len(body) > 1 and _TWO_DIGITS.match(body[-1]):
-        body = body[:-1]
-    if not body:
-        return function, "", ""
-    type_code = body[0]
-    mnemonic = "-".join(body[1:]) if len(body) > 1 else ""
-    return function, type_code, mnemonic
+# parse_doc_code lives in cdi/codes.py with the other document-code helpers;
+# re-exported here for the callers that import it from this module.
+from cdi.codes import parse_doc_code  # noqa: E402,F401
 
 
 def family_from_path(folder_path: str | None) -> str:
