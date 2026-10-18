@@ -203,7 +203,7 @@ Every record the BCDR Procedure names resolves cleanly:
 ### Two things the workbook does not contain
 
 1. **The RR-xx rules themselves.** Every row cites a rule code (RR-11 is the most common, on 141 records) but the definitions live in *"Schedule Annex A"* — the **Records Retention Rule Schedule, DRG-QI-REG-RRS**. Without it, "RR-26" is an opaque token. **We need that register.**
-2. **The System IDs.** Rows cite S01, S06, S08, S09 and so on. Per GR-12 these come from the **Records Systems Register, DRG-QI-REG-RSR**. **We need that one too.**
+2. ~~**The System IDs.**~~ **Correction:** the *Location & Retention Basis* sheet already names every system — S01 = SharePoint (family library), S05 = SeamlessHR, S08 = Microsoft 365 and Entra ID, and so on, 16 in all. The Records Systems Register (DRG-QI-REG-RSR) is not needed to resolve them.
 
 Both are named as child documents of the CDI Standard, so they exist. Ask for them.
 
@@ -352,7 +352,7 @@ Small, safe, and it fixes the reported bug.
 - Resolve `REC-nnnn` → name, type, custodian, location, retrieval, retention, trigger, authority, disposition, privacy overlay.
 - Hard rule in code: **no automated disposition on a record whose retention is not validated** (GR-11). Build the gate before the feature.
 - Flag any `REC-nnnn` cited in a document that is not in the catalogue — that is a real finding worth reporting.
-- **Blocked on:** the Retention Rule Schedule (DRG-QI-REG-RRS) and the Records Systems Register (DRG-QI-REG-RSR).
+- **Blocked on:** the Retention Rule Schedule (DRG-QI-REG-RRS), for retention *periods* only.
 
 ### Stage 2 — A structured control parser (2–3 weeks)
 
@@ -393,7 +393,7 @@ This replaces the retired Role Register with something the framework actually de
 Worth putting straight back to Bobby:
 
 1. **The Records Retention Rule Schedule (DRG-QI-REG-RRS)** — without it RR-26 is meaningless to the system.
-2. **The Records Systems Register (DRG-QI-REG-RSR)** — to resolve S01, S06, S08, S09.
+2. ~~The Records Systems Register~~ — not needed; the Catalogue already names every system.
 3. **The controlled organogram**, with recognised roles and reporting lines.
 4. **A ruling on functional roles** — the resolution rule for each of `Document Owner`, `Control Owner`, `Custodian Role`, `Accountable Department Head`, `Contract-owning Department Head`. Short list, one-off decision.
 5. **The BCDR Standard (DRG-ISMS-STD-BCDR)** — we have the Procedure that implements BCDR-01…06 but not the Standard that defines them. For the demonstration we need both.
@@ -413,7 +413,7 @@ Short form, if it helps:
 >
 > **Three.** The role issue is structural, not an AI error. "Accountable Department Head" is correct in the document and is the custodian named in the Catalogue for REC-0676. It simply is not a directory job title, and job titles plus groups are all our resolver has to match against. CDI roles are of three kinds, and functional roles like this one resolve per process rather than to one person. We are building the role vocabulary from the controlled organogram, and until a role is recognised we will flag it rather than infer a substitute.
 >
-> To complete this we need the Retention Rule Schedule, the Records Systems Register, the controlled organogram, the BCDR Standard, and a ruling on how each functional role resolves.
+> To complete this we need the Retention Rule Schedule, the controlled organogram, the BCDR Standard, and a ruling on how each functional role resolves.
 
 ---
 

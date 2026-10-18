@@ -433,7 +433,7 @@ Ordered so each phase is useful on its own, and so Bobby sees the demonstration 
 | # | What | Why |
 |---|---|---|
 | R1 | **Records Retention Rule Schedule** (DRG-QI-REG-RRS) | Defines RR-01…RR-31. Without it "RR-26" is an opaque code |
-| R2 | **Records Systems Register** (DRG-QI-REG-RSR) | Resolves S01, S06, S08, S09 to real systems (Catalogue rule GR-12) |
+| R2 | ~~Records Systems Register~~ (DRG-QI-REG-RSR) | **Not needed after all.** The Catalogue's *Location & Retention Basis* sheet already names every system (S01 = SharePoint, S05 = SeamlessHR, …). Only useful later, if OrgOS fetches evidence from those systems automatically |
 | R3 | **Controlled organogram** — roles, reporting lines, holders, people with several roles, vacancies and acting holders | The Recognised role vocabulary |
 | R4 | **BCDR Standard** (DRG-ISMS-STD-BCDR) | Defines BCDR-01…06; we only have the Procedure that implements them |
 | R5 | **Records Governance Procedure** (DRG-QI-PRO-IRG) | Implements the IRG controls; part of the demonstration Bobby asked for |
