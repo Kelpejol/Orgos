@@ -44,6 +44,7 @@ from graph.exceptions import GraphAPIError, GraphNotFoundError
 from lifecycle.cover_suggest import REVIEW_PERIOD_DAYS, library_path_from_url, prefill_insert, suggest_cover_facts
 from lifecycle.domains import APPROVAL_ROUTES, Domain
 from lifecycle.cover_detect import detect_cover
+from lifecycle.preview import PDF_MEDIA, render_pdf
 from lifecycle.graft import graft_cover_onto_document
 from lifecycle.merge import MergeError, merge, scan_markers
 from lifecycle.schemas import CdtCoverFacts, MergeContext, RevisionHistoryEntry, StandardEntry
@@ -1975,11 +1976,10 @@ async def preview_document_pdf(
         _handle_error(exc, f"preview document {item_id}")
 
 
-_PDF_MEDIA = "application/pdf"
 _DOCX_MEDIA = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 _MEDIA_BY_EXT = {
-    "pdf": _PDF_MEDIA,
+    "pdf": PDF_MEDIA,
     "docx": _DOCX_MEDIA,
     "doc": "application/msword",
     "txt": "text/plain; charset=utf-8",
@@ -2044,26 +2044,12 @@ async def view_document_pdf(
         doc  = await _sp_to_doc(item)
         content, filename = await _document_bytes_for_display(item_id, doc)
 
-        if not filename.lower().endswith(".pdf"):
-            try:
-                _, drive_id = await resolve_compliance_drive()
-                await ensure_drive_folder(drive_id, _CDT_PREVIEW_FOLDER)
-                scratch = f"view_{item_id}.docx"
-                await upload_bytes_to_drive(drive_id, _CDT_PREVIEW_FOLDER, scratch, content)
-                content = await convert_drive_item_to_pdf(
-                    drive_id, f"{_CDT_PREVIEW_FOLDER}/{scratch}")
-            except Exception as exc:
-                logger.warning(f"View conversion failed for {item_id}: {exc}")
-                raise HTTPException(
-                    status_code=503,
-                    detail=("Could not render this document for viewing. "
-                            "Download it instead, or open it in SharePoint."),
-                )
-            filename = filename.rsplit(".", 1)[0] + ".pdf"
+        content = await render_pdf(content, filename, f"view_{item_id}.docx")
+        filename = filename.rsplit(".", 1)[0] + ".pdf"
 
         return Response(
             content=content,
-            media_type=_PDF_MEDIA,
+            media_type=PDF_MEDIA,
             headers={
                 "Content-Disposition": f'inline; filename="{filename}"',
                 "Cache-Control": "no-store",

@@ -6,6 +6,7 @@
 
 import { useState, useMemo } from "react";
 import StatusBadge from "../../components/shared/StatusBadge.jsx";
+import DocumentViewer from "../../components/shared/DocumentViewer.jsx";
 import { ErrorState, EmptyState } from "../../components/shared/LoadingState.jsx";
 import { useCurrentUserRole } from "../../hooks/useCurrentUserRole.js";
 import { useAlert } from "../../components/shared/AlertModal.jsx";
@@ -231,6 +232,9 @@ function LifecycleModal({ contract, targetStatus, onConfirm, onCancel, isPending
 
 function ContractDetail({ contract, onBack, onEdit, onAddObligation, onLifecycle, onDelete, isCompliance, isAdmin }) {
   const borderColor = STATUS_BORDER[contract.status] || "#C0C0C0";
+  // Read the contract as a PDF rather than opening the editable file.
+  const [readUrl, setReadUrl] = useState(null);
+  const onRead = (url) => setReadUrl(url);
   const transitions = LIFECYCLE_TRANSITIONS[contract.status] || [];
 
   const Row = ({ label, value, highlight, isLink }) => (
@@ -239,10 +243,12 @@ function ContractDetail({ contract, onBack, onEdit, onAddObligation, onLifecycle
         {label}
       </span>
       {isLink && value ? (
-        <a href={value} target="_blank" rel="noreferrer"
-          style={{ fontSize: 12, color: "#378ADD", wordBreak: "break-all" }}>
-          Open in SharePoint
-        </a>
+        <button onClick={() => onRead(value)}
+          style={{ fontSize: 12, fontWeight: 600, padding: 0, border: "none",
+                   background: "transparent", color: "#378ADD", cursor: "pointer",
+                   textAlign: "left" }}>
+          Read the document
+        </button>
       ) : (
         <span style={{ fontSize: 12, color: highlight || "var(--color-text-primary)", fontWeight: highlight ? 600 : 400, wordBreak: "break-word" }}>
           {value ?? "—"}
@@ -255,6 +261,11 @@ function ContractDetail({ contract, onBack, onEdit, onAddObligation, onLifecycle
 
   return (
     <div style={{ maxWidth: 600 }}>
+      {readUrl && (
+        <DocumentViewer fileUrl={readUrl}
+          doc={{ Title: contract.title, DocumentCode: contract.contract_reference }}
+          onClose={() => setReadUrl(null)} />
+      )}
       <button onClick={onBack}
         style={{ fontSize: 12, color: "var(--color-text-info)", background: "none", border: "none", cursor: "pointer", padding: 0, marginBottom: 16 }}>
         ← Back to contracts

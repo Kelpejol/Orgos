@@ -14,7 +14,10 @@ import { useEffect, useState } from "react";
 
 const BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
-export default function DocumentViewer({ doc, onClose, onDownload }) {
+// `doc.id` reads a lifecycle document (cover facts merged in). `fileUrl` reads
+// any document in Dragnet's SharePoint by its URL — the registers hold a URL,
+// not a lifecycle id, and both should mean the same thing: read it.
+export default function DocumentViewer({ doc = {}, fileUrl, onClose, onDownload }) {
   const [url, setUrl] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -25,10 +28,10 @@ export default function DocumentViewer({ doc, onClose, onDownload }) {
     let objectUrl = "";
     (async () => {
       try {
-        const resp = await fetch(
-          `${BASE}/api/v1/lifecycle/documents/${doc.id}/view.pdf`,
-          { credentials: "include" },
-        );
+        const src = fileUrl
+          ? `${BASE}/api/v1/sharepoint/view.pdf?url=${encodeURIComponent(fileUrl)}`
+          : `${BASE}/api/v1/lifecycle/documents/${doc.id}/view.pdf`;
+        const resp = await fetch(src, { credentials: "include" });
         if (!resp.ok) {
           let detail = `Could not open this document (${resp.status}).`;
           try { detail = (await resp.json()).detail || detail; } catch { /**/ }
@@ -47,7 +50,7 @@ export default function DocumentViewer({ doc, onClose, onDownload }) {
       live = false;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [doc.id]);
+  }, [doc.id, fileUrl]);
 
   const btn = (bg, fg, bd) => ({
     padding: "7px 14px", fontSize: 12, borderRadius: 8, fontWeight: 600,

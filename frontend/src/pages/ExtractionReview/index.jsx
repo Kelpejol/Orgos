@@ -10,6 +10,7 @@ import { useState, useMemo, useEffect } from "react";
 import { useCurrentUserRole } from "../../hooks/useCurrentUserRole.js";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import StatusBadge from "../../components/shared/StatusBadge.jsx";
+import ReadModal from "../../components/shared/DocumentViewer.jsx";
 import { Field } from "../../components/shared/Forms.jsx";
 import { LoadingState, ErrorState, EmptyState } from "../../components/shared/LoadingState.jsx";
 import UserSearchField from "../../components/shared/UserSearchField.jsx";
@@ -616,6 +617,7 @@ const SecondReviewModal = ({ open, item, onClose, onSubmit, isPending }) => {
 
 const DocumentViewer = ({ url, docCode }) => {
   const [expanded, setExpanded] = useState(false);
+  const [readUrl, setReadUrl] = useState(null);
 
   // Use the URL directly in the iframe — SharePoint handles sharing link redirects.
   // The wdStartOn and action=embedview params only work with direct file URLs, not sharing links.
@@ -623,6 +625,10 @@ const DocumentViewer = ({ url, docCode }) => {
 
   return (
     <div style={{ marginTop: 12 }}>
+      {readUrl && (
+        <ReadModal fileUrl={readUrl} doc={{ Title: docCode, DocumentCode: docCode }}
+          onClose={() => setReadUrl(null)} />
+      )}
       <div style={{ display: "flex", justifyContent: "space-between",
                     alignItems: "center", marginBottom: 6 }}>
         <div style={{ fontSize: 11, fontWeight: 600, color: "#0C447C" }}>
@@ -630,12 +636,12 @@ const DocumentViewer = ({ url, docCode }) => {
         </div>
         <div style={{ display: "flex", gap: 6 }}>
          
-          <a href={url} target="_blank" rel="noreferrer"
+          <button onClick={() => setReadUrl(url)}
             style={{ fontSize: 11, padding: "3px 10px", borderRadius: 5,
                      border: "1px solid #85B7EB", background: "transparent",
-                     color: "#0C447C", textDecoration: "none" }}>
-            Open in SharePoint ↗
-          </a>
+                     color: "#0C447C", cursor: "pointer" }}>
+            Read the document
+          </button>
         </div>
       </div>
 
@@ -644,7 +650,7 @@ const DocumentViewer = ({ url, docCode }) => {
                       border: "1px solid #85B7EB" }}>
           <div style={{ padding: "10px 14px", background: "#E6F1FB",
                         fontSize: 11, color: "#0C447C" }}>
-            SharePoint preview — use "Open in SharePoint ↗" for full editing access.
+            SharePoint preview — use "Read the document" for a full-page read.
           </div>
           <iframe
             src={embedUrl}

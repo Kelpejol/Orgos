@@ -132,3 +132,52 @@ async def extract_from_sharepoint(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail=f"Extraction failed: {exc}. Check that Ollama is running.",
         )
+
+# =============================================================================
+#  Read a SharePoint document as a PDF
+#
+#  The registers hold a document's SharePoint webUrl rather than a lifecycle
+#  item id, so they cannot use the lifecycle view endpoint. This renders any
+#  document in Dragnet's own SharePoint, by URL, so "View" means the same
+#  thing everywhere: read it, do not open the editable source.
+# =============================================================================
+
+@router.get("/view.pdf")
+async def view_sharepoint_document(
+    url: str = Query(..., description="The document's SharePoint webUrl"),
+    user: CurrentUser = Depends(get_current_user),
+):
+    from fastapi import Response
+
+    from graph.client import download_file_from_sharepoint
+    from lifecycle.preview import PDF_MEDIA, allowed_sharepoint_url, render_pdf
+    from lifecycle.router import _filename_from_sharepoint_url
+
+    if not allowed_sharepoint_url(url):
+        raise HTTPException(
+            status_code=400,
+            detail="That URL is not a Dragnet SharePoint document.",
+        )
+
+    try:
+        content, content_type = await download_file_from_sharepoint(url)
+    except Exception as exc:
+        logger.warning(f"Could not fetch {url} for viewing: {exc}")
+        raise HTTPException(status_code=404, detail="That document could not be fetched.")
+
+    # The stored URL is usually a Word viewer link (".../Doc.aspx?file=X.docx"),
+    # whose last path segment is the viewer page, not the file.
+    filename = _filename_from_sharepoint_url(url, content_type)
+    # One scratch copy per document, so repeated reads overwrite rather than pile up.
+    scratch = f"view_{abs(hash(url))}.docx"
+    content = await render_pdf(content, filename, scratch)
+
+    return Response(
+        content=content,
+        media_type=PDF_MEDIA,
+        headers={
+            "Content-Disposition":
+                f'inline; filename="{filename.rsplit(".", 1)[0]}.pdf"',
+            "Cache-Control": "no-store",
+        },
+    )

@@ -13,6 +13,7 @@ import { useCurrentUserRole } from "./hooks/useCurrentUserRole.js";
 import { AlertProvider } from "./components/shared/AlertModal.jsx";
 import AccessDenied from "./pages/shared/AccessDenied.jsx";
 import LifecycleFeedback from "./pages/LifecycleFeedback/index.jsx";
+import ReadDocument from "./pages/ReadDocument/index.jsx";
 import LifecycleApprove from "./pages/LifecycleApprove/index.jsx";
 import ChatButton from "./components/chat/ChatButton.jsx";
 import ChatPanel from "./components/chat/ChatPanel.jsx";
@@ -409,6 +410,9 @@ export default function OrgOS() {
     <AlertProvider>
       <Routes>
         {/* Standalone pages — no sidebar, accessible via direct URL from Teams cards */}
+        {/* Linked from Teams — read a document without opening the editable
+            source. See pages/ReadDocument. */}
+        <Route path="/read/:id" element={<ReadDocument />} />
         <Route path="/lifecycle/feedback/:id" element={<LifecycleFeedback />} />
         <Route path="/lifecycle/approve/:id"  element={<LifecycleApprove />} />
         {/* All other paths → full app shell with sidebar */}

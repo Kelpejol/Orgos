@@ -15,6 +15,7 @@ import ReadOnlyBanner from "../../components/shared/ReadOnlyBanner.jsx";
 import ReviseDocumentModal from "../../components/shared/ReviseDocumentModal.jsx";
 import DocumentForm from "./DocumentForm.jsx";
 import CdtCoverPanel from "../../components/shared/CdtCoverPanel.jsx";
+import DocumentViewer from "../../components/shared/DocumentViewer.jsx";
 import { documentsApi } from "../../api/grcApi.js";
 
 const COLS = [
@@ -52,6 +53,7 @@ export default function DocumentRegister({ go }) {
   const [editing, setEditing] = useState(null);
   const [revising, setRevising] = useState(false);
   const [showCdtCover, setShowCdtCover] = useState(false);
+  const [readUrl, setReadUrl] = useState(null);
 
   const { isCompliance } = useCurrentUserRole();
   const { confirm: showConfirm, notify } = useAlert();
@@ -74,6 +76,10 @@ export default function DocumentRegister({ go }) {
   if (selected) {
     return (
       <div style={{ maxWidth: 560 }}>
+        {readUrl && (
+          <DocumentViewer fileUrl={readUrl} doc={{ Title: selected.title,
+            DocumentCode: selected.document_code }} onClose={() => setReadUrl(null)} />
+        )}
         <button
           onClick={() => setSelected(null)}
           style={{ fontSize: 12, color: "var(--color-text-info)", background: "none", border: "none", cursor: "pointer", padding: 0, marginBottom: 12 }}
@@ -102,20 +108,20 @@ export default function DocumentRegister({ go }) {
           >
             <InlineLink label={`${selected.linked_controls_count || 0} extracted candidates`} onClick={() => go("control")} />
           </span>
+          {/* Read it as a PDF rather than opening the editable source —
+              the same "View" the Document Lifecycle board gives. */}
           {selected.sharepoint_url && (
-            <a
-              href={selected.sharepoint_url}
-              target="_blank"
-              rel="noreferrer"
+            <button
+              onClick={() => setReadUrl(selected.sharepoint_url)}
               style={{
-                fontSize: 12,
-                color: "var(--color-text-info)",
-                textDecoration: "underline",
+                fontSize: 12, fontWeight: 600, padding: "7px 14px", borderRadius: 8,
+                border: "1.5px solid var(--color-border-tertiary)",
+                background: "transparent", color: "var(--color-text-primary)",
                 cursor: "pointer",
               }}
             >
-              Open document in SharePoint ↗
-            </a>
+              Read the document
+            </button>
           )}
         </div>
         <div style={{ marginTop: 16, display: "flex", gap: 8 }}>
