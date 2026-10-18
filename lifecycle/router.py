@@ -41,7 +41,7 @@ from graph.client import (
     upload_bytes_to_drive,
 )
 from graph.exceptions import GraphAPIError, GraphNotFoundError
-from lifecycle.cover_suggest import REVIEW_PERIOD_DAYS, library_path_from_url, suggest_cover_facts
+from lifecycle.cover_suggest import REVIEW_PERIOD_DAYS, library_path_from_url, prefill_insert, suggest_cover_facts
 from lifecycle.domains import APPROVAL_ROUTES, Domain
 from lifecycle.graft import graft_cover_onto_document
 from lifecycle.merge import MergeError, merge, scan_markers
@@ -1787,20 +1787,7 @@ async def suggest_cover(
         doc  = await _sp_to_doc(item)
         doc["cover"] = _load_cdt_cover(doc).model_dump()
 
-        register_docs: list[dict] = []
-        try:
-            from grc import service as grc_service
-            for d in await grc_service.get_documents():
-                register_docs.append({
-                    "document_code": d.document_code,
-                    "title": d.title,
-                    "cdt_cover": d.cdt_cover.model_dump() if d.cdt_cover else {},
-                })
-        except Exception as exc:
-            # Without the Register we simply lose the parent signal — the
-            # function code still resolves most documents, so degrade rather
-            # than fail the whole panel.
-            logger.warning(f"Cover suggestion for {item_id}: could not read the Document Register: {exc}")
+        register_docs = await _register_docs_for_suggest(item_id)
 
         resolved_path = folder_path or library_path_from_url(doc.get("SharePointFileUrl", ""))
         approved_on = _parse_iso_date(doc.get("ApprovedDate"))
@@ -1816,6 +1803,24 @@ async def suggest_cover(
         raise
     except Exception as exc:
         _handle_error(exc, f"suggest cover facts {item_id}")
+
+
+async def _register_docs_for_suggest(item_id: str) -> list[dict]:
+    """Document Register rows in the shape cover_suggest expects ([] if unreadable)."""
+    register_docs: list[dict] = []
+    try:
+        from grc import service as grc_service
+        for d in await grc_service.get_documents():
+            register_docs.append({
+                "document_code": d.document_code,
+                "title": d.title,
+                "cdt_cover": d.cdt_cover.model_dump() if d.cdt_cover else {},
+            })
+    except Exception as exc:
+        # Without the Register we simply lose the parent signal — the function
+        # code still resolves most documents, so degrade rather than fail.
+        logger.warning(f"Cover suggestion for {item_id}: could not read the Document Register: {exc}")
+    return register_docs
 
 
 def _parse_iso_date(value: Any) -> Optional[date]:
@@ -2158,42 +2163,9 @@ async def upload_doc_file(
                 logger.warning(f"CDI check falling back to raw upload for {item_id}: {exc}")
 
         cdi_result = await run_cdi_check(cdi_check_bytes, filename, doc_code)
-
+        cdi_status, cdi_failures = _cdi_result_to_storage(cdi_result)
         if cdi_result.get("error"):
-            cdi_status   = "Error"
-            cdi_failures = json.dumps([{
-                "check":  "CDI",
-                "detail": cdi_result["error"],
-                "fix":    "Resolve the issue above, then re-upload the document.",
-            }])
             logger.warning(f"CDI check error for lifecycle {item_id}: {cdi_result['error']}")
-        elif cdi_result["passed"]:
-            cdi_status   = "Passed"
-            cdi_failures = ""
-        else:
-            cdi_status   = "Failed"
-            cdi_failures = json.dumps([
-                {
-                    # back-compat keys (existing readers)
-                    "check":  c["check_id"],
-                    "detail": c["finding"],
-                    "fix":    c.get("proposed_fix", ""),
-                    # full finding — everything the deterministic fixer needs
-                    "check_id":     c["check_id"],
-                    "check_name":   c.get("check_name", ""),
-                    "finding":      c["finding"],
-                    "current_text": c.get("current_text", ""),
-                    "proposed_fix": c.get("proposed_fix", ""),
-                    "find":         c.get("find", ""),
-                    "replace":      c.get("replace", ""),
-                    "anchor":       c.get("anchor", ""),
-                    "needs_choice": c.get("needs_choice", False),
-                    "choices":      c.get("choices", []),
-                    "fixable":      c.get("fixable", "manual"),
-                    "confidence":   c.get("confidence", 0),
-                }
-                for c in cdi_result["checks"] if c["result"] == "FAIL"
-            ])
         logger.info(f"CDI check for lifecycle {item_id}: {cdi_status} — {cdi_result.get('fail_count', 0)} failures")
     except Exception as exc:
         logger.warning(f"CDI check failed to run for {item_id}: {exc}")
@@ -2449,7 +2421,11 @@ Return only the JSON array, no other text."""
 #  working copy, verified, with the original preserved in SharePoint history.
 # =============================================================================
 
-_FIX_APPLICABLE_KINDS = {"auto", "choice", "manual"}  # not "structural"/"none"
+_FIX_APPLICABLE_KINDS = {"auto", "choice", "manual", "insert"}  # not "structural"/"none"
+
+
+def _is_warning(failure: dict) -> bool:
+    return failure.get("severity") == "warning" or failure.get("result") == "WARN"
 
 
 def _load_cdi_failures(doc: dict) -> list[dict]:
@@ -2481,6 +2457,9 @@ class ConfirmedFix(BaseModel):
     find: str = ""
     replace: str = ""
     occurrence_index: Optional[int] = None
+    # "replace" (default) or "insert" — insert adds missing content
+    action: str = "replace"
+    insert: Optional[dict] = None
 
 
 class ApplyCdiFixes(BaseModel):
@@ -2519,7 +2498,7 @@ async def cdi_fix_plan(
             doc_code = item.get("fields", {}).get("DocumentCode", "")
             recheck = await run_cdi_check(file_bytes, filename, doc_code)
             if not recheck.get("error"):
-                failures = [c for c in recheck.get("checks", []) if c.get("result") == "FAIL"]
+                failures = [c for c in recheck.get("checks", []) if c.get("result") in ("FAIL", "WARN")]
         except Exception as exc:
             logger.warning(f"CDI re-check for fix plan {item_id} failed, using stored failures: {exc}")
 
@@ -2547,9 +2526,26 @@ async def cdi_fix_plan(
                 occ_counts[fid] = len(res.occurrences)
                 contexts[fid] = [o.context for o in res.occurrences[:5]]
 
+        # Pre-fill insert templates with facts OrgOS already holds (owner role,
+        # parent document, effective date). Best-effort: never blocks the plan.
+        cover_sugg = None
+        if any(f.get("insert") for f in failures):
+            try:
+                doc["cover"] = _load_cdt_cover(doc).model_dump()
+                cover_sugg = suggest_cover_facts(
+                    doc, await _register_docs_for_suggest(item_id),
+                    folder_path=library_path_from_url(doc.get("SharePointFileUrl", "")),
+                    approved_on=_parse_iso_date(doc.get("ApprovedDate")),
+                )
+            except Exception as exc:
+                logger.warning(f"CDI fix pre-fill for {item_id} skipped: {exc}")
+
         findings = []
         for i, f in enumerate(failures):
             fid = _fix_id_for(i, f)
+            if cover_sugg and f.get("insert"):
+                f = {**f, "insert": prefill_insert(
+                    f.get("check_id") or f.get("check", ""), f["insert"], cover_sugg, doc)}
             fixable = f.get("fixable", "manual")
             find = f.get("find", "")
             loc = locate_status.get(fid, "unknown")
@@ -2557,7 +2553,7 @@ async def cdi_fix_plan(
             can_apply = (
                 is_docx and fixable in _FIX_APPLICABLE_KINDS
                 and bool(find) and loc in ("located", "ambiguous")
-            )
+            ) or (is_docx and fixable == "insert" and bool(f.get("insert")))
             findings.append({
                 "fix_id":        fid,
                 "check_id":      f.get("check_id") or f.get("check", ""),
@@ -2575,12 +2571,18 @@ async def cdi_fix_plan(
                 "occurrences":   occ_counts.get(fid, 0),
                 "contexts":      contexts.get(fid, []),
                 "can_apply":     can_apply,
+                "insert":        f.get("insert"),
+                "severity":      "warning" if _is_warning(f) else "error",
             })
 
         return {
             "document_id": item_id,
             "title":       doc.get("Title", ""),
             "cdi_status":  doc.get("CDIStatus", ""),
+            # The card shows the count saved at the last upload; this plan is a
+            # fresh re-check of the live file, so the two can differ.
+            "stored_count": sum(1 for f in _load_cdi_failures(doc) if not _is_warning(f)),
+            "live_count":   sum(1 for f in findings if f["severity"] == "error"),
             "editable":    is_docx,
             "editable_note": ("" if is_docx else
                               "This document is a PDF — fixes are shown as guidance but "
@@ -2681,9 +2683,11 @@ def _cdi_result_to_storage(cdi_result: dict) -> tuple[str, str]:
             "check": "CDI", "detail": cdi_result["error"],
             "fix": "Resolve the issue above, then re-upload the document.",
         }])
-    if cdi_result.get("passed"):
-        return "Passed", ""
-    return "Failed", json.dumps([
+    flagged = [c for c in cdi_result["checks"] if c["result"] in ("FAIL", "WARN")]
+    status = "Passed" if cdi_result.get("passed") else "Failed"
+    if not flagged:
+        return status, ""
+    return status, json.dumps([
         {
             "check": c["check_id"], "detail": c["finding"], "fix": c.get("proposed_fix", ""),
             "check_id": c["check_id"], "check_name": c.get("check_name", ""),
@@ -2691,9 +2695,11 @@ def _cdi_result_to_storage(cdi_result: dict) -> tuple[str, str]:
             "proposed_fix": c.get("proposed_fix", ""), "find": c.get("find", ""),
             "replace": c.get("replace", ""), "anchor": c.get("anchor", ""),
             "needs_choice": c.get("needs_choice", False), "choices": c.get("choices", []),
-            "fixable": c.get("fixable", "manual"), "confidence": c.get("confidence", 0),
+            "fixable": c.get("fixable", "manual"), "insert": c.get("insert"),
+            "confidence": c.get("confidence", 0),
+            "severity": "warning" if c["result"] == "WARN" else "error",
         }
-        for c in cdi_result["checks"] if c["result"] == "FAIL"
+        for c in flagged
     ])
 
 

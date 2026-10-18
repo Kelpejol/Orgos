@@ -16,6 +16,7 @@ import apiClient from "../../api/grcApi.js";
 const C = {
   auto:    { fg: "#085041", bg: "#E7F5F0", bd: "#9FD9C8", label: "Auto-fix" },
   choice:  { fg: "#8A5A00", bg: "#FDF3E2", bd: "#F0CE94", label: "Needs a choice" },
+  insert:  { fg: "#3C3489", bg: "#EEEDFE", bd: "#AFA9EC", label: "Add missing section" },
   structural: { fg: "#3C3489", bg: "#EEEDFE", bd: "#AFA9EC", label: "Control block" },
   manual:  { fg: "#6B7280", bg: "#F2F3F5", bd: "#D3D7DE", label: "Manual" },
   none:    { fg: "#6B7280", bg: "#F2F3F5", bd: "#D3D7DE", label: "—" },
@@ -26,6 +27,11 @@ const kindOf = (f) => {
   }
   return f.fixable || "manual";
 };
+
+// Insert fixes ship a template with [bracketed] gaps. They must be filled in
+// before the fix can be confirmed — placeholders never go into a controlled doc.
+const hasPlaceholder = (t) => /\[[^\]]+\]/.test(t || "");
+const insertText = (f, d) => d?.insert_text ?? f.insert?.text ?? "";
 
 // Escape + highlight the `find` fragment inside a sentence for display.
 function Highlight({ text, find }) {
@@ -65,8 +71,11 @@ const badge = (kind) => {
 function FixCard({ f, decision, onChange }) {
   const kind = kindOf(f);
   const c = C[kind] || C.manual;
+  const isInsert = kind === "insert";
   const applicable = kind === "auto" || kind === "choice";
   const confirmed = decision?.action === "confirm";
+  const itext = isInsert ? insertText(f, decision) : "";
+  const insertUnfilled = isInsert && (!itext.trim() || hasPlaceholder(itext));
   const replace = decision?.replace ?? f.replace ?? "";
   const occ = decision?.occurrence_index ?? null;
   const ambiguous = f.locate_status === "ambiguous" && f.occurrences > 1;
@@ -84,6 +93,12 @@ function FixCard({ f, decision, onChange }) {
       {/* header */}
       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
         <span style={{ fontSize: 11, fontWeight: 800, color: "var(--color-text-primary)" }}>{f.check_id}</span>
+        {f.severity === "warning" && (
+          <span style={{ fontSize: 10, fontWeight: 700, color: "#8A5A00", background: "#FDF3E2",
+            border: "1px solid #F0CE94", borderRadius: 20, padding: "2px 9px", textTransform: "uppercase" }}>
+            Warning · optional
+          </span>
+        )}
         <span style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>{f.check_name}</span>
         {badge(kind)}
         {typeof f.confidence === "number" && f.confidence > 0 && (
@@ -94,8 +109,41 @@ function FixCard({ f, decision, onChange }) {
       {/* finding */}
       <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 6 }}>{f.finding}</div>
 
-      {/* locatable fix: show in-document context + before/after */}
-      {applicable ? (
+      {isInsert ? (
+        <>
+          <div style={{ marginTop: 10, fontSize: 11, fontWeight: 700, color: "var(--color-text-tertiary)",
+            textTransform: "uppercase", letterSpacing: "0.4px" }}>
+            {f.insert.heading ? `Will add a “${f.insert.heading}” ${f.insert.kind === "table" ? "table" : "section"}`
+                              : "Will add this line"}
+            {f.insert.position === "top" ? " at the top" : f.insert.position === "before_first_heading" ? " before the first section" : " at the end"}
+          </div>
+          <textarea value={itext} rows={f.insert.kind === "table" ? 3 : 2}
+            onChange={(e) => onChange({ action: "confirm", insert_text: e.target.value })}
+            style={{ marginTop: 4, width: "100%", padding: "8px 10px", fontSize: 12.5, borderRadius: 8,
+              fontFamily: "inherit", resize: "vertical",
+              border: `1.5px solid ${insertUnfilled ? C.choice.bd : "var(--color-border-tertiary)"}`,
+              background: "var(--color-background-primary)", color: "var(--color-text-primary)" }} />
+          <div style={{ fontSize: 11, marginTop: 4, color: insertUnfilled ? C.choice.fg : "var(--color-text-tertiary)" }}>
+            {f.insert.kind === "table" ? "One row per line, columns separated by “|”. " : ""}
+            {insertUnfilled ? "Replace the [bracketed] parts with real content to enable this fix."
+                            : "Edit if needed, then confirm."}
+          </div>
+          <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+            <button onClick={() => onChange({ action: "confirm", insert_text: itext })} disabled={insertUnfilled}
+              style={{ flex: 1, padding: "8px", fontSize: 12, fontWeight: 600, borderRadius: 8,
+                border: `1.5px solid ${confirmed ? c.fg : c.bd}`,
+                background: confirmed ? c.fg : c.bg, color: confirmed ? "#fff" : c.fg,
+                cursor: insertUnfilled ? "not-allowed" : "pointer", opacity: insertUnfilled ? 0.5 : 1 }}>
+              {confirmed && !insertUnfilled ? "✓ Will add" : "Confirm & add"}
+            </button>
+            <button onClick={() => onChange({ action: "skip" })}
+              style={{ padding: "8px 14px", fontSize: 12, borderRadius: 8,
+                border: `1.5px solid ${decision?.action === "skip" ? "#C0C0C0" : "var(--color-border-tertiary)"}`,
+                background: decision?.action === "skip" ? "#EDEDED" : "transparent",
+                color: "var(--color-text-secondary)", cursor: "pointer" }}>Skip</button>
+          </div>
+        </>
+      ) : applicable ? (
         <>
           <div style={{ marginTop: 10, fontSize: 11, fontWeight: 700, color: "var(--color-text-tertiary)",
             textTransform: "uppercase", letterSpacing: "0.4px" }}>In the document</div>
@@ -278,7 +326,7 @@ export default function CdiFixPanel({ docId, docCode, onClose }) {
 
   const findings = plan?.findings || [];
   const counts = useMemo(() => {
-    const c = { auto: 0, choice: 0, structural: 0, manual: 0 };
+    const c = { auto: 0, choice: 0, insert: 0, structural: 0, manual: 0 };
     findings.forEach((f) => { c[kindOf(f)] = (c[kindOf(f)] || 0) + 1; });
     return c;
   }, [findings]);
@@ -290,13 +338,20 @@ export default function CdiFixPanel({ docId, docCode, onClose }) {
       .filter(({ f, d }) => {
         if (!d || d.action !== "confirm") return false;
         const kind = kindOf(f);
+        if (kind === "insert") {
+          const t = insertText(f, d);
+          return !!t.trim() && !hasPlaceholder(t);
+        }
         if (kind !== "auto" && kind !== "choice") return false;
         const replace = d.replace ?? f.replace ?? "";
         if (!replace.trim() && kind === "choice") return false;
         if (f.locate_status === "ambiguous" && d.occurrence_index == null) return false;
         return true;
       })
-      .map(({ f, d }) => ({
+      .map(({ f, d }) => kindOf(f) === "insert" ? ({
+        fix_id: f.fix_id, check_id: f.check_id, action: "insert",
+        insert: { ...f.insert, text: insertText(f, d) },
+      }) : ({
         fix_id: f.fix_id, check_id: f.check_id, find: f.find,
         replace: d.replace ?? f.replace ?? "",
         occurrence_index: d.occurrence_index ?? null,
@@ -355,8 +410,15 @@ export default function CdiFixPanel({ docId, docCode, onClose }) {
             <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap", fontSize: 11 }}>
               {counts.auto > 0 && <Pill c={C.auto}>{counts.auto} one-click</Pill>}
               {counts.choice > 0 && <Pill c={C.choice}>{counts.choice} need a choice</Pill>}
+              {counts.insert > 0 && <Pill c={C.insert}>{counts.insert} missing section{counts.insert === 1 ? "" : "s"} to add</Pill>}
               {counts.structural > 0 && <Pill c={C.structural}>{counts.structural} control block</Pill>}
               {counts.manual > 0 && <Pill c={C.manual}>{counts.manual} manual</Pill>}
+            </div>
+          )}
+          {plan && !result && plan.stored_count != null && plan.stored_count !== plan.live_count && (
+            <div style={{ marginTop: 10, fontSize: 11.5, color: "var(--color-text-secondary)" }}>
+              The document card shows {plan.stored_count} from the last upload. This list is a fresh
+              check of the current file ({plan.live_count}); the card updates after you apply.
             </div>
           )}
           {plan?.editable === false && !result && (

@@ -605,3 +605,69 @@ def suggest_cover_facts(
         effective_date=effective,
         next_review_due=next_review,
     )
+
+
+# =============================================================================
+#  CDI fix pre-fill
+#
+#  The CDI fix modal proposes template text for missing sections ("Document
+#  Owner: [Role title]"). Where OrgOS already holds the answer, replace the
+#  [bracketed] gap with it. Only RESOLVED suggestions are used — an unresolved
+#  one leaves the placeholder, so the reviewer still has to decide (and the
+#  server refuses to write a placeholder). The effective date is never invented:
+#  it is stamped on approval (see suggest_dates).
+# =============================================================================
+
+_DOC_NOUN = {"policy": "policy", "procedure": "procedure", "sop": "procedure",
+             "standard": "standard", "guideline": "guideline", "guidelines": "guideline",
+             "framework": "framework", "manual": "manual", "form": "form"}
+
+
+def _usable(s: Suggestion) -> str:
+    return s.value.strip() if s.confidence != Confidence.UNRESOLVED and s.value.strip() else ""
+
+
+def prefill_insert(check_id: str, insert: Optional[dict], suggestions: CoverSuggestions,
+                   lifecycle_doc: dict) -> Optional[dict]:
+    """Return `insert` with known facts substituted for its placeholders."""
+    if not insert or not insert.get("text"):
+        return insert
+    text = insert["text"]
+    title = (lifecycle_doc.get("Title") or "").strip()
+    noun = _DOC_NOUN.get((lifecycle_doc.get("DocumentType") or "").strip().lower(), "document")
+
+    if check_id in ("CDI-03", "CDI-04") and title:
+        # Name what the document is; the substance is still the author's call.
+        if check_id == "CDI-03":
+            text = f"This {noun} establishes [what {title} controls and why it exists]."
+        else:
+            text = f"This {noun} applies to [who and what {title} covers] at Dragnet Solutions Limited."
+    elif check_id == "CDI-12":
+        owner = _usable(suggestions.owner)
+        if owner:
+            text = f"Document Owner: {owner}"
+    elif check_id == "CDI-14":
+        eff = _usable(suggestions.effective_date)
+        if eff:
+            text = f"Effective Date: {eff}"
+    elif check_id == "CDI-15":
+        version = _cover_value(lifecycle_doc, "version")
+        if version:
+            text = f"Version: {version}"
+    elif check_id == "CDI-10":
+        parent = _usable(suggestions.parent_document)
+        if parent:
+            text = parent
+    elif check_id == "CDI-02":
+        owner = _usable(suggestions.owner)
+        eff = _usable(suggestions.effective_date)
+        header, _, row = text.partition("\n")
+        cells = [c.strip() for c in row.split("|")]
+        if len(cells) == 5:
+            if eff:
+                cells[1] = eff
+            if owner:
+                cells[2] = owner
+            row = " | ".join(cells)
+        text = f"{header}\n{row}"
+    return {**insert, "text": text}

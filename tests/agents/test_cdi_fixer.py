@@ -157,3 +157,42 @@ def test_amend_replace_and_missing_anchor():
         "find": "text that is not present", "text": "new line"}])
     assert out[0].status == "skipped_not_found"
     assert _texts(nb) == _texts(b)
+
+
+# ── structural inserts (missing sections / lines / tables) ───────────────────
+def _insert(heading, text, kind="section", position="end", fix_id="i1"):
+    return {"fix_id": fix_id, "check_id": "CDI-03", "action": "insert",
+            "insert": {"heading": heading, "text": text, "kind": kind, "position": position}}
+
+
+def test_insert_section_before_first_heading():
+    d = Document()
+    d.add_paragraph("Change Management Procedure")
+    d.add_paragraph("Definitions", style="Heading 1")
+    d.add_paragraph("Some body.")
+    b = io.BytesIO(); d.save(b)
+    nb, out = apply_fixes(b.getvalue(), [_insert("Purpose", "This procedure establishes change control.",
+                                                 position="before_first_heading")])
+    assert out[0].status == "applied"
+    t = _text(nb).splitlines()
+    assert t.index("Purpose") < t.index("Definitions")
+
+
+def test_insert_table_and_line():
+    b = _build(["Body text."])
+    nb, out = apply_fixes(b, [
+        _insert("Revision History", "Version | Date\n1.0 | 01/01/2026", kind="table", fix_id="t"),
+        {"fix_id": "l", "check_id": "CDI-15", "action": "insert",
+         "insert": {"kind": "line", "position": "top", "text": "Version: 1.0"}},
+    ])
+    assert [o.status for o in out] == ["applied", "applied"]
+    d = Document(io.BytesIO(nb))
+    assert d.paragraphs[0].text == "Version: 1.0"
+    assert d.tables[0].cell(1, 0).text == "1.0"
+
+
+def test_insert_refuses_unfilled_placeholders():
+    b = _build(["Body text."])
+    nb, out = apply_fixes(b, [_insert("Scope", "Applies to [who and what].")])
+    assert out[0].status == "needs_input"
+    assert "Scope" not in _text(nb)

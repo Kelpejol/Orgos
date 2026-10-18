@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import io
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Iterable, Optional
 
@@ -311,6 +312,13 @@ def apply_fixes(docx_bytes: bytes, fixes: list[dict]) -> tuple[bytes, list[FixOu
 
     for fx in fixes:
         try:
+            if (fx.get("action") or "").lower() == "insert":
+                outcome = _apply_insert(
+                    doc, str(fx.get("fix_id", "")), str(fx.get("check_id", "")),
+                    fx.get("insert") or {},
+                )
+                outcomes.append(outcome)
+                continue
             outcome = _apply_one(
                 doc,
                 fix_id=str(fx.get("fix_id", "")),
@@ -345,6 +353,108 @@ def preview_locations(docx_bytes: bytes, findings: list[dict]) -> dict[str, Loca
         find = f.get("find", "") or ""
         out[fid] = locate(doc, find) if find.strip() else LocateResult("not_found")
     return out
+
+
+# =============================================================================
+#  Structural inserts — add a missing section / table / cover line
+#
+#  CDI-02..05, 09..12, 14, 15 fail because something is ABSENT, so there is no
+#  text to find. The reviewer supplies (or accepts a template for) the missing
+#  content and we drop it in at a deterministic position. Same safety contract:
+#  no LLM, verified after insert, rolled back if the verify fails.
+#    position: "before_first_heading" | "top" | "end"
+#    kind:     "section" (heading + paragraphs) | "table" (heading + pipe rows)
+#              | "line" (single labelled paragraph, no heading)
+# =============================================================================
+
+def _is_heading(p: Paragraph) -> bool:
+    try:
+        return (p.style.name or "").lower().startswith("heading") and bool(p.text.strip())
+    except Exception:
+        return False
+
+
+def _insertion_anchor(doc: Document, position: str):
+    """Return (paragraph, 'before') to insert relative to, or (None, 'end')."""
+    paras = doc.paragraphs
+    if position == "top" and paras:
+        return paras[0], "before"
+    if position == "before_first_heading":
+        # skip index 0: it is usually the title, which may itself be a Heading
+        for p in paras[1:]:
+            if _is_heading(p):
+                return p, "before"
+    return None, "end"
+
+
+def _new_paragraph(doc: Document, text: str, *, heading: bool = False) -> Paragraph:
+    para = doc.add_paragraph()           # appended at the end; moved by caller
+    if heading:
+        try:
+            para.style = doc.styles["Heading 1"]
+            para.add_run(text)
+        except KeyError:
+            para.add_run(text).bold = True
+    else:
+        para.add_run(text)
+    return para
+
+
+def _apply_insert(doc: Document, fix_id: str, check_id: str, spec: dict) -> FixOutcome:
+    heading = (spec.get("heading") or "").strip()
+    text = (spec.get("text") or "").strip()
+    kind = (spec.get("kind") or "section").lower()
+    position = spec.get("position") or "end"
+    if not text:
+        return FixOutcome(fix_id, check_id, "no_replacement", "Nothing to insert.")
+    if re.search(r"\[[^\]]+\]", text):
+        return FixOutcome(fix_id, check_id, "needs_input",
+                          "Fill in the [bracketed] parts before applying — placeholders "
+                          "must not be written into a controlled document.")
+
+    elements = []
+    if kind != "line" and heading:
+        elements.append(_new_paragraph(doc, heading, heading=True)._p)
+
+    if kind == "table":
+        rows = [[c.strip() for c in ln.split("|")] for ln in text.splitlines() if ln.strip()]
+        width = max(len(r) for r in rows)
+        table = doc.add_table(rows=len(rows), cols=width)
+        try:
+            table.style = doc.styles["Table Grid"]
+        except KeyError:
+            pass
+        for ri, r in enumerate(rows):
+            for ci in range(width):
+                cell = table.cell(ri, ci)
+                cell.text = r[ci] if ci < len(r) else ""
+                if ri == 0:
+                    for run in cell.paragraphs[0].runs:
+                        run.bold = True
+        elements.append(table._tbl)
+    else:
+        for ln in text.splitlines():
+            if ln.strip():
+                elements.append(_new_paragraph(doc, ln.strip())._p)
+
+    anchor, where = _insertion_anchor(doc, position)
+    if anchor is not None and where == "before":
+        for el in elements:
+            anchor._p.addprevious(el)     # keeps order: each lands just before anchor
+    # else: already at the end of the body (add_paragraph/add_table appended them)
+
+    # Verify the new content is now readable from the document.
+    probe = normalize_collapsed(heading or text.splitlines()[0])
+    present = any(probe in normalize_collapsed(_para_text(p)) for p in _iter_paragraphs(doc))
+    if not present:
+        for el in elements:
+            parent = el.getparent()
+            if parent is not None:
+                parent.remove(el)
+        return FixOutcome(fix_id, check_id, "verify_failed",
+                          "Inserted content did not verify — rolled back.")
+    return FixOutcome(fix_id, check_id, "applied", "Content inserted.", before="",
+                      after=(heading + ": " if heading else "") + text.splitlines()[0])
 
 
 # =============================================================================

@@ -409,14 +409,18 @@ const DetailsModal = ({ doc, onClose }) => {
         {cdiFailures.length > 0 && (
           <div style={{ marginTop: 14 }}>
             <div style={{ fontSize: 12, fontWeight: 600, color: "#A32D2D", marginBottom: 8 }}>
-              CDI failures — fix these before progressing
+              {cdiFailures.some(f => f.severity !== "warning")
+                ? "CDI failures — fix these before progressing"
+                : "CDI warnings — not blocking"}
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
               {cdiFailures.map((f, i) => (
                 <div key={i} style={{
-                  padding: "8px 12px", background: "#FCEBEB",
-                  borderRadius: 8, fontSize: 12, color: "#791F1F",
-                  border: "0.5px solid #F09595",
+                  padding: "8px 12px",
+                  background: f.severity === "warning" ? "#FDF3E2" : "#FCEBEB",
+                  borderRadius: 8, fontSize: 12,
+                  color: f.severity === "warning" ? "#8A5A00" : "#791F1F",
+                  border: `0.5px solid ${f.severity === "warning" ? "#F0CE94" : "#F09595"}`,
                 }}>
                   <span style={{ fontWeight: 600 }}>{f.check}</span>
                   {f.detail && ` — ${f.detail}`}
@@ -1237,11 +1241,16 @@ const LifecycleCard = ({
 
   const handleGetCdiFix = () => cdiFix.hasSuggestion ? cdiFix.regenerate() : cdiFix.generate();
 
-  let cdiCount = 0;
+  // Warnings (e.g. no effective date on a draft) are stored beside failures
+  // with severity "warning" — they never count as failures or block progress.
+  let cdiCount = 0, cdiWarnCount = 0;
   if (doc.CDIFailures) {
     try {
       const parsed = JSON.parse(doc.CDIFailures);
-      cdiCount = Array.isArray(parsed) ? parsed.length : 1;
+      if (Array.isArray(parsed)) {
+        cdiWarnCount = parsed.filter(f => f.severity === "warning").length;
+        cdiCount = parsed.length - cdiWarnCount;
+      } else cdiCount = 1;
     } catch { cdiCount = 1; }
   }
 
@@ -1415,6 +1424,13 @@ const LifecycleCard = ({
         <div style={{ padding: "6px 10px", background: "#FCEBEB", borderRadius: 6,
                       fontSize: 11, color: "#791F1F", marginBottom: 8 }}>
           {cdiCount} CDI failure{cdiCount > 1 ? "s" : ""} to fix — click View details
+        </div>
+      )}
+
+      {cdiCount === 0 && cdiWarnCount > 0 && (
+        <div style={{ padding: "6px 10px", background: "#FDF3E2", borderRadius: 6,
+                      fontSize: 11, color: "#8A5A00", marginBottom: 8 }}>
+          {cdiWarnCount} CDI warning{cdiWarnCount > 1 ? "s" : ""} — not blocking (draft)
         </div>
       )}
 
@@ -1817,7 +1833,7 @@ const LifecycleCard = ({
                 </div>
               )}
               {/* Auto-fix CDI issues — guided confirm-and-apply (Review only) */}
-              {isReview && cdiCount > 0 && (
+              {isReview && (cdiCount > 0 || cdiWarnCount > 0) && (
                 <button onClick={() => setShowCdiFix(true)} style={{
                   padding: "7px", fontSize: 11, borderRadius: 7, fontWeight: 600,
                   border: "1.5px solid #9FD9C8", background: "#E7F5F0", color: "#085041",

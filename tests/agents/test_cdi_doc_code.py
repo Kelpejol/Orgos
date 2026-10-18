@@ -152,3 +152,46 @@ def test_combined_detected_by_code_and_by_title():
     assert is_combined_document("", "DRG-QI-POL-PRO-NCA-01")
     assert is_combined_document("QMS Policies and Procedures Manual", "")
     assert not is_combined_document("An access control policy", "DRG-ISMS-POL-ACP-01-26")
+
+
+# ── severity: advisory checks warn; date depends on a version being present ──
+import asyncio
+import io as _io
+from docx import Document as _Doc
+
+
+def _docx(*paras):
+    d = _Doc()
+    for t in paras:
+        d.add_paragraph(t)
+    b = _io.BytesIO(); d.save(b)
+    return b.getvalue()
+
+
+def _run(*paras):
+    from agents.cdi_checker.service import run_cdi_check
+    res = asyncio.run(run_cdi_check(_docx(*paras), "x.docx", "DRG-ISMS-PRO-CMIG"))
+    return res, {c["check_id"]: c for c in res["checks"]}
+
+
+def test_no_version_is_a_draft_date_only_warns():
+    res, c = _run("Change Management Procedure", "Body text.")
+    assert c["CDI-14"]["result"] == "WARN"
+    assert c["CDI-15"]["result"] == "FAIL"          # version is NOT relaxed
+    assert res["versioned"] is False
+
+
+def test_version_present_makes_missing_date_a_failure():
+    res, c = _run("Change Management Procedure", "Version: 1.0", "Body text.")
+    assert c["CDI-15"]["result"] == "PASS"
+    assert c["CDI-14"]["result"] == "FAIL"
+    assert res["versioned"] is True
+
+
+def test_advisory_checks_warn_and_dont_count_as_failures():
+    res, c = _run("Change Management Procedure", "Body text.")
+    for cid in ("CDI-02", "CDI-03", "CDI-04", "CDI-10", "CDI-11", "CDI-12"):
+        assert c[cid]["result"] == "WARN", cid
+    assert c["CDI-09"]["result"] == "FAIL"           # feeds the Standards Map
+    assert res["fail_count"] == sum(1 for x in res["checks"] if x["result"] == "FAIL")
+    assert res["warn_count"] >= 6

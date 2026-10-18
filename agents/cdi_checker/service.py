@@ -242,17 +242,38 @@ _STRUCTURAL_CHECKS = {
 # evidence code?) before it becomes an exact swap.
 _CHOICE_CHECKS = {"CDI-07", "CDI-08"}
 
+# Severity policy. CDI exists for OrgOS's own machinery, so a check is only a
+# hard FAIL (it blocks Review -> Sensitisation) when something downstream reads
+# what it checks:
+#   CDI-01 doc code            -> register key, extraction naming
+#   CDI-05/06/07/08            -> control wording, named owner roles, evidence
+#                                 (the extractor builds control/owner/evidence
+#                                 triplets from exactly this text)
+#   CDI-09 standards refs      -> extractor's iso_clause -> Standards Map
+#   CDI-15 version number      -> the signal that a document is past draft
+# These are ADVISORY (shown as warnings, never blocking) because nothing
+# downstream reads them from the file — the extractor discards Purpose/Scope as
+# non-controls, and owner / classification / revision history live in the
+# register and the CDT cover, which OrgOS maintains itself:
+_ADVISORY_CHECKS = {"CDI-02", "CDI-03", "CDI-04", "CDI-10", "CDI-11", "CDI-12"}
+# The effective date is stamped by OrgOS on approval. A document with no
+# version is a draft, so a missing date is only a warning; once a version is
+# present the document is past draft and the date is required.
+_DATE_CHECK = "CDI-14"
 
-def _classify_fixable(check_id: str, find: str, needs_choice: bool) -> str:
+
+def _classify_fixable(check_id: str, find: str, needs_choice: bool, insert: Optional[dict] = None) -> str:
     """
     How the reviewer applies this fix:
       "auto"       — exact find/replace ready, one-click.
       "choice"     — reviewer picks/edits the replacement, then it's an exact swap.
+      "insert"     — something is missing; the reviewer confirms/edits the content
+                     and it is added at a deterministic position.
       "structural" — a control-block / metadata correction, not body text.
       "manual"     — no locatable text; reviewer edits the document by hand.
     """
     if check_id in _STRUCTURAL_CHECKS:
-        return "structural"
+        return "insert" if insert and (insert.get("text") or "").strip() else "structural"
     if not (find or "").strip():
         return "structural" if check_id in _STRUCTURAL_CHECKS else "manual"
     if needs_choice or check_id in _CHOICE_CHECKS:
@@ -277,6 +298,7 @@ def _pass(check_id: str, check_name: str) -> dict:
         "needs_choice": False,
         "choices":      [],
         "fixable":      "none",
+        "insert":       None,
     }
 
 
@@ -294,6 +316,7 @@ def _fail(
     anchor: str = "",
     needs_choice: bool = False,
     choices: Optional[list[str]] = None,
+    insert: Optional[dict] = None,
 ) -> dict:
     """
     A CDI FAIL. Beyond the human-readable `finding`/`proposed_fix`, a fixable
@@ -320,7 +343,10 @@ def _fail(
         "anchor":       anchor or current_text,
         "needs_choice": needs_choice,
         "choices":      choices,
-        "fixable":      _classify_fixable(check_id, find, needs_choice),
+        "fixable":      _classify_fixable(check_id, find, needs_choice, insert),
+        # Missing-content fixes: {heading, text, kind, position}. The text is a
+        # template the reviewer edits; [bracketed] parts must be filled in.
+        "insert":       insert or None,
     }
 
 
@@ -501,6 +527,7 @@ def check_02_revision_history(text: str) -> dict:
             "CDI-02", "Revision history table",
             "No revision history table found.",
             proposed_fix="Add a revision history table: Version | Date | Author | Change | Approved by.",
+            insert={"heading": "Revision History", "kind": "table", "position": "end", "text": "Version | Date | Author | Change | Approved by\n1.0 | [DD/MM/YYYY] | [Author] | Initial issue | [Approver]"},
             fix_source="Document Creation Standards §2",
         )
     return _pass("CDI-02", "Revision history table")
@@ -525,6 +552,7 @@ def check_03_purpose_section(text: str) -> dict:
             "CDI-03", "Purpose section",
             "No Purpose section found.",
             proposed_fix="Add a Purpose section: 'This [policy/procedure] establishes...'",
+            insert={"heading": "Purpose", "kind": "section", "position": "before_first_heading", "text": "This document establishes [what it controls and why it exists]."},
             fix_source="Document Creation Standards §2",
         )
     return _pass("CDI-03", "Purpose section")
@@ -548,6 +576,7 @@ def check_04_scope_section(text: str) -> dict:
             "CDI-04", "Scope section",
             "No Scope section found.",
             proposed_fix="Add a Scope section specifying who and what this document applies to.",
+            insert={"heading": "Scope", "kind": "section", "position": "before_first_heading", "text": "This document applies to [who and what it covers] at Dragnet Solutions Limited."},
             fix_source="Document Creation Standards §2",
         )
     return _pass("CDI-04", "Scope section")
@@ -569,6 +598,7 @@ def check_05_responsibilities_section(text: str) -> dict:
             "CDI-05", "Responsibilities section",
             "No Responsibilities section found.",
             proposed_fix="Add a Responsibilities section assigning each control to a named role.",
+            insert={"heading": "Responsibilities", "kind": "section", "position": "end", "text": "[Role title] is responsible for [control or activity]."},
             fix_source="Document Creation Standards §2",
         )
     return _pass("CDI-05", "Responsibilities section")
@@ -595,6 +625,7 @@ def check_09_standards_references(text: str) -> dict:
             "CDI-09", "Standards references",
             "No standards clause references found.",
             proposed_fix="Add ISO 27001, ISO 9001, or NDPA clause references. E.g. '(ISO 27001 A.5.18)' or '(NDPA S.39)'.",
+            insert={"heading": "Standards References", "kind": "section", "position": "end", "text": "ISO/IEC 27001:2022 [clause, e.g. A.5.18]"},
             fix_source="Document Creation Standards §5.3",
             confidence=70,
         )
@@ -610,6 +641,7 @@ def check_10_related_documents(text: str) -> dict:
             "CDI-10", "Related documents section",
             "No Related Documents section found.",
             proposed_fix="Add a Related Documents section listing referenced documents with their codes.",
+            insert={"heading": "Related Documents", "kind": "section", "position": "end", "text": "[Document code] - [Document title]"},
             fix_source="Document Creation Standards §2",
         )
     return _pass("CDI-10", "Related documents section")
@@ -638,6 +670,7 @@ def check_11_classification_label(text: str) -> dict:
             "CDI-11", "Classification label",
             "No document classification label found.",
             proposed_fix="Add a classification label to the header/footer. Options: Internal | Confidential | Restricted.",
+            insert={"kind": "line", "position": "top", "text": "Classification: Internal Use Only"},
             fix_source="Document Creation Standards §3",
         )
     return _pass("CDI-11", "Classification label")
@@ -652,6 +685,7 @@ def check_12_owner_identified(text: str) -> dict:
             "CDI-12", "Document owner identified",
             "No document owner identified in the document metadata.",
             proposed_fix="Add an owner field to the cover page specifying the role responsible.",
+            insert={"kind": "line", "position": "top", "text": "Document Owner: [Role title]"},
             fix_source="Document Creation Standards §4",
         )
     return _pass("CDI-12", "Document owner identified")
@@ -691,6 +725,7 @@ def check_14_effective_date(text: str) -> dict:
             "No effective date found — a date label with an actual date value "
             "(e.g. 'Effective Date: 12/01/2026') is required.",
             proposed_fix="Add an 'Effective Date' with a real date to the cover page — the date from which this version applies.",
+            insert={"kind": "line", "position": "top", "text": "Effective Date: [DD/MM/YYYY]"},
             fix_source="Document Creation Standards §4",
         )
     return _pass("CDI-14", "Effective date")
@@ -712,6 +747,7 @@ def check_15_version_number(text: str) -> dict:
             "CDI-15", "Version number",
             "No version number found.",
             proposed_fix="Add a version number to the cover page or header. Format: v1.0, v1.1, v2.0. Initial draft is always v1.0.",
+            insert={"kind": "line", "position": "top", "text": "Version: 1.0"},
             fix_source="Document Creation Standards §4",
         )
     return _pass("CDI-15", "Version number")
@@ -1166,7 +1202,10 @@ async def run_cdi_check(
     Checks CDI-06, 07, 08 use a single Ollama call (qwen2.5:7b, temp=0)
     for semantic accuracy, falling back to enhanced regex if Ollama is down.
 
-    Returns a structured report with PASS/FAIL per check and proposed fixes.
+    Severity: see _ADVISORY_CHECKS / _DATE_CHECK. Advisory failures come back as
+    WARN — shown to the reviewer, never blocking, never counted in `fail_count`.
+
+    Returns a structured report with PASS/FAIL/WARN per check and proposed fixes.
     Every FAIL includes proposed_fix, current_text, fix_source, confidence.
     """
     try:
@@ -1266,13 +1305,28 @@ async def run_cdi_check(
                         f"second opinion ({str(verdict.get('where',''))[:80]})"
                     )
 
+    # A version number marks a document as past draft (CDI-15 passing).
+    versioned = any(c["check_id"] == "CDI-15" and c["result"] == "PASS" for c in checks)
+    for c in checks:
+        if c["result"] != "FAIL":
+            continue
+        if c["check_id"] in _ADVISORY_CHECKS:
+            c["result"] = "WARN"
+            c["finding"] += " (Advisory: nothing downstream reads this from the file.)"
+        elif c["check_id"] == _DATE_CHECK and not versioned:
+            c["result"] = "WARN"
+            c["finding"] += " (No version yet, so treated as a draft — OrgOS sets the date on approval.)"
+
     pass_count = sum(1 for c in checks if c["result"] == "PASS")
     fail_count = sum(1 for c in checks if c["result"] == "FAIL")
+    warn_count = sum(1 for c in checks if c["result"] == "WARN")
 
     return {
         "passed":       fail_count == 0,
         "pass_count":   pass_count,
         "fail_count":   fail_count,
+        "warn_count":   warn_count,
+        "versioned":    versioned,
         "total_checks": len(checks),
         "checks":       checks,
         "used_ai":      used_ai,

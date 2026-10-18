@@ -312,3 +312,25 @@ def test_suggestions_serialise_with_provenance():
     assert payload["domain"]["confidence"] in {
         Confidence.HIGH, Confidence.MEDIUM, Confidence.LOW, Confidence.UNRESOLVED,
     }
+
+
+# ── CDI fix pre-fill ─────────────────────────────────────────────────────────
+def test_prefill_insert_uses_only_resolved_facts():
+    from lifecycle.cover_suggest import prefill_insert, suggest_cover_facts
+    doc = {"DocumentCode": "DRG-ISMS-PRO-CMIG", "DocumentType": "Procedure",
+           "Title": "Change Management", "cover": {"owner": "Head of IT", "effective_date": "March 2026"}}
+    sg = suggest_cover_facts(doc, [])
+    owner = prefill_insert("CDI-12", {"kind": "line", "text": "Document Owner: [Role title]"}, sg, doc)
+    assert owner["text"] == "Document Owner: Head of IT"
+    eff = prefill_insert("CDI-14", {"kind": "line", "text": "Effective Date: [DD/MM/YYYY]"}, sg, doc)
+    assert eff["text"] == "Effective Date: March 2026"
+    purpose = prefill_insert("CDI-03", {"text": "This document establishes [x]."}, sg, doc)
+    assert purpose["text"].startswith("This procedure establishes [")  # substance stays a human call
+
+
+def test_prefill_leaves_placeholder_when_unknown():
+    from lifecycle.cover_suggest import prefill_insert, suggest_cover_facts
+    doc = {"DocumentCode": "DRG-ISMS-PRO-CMIG", "Title": "T", "cover": {}}
+    sg = suggest_cover_facts(doc, [])
+    out = prefill_insert("CDI-12", {"kind": "line", "text": "Document Owner: [Role title]"}, sg, doc)
+    assert "[Role title]" in out["text"]
