@@ -29,6 +29,7 @@ from config import settings
 from graph.auth import get_graph_access_token
 from graph.client import (
     convert_drive_item_to_pdf,
+    create_view_only_link,
     create_list_item,
     download_file_from_sharepoint,
     ensure_drive_folder,
@@ -285,6 +286,8 @@ async def _sp_to_doc(item: dict) -> dict:
         # have been added by an admin and/or no match was found in the Register.
         "ParentDocumentTitle":      f.get("ParentDocumentTitle", ""),
         "ParentDocumentUrl":        f.get("ParentDocumentUrl", ""),
+        # Read-only link for Teams notifications — see progress_stage().
+        "ReadOnlyFileUrl":          f.get("ReadOnlyFileUrl", ""),
         # CDT control facts (v06) — absent/blank until the CDTCoverFacts column
         # has been added by an admin (OrgOS cannot create columns itself) and/or
         # until Compliance has entered any cover facts for this document.
@@ -808,6 +811,19 @@ async def progress_doc(
         fields: dict = {"Stage": next_stage}
 
         _parent_doc_fields: dict = {}   # best-effort write, see below
+
+        # Whoever is notified next (stakeholders via Power Automate, then the
+        # approver) opens the document from that Teams message. Give the flow a
+        # READ-ONLY link to use: the stored webUrl opens Word for the web with
+        # the reader's own rights, so a reviewer could change the controlled
+        # source by typing in it — and that change would never see a CDI check.
+        if doc.get("SharePointFileUrl"):
+            try:
+                _parent_doc_fields["ReadOnlyFileUrl"] = await create_view_only_link(
+                    doc["SharePointFileUrl"])
+            except Exception as exc:
+                logger.info(f"Lifecycle {item_id}: no read-only link written ({exc})")
+
         if body.current_stage == "Review" and body.stakeholders:
             fields["Stakeholders"] = json.dumps(body.stakeholders)
             if body.sensitisation_deadline:
@@ -844,9 +860,10 @@ async def progress_doc(
                 await update_list_item(_get_list_id(), _LIST_NAME, item_id, _parent_doc_fields)
             except Exception as exc:
                 logger.info(
-                    f"Lifecycle {item_id} progressed, but Parent Document link was not "
-                    f"saved (are the 'ParentDocumentTitle'/'ParentDocumentUrl' columns "
-                    f"present on the Document Lifecycle list yet?): {exc}"
+                    f"Lifecycle {item_id} progressed, but the Parent Document / "
+                    f"read-only link was not saved (are the 'ParentDocumentTitle', "
+                    f"'ParentDocumentUrl' and 'ReadOnlyFileUrl' columns present on "
+                    f"the Document Lifecycle list yet?): {exc}"
                 )
 
         # ── Best-effort: write the Person/Group column in a separate PATCH ─────
@@ -2110,6 +2127,42 @@ async def cdt_cover_status(
         raise
     except Exception as exc:
         _handle_error(exc, f"cover status {item_id}")
+
+
+@router.get("/documents/{item_id}/view-only-link")
+async def document_view_only_link(
+    item_id: str,
+    user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    """
+    A read-only SharePoint link for this document.
+
+    The stored webUrl opens Word for the web with the viewer's own rights,
+    which for most people here means edit — so a stakeholder asked to review a
+    document could change the controlled source by typing in it. This link
+    grants view only, whatever their standing permissions are.
+    """
+    try:
+        item = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
+        doc  = await _sp_to_doc(item)
+        url  = doc.get("SharePointFileUrl") or ""
+        if not url:
+            raise HTTPException(status_code=404, detail="No file has been uploaded yet.")
+        try:
+            return {"url": await create_view_only_link(url), "read_only": True}
+        except Exception as exc:
+            # Sharing can be disabled by tenant policy. Say so plainly rather
+            # than quietly handing back an editable link.
+            logger.warning(f"View-only link unavailable for {item_id}: {exc}")
+            raise HTTPException(
+                status_code=503,
+                detail="A read-only SharePoint link could not be created. "
+                       "Read the document in OrgOS instead.",
+            )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _handle_error(exc, f"view-only link {item_id}")
 
 
 @router.post("/documents/{item_id}/attach-cover")

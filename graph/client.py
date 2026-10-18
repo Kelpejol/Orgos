@@ -1300,3 +1300,72 @@ async def download_file_from_sharepoint(web_url: str) -> tuple[bytes, str]:
         f"Downloaded {len(file_resp.content):,} bytes from SharePoint: {web_url}"
     )
     return file_resp.content, content_type
+
+
+# =============================================================================
+#  Read-only sharing links
+#
+#  A document's webUrl opens Word for the web with whatever rights the viewer
+#  already has — which for most of Dragnet means EDIT. A stakeholder asked to
+#  review a document, or an approver opening it from a Teams notification, can
+#  change the controlled source by accident just by typing in it.
+#
+#  Graph's createLink issues a link that grants VIEW only, regardless of the
+#  viewer's standing permissions, so the source cannot be edited through it.
+#  Calling it again for the same type/scope returns the existing link rather
+#  than making a second one.
+# =============================================================================
+
+async def create_view_only_link(web_url: str, scope: str = "organization") -> str:
+    """
+    A read-only link to the SharePoint file at `web_url`.
+
+    `scope="organization"` — anyone signed in to Dragnet who has the link may
+    view it; it is not anonymous. Returns the link's URL.
+    """
+    import base64
+
+    token = await get_graph_access_token()
+    client = get_client()
+    headers = {"Authorization": f"Bearer {token}"}
+
+    encoded = base64.urlsafe_b64encode(web_url.encode()).rstrip(b"=").decode()
+    meta_resp = await client.get(
+        f"{settings.graph_base_url}/shares/u!{encoded}/driveItem", headers=headers,
+    )
+    if meta_resp.status_code not in (200, 201):
+        body = {}
+        try:
+            body = meta_resp.json()
+        except Exception:
+            pass
+        raise_for_graph_status(
+            meta_resp.status_code, body, f"Resolve SharePoint item for sharing: {web_url}",
+        )
+
+    meta = meta_resp.json()
+    item_id = meta.get("id")
+    drive_id = (meta.get("parentReference") or {}).get("driveId")
+    if not (item_id and drive_id):
+        raise ValueError(f"SharePoint item has no drive/item id. webUrl={web_url}")
+
+    link_resp = await client.post(
+        f"{settings.graph_base_url}/drives/{drive_id}/items/{item_id}/createLink",
+        headers={**headers, "Content-Type": "application/json"},
+        json={"type": "view", "scope": scope},
+    )
+    if link_resp.status_code not in (200, 201):
+        body = {}
+        try:
+            body = link_resp.json()
+        except Exception:
+            pass
+        raise_for_graph_status(
+            link_resp.status_code, body, f"Create view-only link: {web_url}",
+        )
+
+    url = ((link_resp.json() or {}).get("link") or {}).get("webUrl", "")
+    if not url:
+        raise ValueError(f"createLink returned no webUrl for {web_url}")
+    logger.info(f"Issued view-only link for {web_url}")
+    return url

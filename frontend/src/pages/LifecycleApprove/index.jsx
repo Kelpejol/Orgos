@@ -7,6 +7,7 @@
 
 import { useState } from "react";
 import { useParams } from "react-router-dom";
+import DocumentViewer from "../../components/shared/DocumentViewer.jsx";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { lifecycleApi } from "../../api/grcApi.js";
 import { CascadeImpactPreview } from "../../components/shared/CascadeImpactModal.jsx";
@@ -146,6 +147,7 @@ export default function LifecycleApprove() {
 
   const [showRejectModal, setShowRejectModal] = useState(false);
   const [showApproveConfirm, setShowApproveConfirm] = useState(false);
+  const [showViewer, setShowViewer] = useState(false);
   const [approveNotes, setApproveNotes] = useState("");
   const [approvalImpact, setApprovalImpact] = useState(null);
   const aiAssessmentHook = useAiSuggestion(
@@ -235,6 +237,9 @@ export default function LifecycleApprove() {
 
   return shell(
     <>
+      {showViewer && (
+        <DocumentViewer doc={{ ...doc, id }} onClose={() => setShowViewer(false)} />
+      )}
       {showRejectModal && (
         <RejectModal
           onConfirm={(reason) => rejectMutation.mutate(reason)}
@@ -312,18 +317,20 @@ export default function LifecycleApprove() {
                 <span style={{ color: "#222", fontWeight: 500 }}>{v}</span>
               </div>
             ))}
+            {/* Read it as a PDF in OrgOS. Approving used to start by opening
+                the editable Word file, so the approver could change the very
+                document they were about to approve. */}
             {doc.SharePointFileUrl && (
-              <a
-                href={doc.SharePointFileUrl}
-                target="_blank"
-                rel="noopener noreferrer"
+              <button
+                onClick={() => setShowViewer(true)}
                 style={{
-                  display: "inline-block", marginTop: 12, fontSize: 12,
-                  color: "#1F4E79", textDecoration: "underline",
+                  display: "inline-block", marginTop: 12, fontSize: 12, fontWeight: 600,
+                  padding: "8px 16px", borderRadius: 8, cursor: "pointer",
+                  border: "1.5px solid #1F4E79", background: "#fff", color: "#1F4E79",
                 }}
               >
-                Open document in SharePoint →
-              </a>
+                Read the document
+              </button>
             )}
           </div>
 

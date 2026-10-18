@@ -9,6 +9,7 @@
 import { useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import DocumentViewer from "../../components/shared/DocumentViewer.jsx";
 import { lifecycleApi } from "../../api/grcApi.js";
 
 // =============================================================================
@@ -61,6 +62,7 @@ export default function LifecycleFeedback() {
   const { id } = useParams();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const [showViewer, setShowViewer] = useState(false);
 
   const [text, setText] = useState("");
   const [category, setCategory] = useState("General");
@@ -193,6 +195,9 @@ export default function LifecycleFeedback() {
 
   return shell(
     <>
+      {showViewer && (
+        <DocumentViewer doc={{ ...doc, id }} onClose={() => setShowViewer(false)} />
+      )}
       {/* Document info */}
       <div style={{
         background: "#fff", border: "1px solid #E0E0E0", borderRadius: 12,
@@ -224,18 +229,20 @@ export default function LifecycleFeedback() {
           )}
         </div>
 
+        {/* Read the document as a PDF inside OrgOS. A stakeholder sent here
+            from Teams used to get the Word file, which most people here can
+            edit — so reviewing a document risked changing it. */}
         {doc.SharePointFileUrl && (
-          <a
-            href={doc.SharePointFileUrl}
-            target="_blank"
-            rel="noopener noreferrer"
+          <button
+            onClick={() => setShowViewer(true)}
             style={{
-              display: "inline-block", marginTop: 14, fontSize: 12,
-              color: "#1F4E79", textDecoration: "underline",
+              display: "inline-block", marginTop: 14, fontSize: 12, fontWeight: 600,
+              padding: "8px 16px", borderRadius: 8, cursor: "pointer",
+              border: "1.5px solid #1F4E79", background: "#fff", color: "#1F4E79",
             }}
           >
-            View document in SharePoint →
-          </a>
+            Read the document
+          </button>
         )}
       </div>
 

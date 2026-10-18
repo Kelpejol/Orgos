@@ -116,7 +116,10 @@ async def test_progress_writes_parent_link_as_separate_best_effort_call():
 
     with patch("lifecycle.router.get_list_item", new_callable=AsyncMock) as mock_get, \
          patch("lifecycle.router.update_list_item", new_callable=AsyncMock) as mock_update, \
+         patch("lifecycle.router.create_view_only_link", new_callable=AsyncMock) as mock_link, \
          patch("grc.service.get_documents", new_callable=AsyncMock) as mock_docs:
+
+        mock_link.return_value = "https://sp/readonly/source.docx"
 
         mock_get.return_value = {"id": "10", "fields": doc}
         mock_docs.return_value = [_document_read()]
@@ -132,6 +135,9 @@ async def test_progress_writes_parent_link_as_separate_best_effort_call():
 
     assert parent_call.args[3]["ParentDocumentTitle"] == "Information Security Policy"
     assert parent_call.args[3]["ParentDocumentUrl"] == "https://sp/register/InfoSecPolicy.docx"
+    # The Teams notification must link to a link that cannot edit the source.
+    assert parent_call.args[3]["ReadOnlyFileUrl"] == "https://sp/readonly/source.docx"
+    mock_link.assert_awaited_once_with("https://sp/source.docx")
 
 
 async def test_progress_still_succeeds_when_parent_link_column_missing():
@@ -141,7 +147,10 @@ async def test_progress_still_succeeds_when_parent_link_column_missing():
     progressed_doc = {**doc, "Stage": "Sensitisation"}
     with patch("lifecycle.router.get_list_item", new_callable=AsyncMock) as mock_get, \
          patch("lifecycle.router.update_list_item", new_callable=AsyncMock) as mock_update, \
+         patch("lifecycle.router.create_view_only_link", new_callable=AsyncMock) as mock_link, \
          patch("grc.service.get_documents", new_callable=AsyncMock) as mock_docs:
+
+        mock_link.return_value = "https://sp/readonly/source.docx"
 
         mock_get.side_effect = [
             {"id": "10", "fields": doc},             # initial read
@@ -163,7 +172,10 @@ async def test_progress_writes_parent_title_only_when_no_url_match():
 
     with patch("lifecycle.router.get_list_item", new_callable=AsyncMock) as mock_get, \
          patch("lifecycle.router.update_list_item", new_callable=AsyncMock) as mock_update, \
+         patch("lifecycle.router.create_view_only_link", new_callable=AsyncMock) as mock_link, \
          patch("grc.service.get_documents", new_callable=AsyncMock) as mock_docs:
+
+        mock_link.return_value = "https://sp/readonly/source.docx"
 
         mock_get.return_value = {"id": "10", "fields": doc}
         mock_docs.return_value = [_document_read()]
@@ -171,7 +183,10 @@ async def test_progress_writes_parent_title_only_when_no_url_match():
         await lr.progress_doc("10", body, user=COMPLIANCE_USER)
 
     _, parent_call = mock_update.call_args_list
-    assert parent_call.args[3] == {"ParentDocumentTitle": "Some Unrelated Document"}
+    assert parent_call.args[3] == {
+        "ReadOnlyFileUrl": "https://sp/readonly/source.docx",
+        "ParentDocumentTitle": "Some Unrelated Document",
+    }
 
 
 async def test_progress_skips_parent_lookup_when_no_parent_document_set():
@@ -180,11 +195,37 @@ async def test_progress_skips_parent_lookup_when_no_parent_document_set():
 
     with patch("lifecycle.router.get_list_item", new_callable=AsyncMock) as mock_get, \
          patch("lifecycle.router.update_list_item", new_callable=AsyncMock) as mock_update, \
+         patch("lifecycle.router.create_view_only_link", new_callable=AsyncMock) as mock_link, \
          patch("grc.service.get_documents", new_callable=AsyncMock) as mock_docs:
+
+        mock_link.return_value = "https://sp/readonly/source.docx"
 
         mock_get.return_value = {"id": "10", "fields": doc}
 
         await lr.progress_doc("10", body, user=COMPLIANCE_USER)
 
     mock_docs.assert_not_called()
-    assert mock_update.call_count == 1  # only the critical write, no parent-link follow-up
+    # The best-effort write still happens — it now also carries the read-only
+    # link for the Teams notification — but with no Parent Document fields.
+    assert mock_update.call_count == 2
+    _, best_effort = mock_update.call_args_list
+    assert best_effort.args[3] == {"ReadOnlyFileUrl": "https://sp/readonly/source.docx"}
+
+
+async def test_progress_still_succeeds_when_the_read_only_link_cannot_be_made():
+    """Tenant policy can forbid sharing links. That must not block the stage."""
+    doc = _lifecycle_doc(CDTCoverFacts=CdtCoverFacts().to_json())
+    body = lr.ProgressDoc(current_stage="Review", stakeholders=[{"oid": "s1", "name": "S One"}])
+
+    with patch("lifecycle.router.get_list_item", new_callable=AsyncMock) as mock_get, \
+         patch("lifecycle.router.update_list_item", new_callable=AsyncMock) as mock_update, \
+         patch("lifecycle.router.create_view_only_link", new_callable=AsyncMock) as mock_link:
+
+        mock_get.return_value = {"id": "10", "fields": doc}
+        mock_link.side_effect = RuntimeError("Sharing is disabled for this tenant")
+
+        await lr.progress_doc("10", body, user=COMPLIANCE_USER)
+
+    # Only the critical write; nothing optional was written, nothing raised.
+    assert mock_update.call_count == 1
+    assert mock_update.call_args_list[0].args[3]["Stage"] == "Sensitisation"
