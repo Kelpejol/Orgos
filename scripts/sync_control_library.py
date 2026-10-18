@@ -20,7 +20,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from cdi.library import LibraryIndex                                  # noqa: E402
-from control_register.sync import apply_sync, plan_sync               # noqa: E402
+from control_register.sync import apply_sync, plan_resolutions, plan_sync  # noqa: E402
 from scripts.cdi_library_census import collect_local, collect_sharepoint  # noqa: E402
 
 
@@ -31,6 +31,16 @@ async def _registers():
     register = await get_list_items(settings.control_register_list_id, "Control Register")
     queue = await get_list_items(settings.ai_review_queue_list_id, "AI Review Queue")
     return register, queue
+
+
+async def _catalogue():
+    from graph.exceptions import SharePointListNotConfiguredError
+    from records_catalogue import service
+
+    try:
+        return await service.load()
+    except SharePointListNotConfiguredError:
+        return None
 
 
 async def run(local: str | None, folder: str | None, apply: bool) -> int:
@@ -47,6 +57,8 @@ async def run(local: str | None, folder: str | None, apply: bool) -> int:
     try:
         register, queue = await _registers()
         plan = plan_sync(index, register, queue)
+        catalogue = await _catalogue()
+        resolutions = plan_resolutions(index, queue, catalogue)
 
         print(f"\nAgainst the Control Register ({len(register)} rows):")
         print(f"  new or changed → review items: create {plan.count('create_item')}, "
@@ -59,9 +71,15 @@ async def run(local: str | None, folder: str | None, apply: bool) -> int:
             print(f"  NOT SYNCED — defined twice with equal authority: {', '.join(plan.contested)}")
         if plan.no_longer_defined:
             print(f"  confirmed but no longer defined by any document: {', '.join(plan.no_longer_defined)}")
+        if catalogue is None:
+            print("  Records Catalogue not loaded — REC citations not checked")
+        print(f"  references that don't resolve → Zone 2: raise "
+              f"{sum(a.kind == 'create_item' for a in resolutions)}, "
+              f"close {sum(a.kind == 'close_item' for a in resolutions)} now resolved")
         if plan.duplicate_controls:
             print(f"  WARNING two live register rows share a Control ID: {', '.join(plan.duplicate_controls)}")
 
+        plan.actions += resolutions
         if not apply:
             print("\nDry run — nothing written. Re-run with --apply to write.")
             return 0

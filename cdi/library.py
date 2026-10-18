@@ -184,6 +184,20 @@ class LibraryIndex:
         """Control IDs two equally authoritative documents both define."""
         return sorted(self._contested)
 
+    def record_citations(self) -> dict[str, list[str]]:
+        """Every REC ID any document cites → the documents citing it, in order."""
+        out: dict[str, list[str]] = {}
+        for doc in self.documents:
+            ids = (
+                [r.record_id for c in doc.controls for r in c.evidence]
+                + [r.record_id for r in doc.records]
+                + [rid for step in doc.implementations for rid in step.record_ids]
+                + list(doc.header.child_record_ids)
+            )
+            for rid in dict.fromkeys(i for i in ids if i):
+                out.setdefault(rid, []).append(document_label(doc))
+        return out
+
     @property
     def defining_documents(self) -> list[ParsedDocument]:
         """Documents that define at least one control."""

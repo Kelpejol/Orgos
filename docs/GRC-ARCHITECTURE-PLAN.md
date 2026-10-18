@@ -237,8 +237,8 @@ Re-extracting a revised Standard therefore produces a small set of real changes.
 | Zone | Today | After |
 |---|---|---|
 | **1** | Extracted controls | **Control definitions** — new and changed, with field-level diffs and per-field provenance |
-| **2** | JD orphans | **Things that don't resolve** — unrecognised roles, functional roles needing a scope, REC IDs not in the Catalogue (raised as Record admission requests, a CDI concept), plus JD orphans as now |
-| **3** | Near-duplicate controls | **Conflicts** — see §7 |
+| **2** | JD orphans | **Things that don't resolve** — REC IDs not in the Catalogue or withdrawn (Record admission requests, a CDI concept), controls defined by two documents with equal authority (*Select governing document* already lives here), unrecognised roles and functional roles needing a scope (built with the Role Catalogue), plus JD orphans as now. One item per problem; the sync closes it once resolved |
+| **3** | Near-duplicate controls | **Harmonisation** — near-duplicates across IDs and legacy controls, see §7 |
 
 ### What "accept" writes
 Today, accepting one item writes one Control Register row and one Evidence Tracker row, and stores the control **Active if the owner string is non-empty** (`review_queue/router.py:296`).

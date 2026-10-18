@@ -48,6 +48,7 @@ class SyncAction:
     diff: list = field(default_factory=list)
     queue_item_id: str = ""
     control_item_id: str = ""
+    fields: dict = field(default_factory=dict)      # a resolution item's own fields
 
 
 @dataclass
@@ -90,7 +91,7 @@ def _latest_queued(queue: list[dict]) -> dict[str, dict]:
     for item in sorted(queue, key=lambda i: int(str(i.get("id") or 0) or 0)):
         f = item.get("fields") or {}
         cid = (f.get("ControlId") or "").strip()
-        if cid:
+        if cid and not f.get("ResolutionKey"):        # definitions only, never Zone 2 items
             out[cid] = item
     return out
 
@@ -144,6 +145,8 @@ def plan_sync(index: LibraryIndex, register: list[dict], queue: list[dict]) -> S
 # ── what is written ─────────────────────────────────────────────────────────
 
 def queue_fields(action: SyncAction) -> dict:
+    if action.fields:
+        return action.fields
     c = action.candidate
     flag, reason = completeness(c)
     return {
@@ -211,8 +214,9 @@ async def apply_sync(plan: SyncPlan) -> list[str]:
             elif a.kind == "close_item":
                 await update_list_item(q, "AI Review Queue", a.queue_item_id, {
                     "ReviewStatus": "Superseded",
-                    "CascadeResult": "Closed by library sync: the defining document now "
-                                     "matches the confirmed definition.",
+                    "CascadeResult": a.fields.get("CascadeResult") or (
+                        "Closed by library sync: the defining document now "
+                        "matches the confirmed definition."),
                 })
             elif a.kind == "refresh_control":
                 await update_list_item(cr, "Control Register", a.control_item_id,
@@ -221,3 +225,105 @@ async def apply_sync(plan: SyncPlan) -> list[str]:
             logger.error("Library sync %s %s failed: %s", a.kind, a.control_id, exc)
             failures.append(f"{a.kind} {a.control_id}: {exc}")
     return failures
+
+
+# =============================================================================
+#  Zone 2 — references that do not resolve
+#
+# One item per problem, not per citation: a REC ID cited by five documents is
+# one admission request listing all five. Each item carries a ResolutionKey;
+# a sync closes it once the problem is gone (the record admitted to the
+# Catalogue, the second definition removed), and a declined item is not
+# raised again.
+# =============================================================================
+
+ZONE2_ITEM_TYPE = "Orphan"
+
+
+def _latest_by_key(queue: list[dict]) -> dict[str, dict]:
+    out: dict[str, dict] = {}
+    for item in sorted(queue, key=lambda i: int(str(i.get("id") or 0) or 0)):
+        key = ((item.get("fields") or {}).get("ResolutionKey") or "").strip()
+        if key:
+            out[key] = item
+    return out
+
+
+def _record_problems(index: LibraryIndex, catalogue: dict) -> dict[str, dict]:
+    out = {}
+    for rid, cited_in in sorted(index.record_citations().items()):
+        entry = catalogue.get(rid)
+        if entry is None:
+            reason = (f"{rid} is cited but is not in the Enterprise Records Catalogue. "
+                      "Records Governance assigns Record IDs: either admit the record "
+                      "or correct the citation.")
+            kind = "RECORD_NOT_IN_CATALOGUE"
+        elif entry.withdrawn:
+            reason = (f"{rid} ({entry.name}) is a withdrawn duplicate proposal in the "
+                      "Catalogue. Cite the governed record instead.")
+            kind = "WITHDRAWN_RECORD_CITED"
+        else:
+            continue
+        out[f"RECORD:{rid}"] = {
+            "Title": f"{rid}: record cited but not governed"[:255],
+            "OrphanClassification": kind,
+            "ResponsibilityStatement": reason,
+            "OrphanReason": "Cited in: " + "; ".join(cited_in),
+            "SourceDocumentCode": cited_in[0],
+            "SourceDocumentCode2": "; ".join(cited_in[1:])[:255],
+        }
+    return out
+
+
+def _definition_conflicts(index: LibraryIndex) -> dict[str, dict]:
+    out = {}
+    for cid in index.contested_ids:
+        docs = list(dict.fromkeys(
+            s.document.header.code or s.document.filename for s in index.stated_by[cid]))
+        out[f"DEFINED-TWICE:{cid}"] = {
+            "Title": f"{cid}: defined by more than one document"[:255],
+            "OrphanClassification": "CONTROL_DEFINED_TWICE",
+            "ResponsibilityStatement": (
+                f"{cid} is defined by {' and '.join(docs)} with equal authority, so OrgOS "
+                "cannot tell which governs. Select the governing document; the other is "
+                "revised through Document Lifecycle. Until then the control is not synced."),
+            "OrphanReason": "Defined in: " + "; ".join(docs),
+            "SourceDocumentCode": docs[0],
+            "SourceDocumentCode2": "; ".join(docs[1:])[:255],
+        }
+    return out
+
+
+def plan_resolutions(index: LibraryIndex, queue: list[dict],
+                     catalogue: Optional[dict] = None) -> list[SyncAction]:
+    """
+    Zone 2 items for references that do not resolve. `catalogue` maps Record ID
+    → RecordEntry; None skips record checks (the Catalogue is not loaded).
+    """
+    problems = _definition_conflicts(index)
+    if catalogue is not None:
+        problems.update(_record_problems(index, catalogue))
+
+    latest = _latest_by_key(queue)
+    actions = []
+    for key, fields in problems.items():
+        item = latest.get(key)
+        if item is not None and ((item.get("fields") or {}).get("ReviewStatus") or "") != "Superseded":
+            # Waiting, or a person has decided it (a fix may be under way in
+            # Document Lifecycle). Raised again only if it was resolved and recurred.
+            continue
+        actions.append(SyncAction("create_item", key, {}, fields={
+            **fields,
+            "ItemType": ZONE2_ITEM_TYPE,
+            "ResolutionKey": key,
+            "ReviewStatus": "Pending Review",
+        }))
+
+    checked = {"DEFINED-TWICE"} | ({"RECORD"} if catalogue is not None else set())
+    for key, item in latest.items():
+        status = ((item.get("fields") or {}).get("ReviewStatus") or "").strip()
+        if key.split(":", 1)[0] in checked and key not in problems and status in PENDING:
+            actions.append(SyncAction("close_item", key, {}, queue_item_id=str(item["id"]),
+                                      fields={"CascadeResult": "Closed by library sync: "
+                                                               "the reference now resolves."}))
+    return actions
