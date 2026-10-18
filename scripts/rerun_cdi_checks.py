@@ -13,6 +13,10 @@
 #   python scripts/rerun_cdi_checks.py --dry-run     (report, no writes)
 #   python scripts/rerun_cdi_checks.py               (apply)
 #   python scripts/rerun_cdi_checks.py --only-failed (skip items already Passed)
+#   python scripts/rerun_cdi_checks.py --limit 8     (first 8 items only)
+#
+# Each write bumps the item's Modified time, and the Document Lifecycle list is
+# sorted newest-modified first — so re-run items surface at the top.
 
 import argparse
 import asyncio
@@ -30,6 +34,7 @@ from config import settings
 from graph.auth import get_graph_access_token
 from graph.client import get_list_items, shutdown, startup, update_list_item
 from agents.cdi_checker.service import run_cdi_check
+from lifecycle.router import _cdi_result_to_storage
 
 logger = logging.getLogger("rerun_cdi")
 
@@ -69,7 +74,7 @@ def filename_from_url(url: str) -> str:
     return decoded.rstrip("/").rsplit("/", 1)[-1]
 
 
-async def main(dry_run: bool, only_failed: bool) -> None:
+async def main(dry_run: bool, only_failed: bool, limit: int = 0) -> None:
     await startup()
     try:
         items = await get_list_items(settings.document_lifecycle_list_id, LIFECYCLE_LIST_NAME)
@@ -78,6 +83,7 @@ async def main(dry_run: bool, only_failed: bool) -> None:
         token = await get_graph_access_token()
         headers = {"Authorization": f"Bearer {token}"}
 
+        done = 0
         stats = {"Passed": 0, "Failed": 0, "Error": 0, "skipped": 0}
         rescued_total = 0
 
@@ -98,6 +104,9 @@ async def main(dry_run: bool, only_failed: bool) -> None:
                     print(f"[{i}/{len(items)}] {title:<52} SKIP (no file URL)")
                     continue
 
+                if limit and done >= limit:
+                    break
+                done += 1
                 filename = filename_from_url(url)
                 path = f"{settings.compliance_starting_folder}/{filename}"
                 try:
@@ -118,18 +127,9 @@ async def main(dry_run: bool, only_failed: bool) -> None:
                 result = await run_cdi_check(
                     dl.content, filename, str(f.get("DocumentCode", ""))
                 )
-                if result.get("error"):
-                    new_status = "Error"
-                    failures = json.dumps([{
-                        "check": "CDI",
-                        "detail": result["error"],
-                        "fix": "Fix the parsing issue, then upload the controlled version in Review.",
-                    }])
-                elif result.get("passed"):
-                    new_status, failures = "Passed", ""
-                else:
-                    new_status = "Failed"
-                    failures = cdi_failures_json(result.get("checks", []))
+                # Same storage the upload / fix endpoints use: full findings,
+                # warnings flagged with severity, so the modal and card agree.
+                new_status, failures = _cdi_result_to_storage(result)
 
                 rescued = sum(
                     1 for c in result.get("checks", [])
@@ -169,6 +169,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--only-failed", action="store_true")
+    parser.add_argument("--limit", type=int, default=0, help="stop after N items")
     args = parser.parse_args()
     logging.basicConfig(level=logging.WARNING)
-    asyncio.run(main(dry_run=args.dry_run, only_failed=args.only_failed))
+    asyncio.run(main(dry_run=args.dry_run, only_failed=args.only_failed, limit=args.limit))
