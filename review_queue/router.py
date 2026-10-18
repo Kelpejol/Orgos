@@ -17,6 +17,7 @@
 #   Cascade: Merge → update CanonicalName in AI Review Queue item
 # =============================================================================
 
+import json
 import logging
 from datetime import date, timezone, datetime, timedelta
 from typing import Optional
@@ -186,7 +187,19 @@ def _sp_to_item(item: dict) -> dict:
         "CanonicalName":            f.get("CanonicalName", ""),
         "VariantFrequency":         f.get("VariantFrequency", ""),
         "SourceDocumentCode2":      f.get("SourceDocumentCode2", ""),
+        # Control definitions from the library sync (control_register/sync.py)
+        "ControlId":                f.get("ControlId", ""),
+        "ChangeKind":               f.get("ChangeKind", ""),
+        "Candidate":                _json_field(f, "CandidateJson"),
+        "Diff":                     _json_field(f, "DiffJson") or [],
     }
+
+
+def _json_field(fields: dict, column: str):
+    try:
+        return json.loads(fields.get(column) or "null")
+    except (TypeError, ValueError):
+        return None
 
 
 # =============================================================================
@@ -387,6 +400,76 @@ async def _zone1_accept_cascade(item: dict, user: CurrentUser, overrides: dict) 
     return " | ".join(created)
 
 
+async def _definition_accept_cascade(item: dict, user: CurrentUser, rationale: str) -> str:
+    """
+    Accept a control definition from the library sync. Upserts the Control
+    Register row by Control ID — a changed definition updates the row it
+    changed, it never adds a second. No evidence row is created: evidence
+    obligations come from the control's record links (architecture plan §9).
+    Active only if the accountable role is recognised; otherwise Blocked with
+    the reason.
+    """
+    from control_register.definitions import decide_status, diff
+    from control_register.sync import RETIRED_CONTROL, control_fields
+    from ownership.resolver import get_ownership_index
+
+    candidate = item.get("Candidate")
+    if not candidate or candidate.get("control_id") != item.get("ControlId"):
+        raise CascadeError("Read definition", [], ValueError("the queue item's definition is unreadable"))
+
+    created: list[str] = []
+    try:
+        index = await get_ownership_index()
+        status, blocked_reason = decide_status(candidate, index.resolve)
+        rows = await get_list_items(_cr_id(), _CR_LIST)
+        current = next((r for r in rows
+                        if (r.get("fields") or {}).get("ControlId") == item["ControlId"]
+                        and (r.get("fields") or {}).get("Status") not in RETIRED_CONTROL), None)
+        fields = {
+            **control_fields(candidate, status, blocked_reason),
+            "ConfirmedByEntraId": user.oid,
+            "ConfirmedDate":      date.today().isoformat(),
+            "DecisionRationale":  rationale,
+            "QueueItemId":        item["id"],
+        }
+        if current:
+            before = _json_field(current.get("fields") or {}, "DefinitionJson")
+            changed = [d["label"] for d in diff(before, candidate)]
+            cr_id = str(current["id"])
+            await update_list_item(_cr_id(), _CR_LIST, cr_id, fields)
+            created.append(f"Control Register {cr_id} updated ({', '.join(changed) or 'no field changes'})")
+        else:
+            cr_id = str((await create_list_item(_cr_id(), _CR_LIST, fields))["id"])
+            created.append(f"Control Register {cr_id} created")
+        created.append(f"Status {status}" + (f": {blocked_reason}" if blocked_reason else ""))
+    except CascadeError:
+        raise
+    except Exception as exc:
+        logger.error(f"Control Register upsert failed for {item.get('ControlId')}: {exc}")
+        raise CascadeError("Control Register", created, exc)
+
+    try:
+        await create_list_item(_al_id(), _AL_LIST, {
+            "Title":              f"Zone 1 Accept — {item['ControlId']}",
+            "Action":             f"Zone 1 Accept ({item.get('ChangeKind') or 'definition'})",
+            "ReviewerEntraId":    user.oid,
+            "ReviewerName":       user.name,
+            "Decision":           "Accept",
+            "Rationale":          rationale,
+            "SourceDocumentCode": candidate.get("defined_in_label", ""),
+            "ControlStatement":   candidate.get("requirement", "")[:500],
+            "ControlRegisterId":  cr_id,
+            "CascadeResult":      json.dumps(item.get("Diff") or [], ensure_ascii=False)[:4000],
+            "Timestamp":          datetime.now(timezone.utc).isoformat(),
+        })
+        created.append("Audit Log: 1 record")
+    except Exception as exc:
+        logger.error(f"AUDIT TRAIL GAP — definition accept for {item['ControlId']}: {exc}")
+        created.append("⚠ AUDIT LOG NOT WRITTEN — decision not recorded in the audit trail (see server logs)")
+
+    return " | ".join(created)
+
+
 async def _create_lifecycle_task(
     *,
     title: str,
@@ -500,7 +583,23 @@ async def zone1_decide(
         }
 
         cascade_result = ""
-        if body.decision in ("Accept", "Edit and Accept"):
+        if item.get("ControlId") and body.decision == "Edit and Accept":
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"{item['ControlId']} is defined by {item.get('SourceDocumentCode') or 'its document'}. "
+                    "Its wording is changed in that document, not here: reject this item and "
+                    "raise the change through Document Lifecycle."
+                ),
+            )
+        if item.get("ControlId") and body.decision == "Accept":
+            try:
+                cascade_result = await _definition_accept_cascade(item, user, rationale)
+            except CascadeError as ce:
+                await _mark_cascade_failed(item_id, "1", body.decision, rationale, user, ce)
+                raise _cascade_failed_http(ce)
+            updates["CascadeResult"] = cascade_result
+        elif body.decision in ("Accept", "Edit and Accept"):
             overrides = {
                 "rationale":                    rationale,
                 "control_statement":            body.control_statement,

@@ -255,7 +255,7 @@ _HEADER_KEYS: dict[str, tuple[str, ...]] = {
     "parent": ("parent document", "parent"),
     "children": ("child documents", "child document"),
     "related": ("related documents", "related document"),
-    "owner": ("document owner", "owner"),
+    "owner": ("document owner", "owner", "domain owner"),
     "approval_authority": ("approval authority",),
     "first_pass": ("first pass approval", "first pass"),
     "final_approval": ("final approval",),
@@ -314,7 +314,7 @@ def _header_tables(content: DocumentContent) -> list[tuple[str, list[tuple[str, 
             continue
         first = _cells(table.rows[0])
         opens_as_block = bool(first) and (
-            norm(" ".join(first)) in ("control block", "field value", "field detail")
+            norm(" ".join(first)) in ("control block", "control metadata value", "field value", "field detail")
             or norm(first[0]) in _HEADER_LABELS
         )
         if not opens_as_block:

@@ -67,8 +67,7 @@ def test_procedures_still_citing_the_retired_dp_002_are_reported(library):
                  if f.finding.kind is FindingKind.IMPLEMENTS_UNDEFINED and "DP-002" in f.finding.message}
     # Two cite it directly; the Operations Procedure's "Implements DP-001 to
     # DP-046" covers it by range.
-    assert undefined == {"DRG-QI-PRO-PDD", "DRG-QI-PRO-PGA",
-                         "03 Data Protection Operations Procedure - Production Candidate.docx"}
+    assert undefined == {"DRG-QI-PRO-PDD", "DRG-QI-PRO-PGA", "DRG-QI-PRO-DPOPS-01-26"}
 
 
 def test_edited_copies_of_the_it_standard_are_reported_and_summaries_are_not(library):

@@ -9,6 +9,7 @@
 # endpoint was dead/unused code and has been removed.
 # =============================================================================
 
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Optional
@@ -49,6 +50,13 @@ def _handle(exc: Exception, ctx: str):
     raise HTTPException(status_code=500, detail=f"Error: {ctx}")
 
 
+def _definition(fields: dict):
+    try:
+        return json.loads(fields.get("DefinitionJson") or "null")
+    except (TypeError, ValueError):
+        return None
+
+
 def _sp_to_control(item: dict) -> dict:
     f = item.get("fields", {})
     return {
@@ -66,6 +74,9 @@ def _sp_to_control(item: dict) -> dict:
         "Status":           f.get("Status", "Active"),
         "ConfidenceScore":  f.get("ConfidenceScore", 0.0),
         "QueueItemId":      f.get("QueueItemId", ""),
+        "ControlId":        f.get("ControlId", ""),
+        "BlockedReason":    f.get("BlockedReason", ""),
+        "Definition":       _definition(f),
         "created":          item.get("createdDateTime", ""),
         "modified":         item.get("lastModifiedDateTime", ""),
     }

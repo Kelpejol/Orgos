@@ -270,10 +270,17 @@ const DecisionPanel = ({ item, onDecide, isPending }) => {
         </div>
       )}
 
-      {/* 6 decision buttons — 2 column grid */}
+      {item.ControlId && !reviewerMode && (
+        <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginBottom: 8 }}>
+          This wording comes from its defining document. To change it, reject and raise
+          the change through Document Lifecycle.
+        </div>
+      )}
+
+      {/* Decision buttons — 2 column grid */}
       {!reviewerMode && (
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-          {DECISIONS.map((d) => (
+          {DECISIONS.filter((d) => !(item.ControlId && d.key === "Edit and Accept")).map((d) => (
             <button
               key={d.key}
               onClick={() => handleDecide(d.key)}
@@ -318,6 +325,97 @@ const DecisionPanel = ({ item, onDecide, isPending }) => {
 };
 
 // =============================================================================
+//  Control definition — items raised by the library sync, keyed by Control ID.
+//  Read from the defining document, not inferred, so there is no confidence
+//  score; a Changed item shows exactly what the document changed.
+// =============================================================================
+
+const DEFINITION_FIELDS = [
+  ["requirement", "Requirement"],
+  ["trigger", "Trigger"],
+  ["responsibility_as_written", "Accountable / Executing"],
+  ["evidence_as_written", "Evidence"],
+  ["risk", "Risk"],
+  ["failure_route", "Failure route"],
+  ["exception_route", "Exception route"],
+  ["mapping_as_written", "Mapping"],
+  ["authority", "Governing authority"],
+];
+
+const asText = (v) =>
+  v && typeof v === "object"
+    ? Object.entries(v).map(([k, x]) => `${k}: ${x}`).join("; ")
+    : v || "";
+
+const DiffRow = ({ d }) => (
+  <div style={{ marginBottom: 10 }}>
+    <div style={{ fontSize: 10, fontWeight: 600, color: "var(--color-text-tertiary)",
+                  textTransform: "uppercase", letterSpacing: 0.4, marginBottom: 3 }}>
+      {d.label}
+    </div>
+    {asText(d.before) && (
+      <div style={{ fontSize: 12, lineHeight: 1.45, padding: "5px 8px", borderRadius: 6,
+                    background: "#FCEBEB", color: "#791F1F", textDecoration: "line-through",
+                    marginBottom: 3 }}>
+        {asText(d.before)}
+      </div>
+    )}
+    <div style={{ fontSize: 12, lineHeight: 1.45, padding: "5px 8px", borderRadius: 6,
+                  background: "#E1F5EE", color: "#085041" }}>
+      {asText(d.after) || <em>(no longer stated)</em>}
+    </div>
+  </div>
+);
+
+const DefinitionPanel = ({ item }) => {
+  const c = item.Candidate || {};
+  const where = c.defined_in || {};
+  const changed = item.ChangeKind === "Changed";
+  return (
+    <div>
+      <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginBottom: 10 }}>
+        Defined in <strong>{c.defined_in_label || item.SourceDocumentCode}</strong>
+        {where.section ? ` · ${where.section}` : ""}
+        {where.version ? ` · v${where.version}` : ""}
+      </div>
+
+      {changed && (item.Diff || []).length > 0 && (
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 8 }}>
+            What the document changed
+          </div>
+          {item.Diff.map((d) => <DiffRow key={d.field} d={d} />)}
+        </div>
+      )}
+
+      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>
+        {changed ? "Full definition after the change" : "Definition as stated"}
+      </div>
+      {DEFINITION_FIELDS.map(([key, label]) =>
+        c[key] ? <Field key={key} l={label} v={c[key]} /> : null
+      )}
+      {(c.evidence || []).some((e) => e.record_id) && (
+        <Field l="Records" v={c.evidence.filter((e) => e.record_id)
+          .map((e) => `${e.record_id}${e.name ? ` ${e.name}` : ""}`).join("; ")} />
+      )}
+      {c.responsibility_ambiguous && (
+        <div style={{ padding: "8px 10px", background: "#FAEEDA", borderRadius: 6,
+                      fontSize: 11, color: "#633806", marginTop: 8 }}>
+          “{c.responsibility_as_written}” could be one role or two. Until the Role
+          Catalogue settles it, accepting will record this control as Blocked.
+        </div>
+      )}
+      {item.DeficiencyReason && (
+        <div style={{ padding: "8px 10px", background: "#FCEBEB", borderRadius: 6,
+                      fontSize: 11, color: "#791F1F", marginTop: 8 }}>
+          {item.DeficiencyReason} Fix it in the document; accepting records the control as stated.
+        </div>
+      )}
+    </div>
+  );
+};
+
+// =============================================================================
 //  Queue item card — same anatomy for all three tabs
 // =============================================================================
 
@@ -336,7 +434,9 @@ const QueueCard = ({ item, isCompliance, onDecide, isPending }) => {
   };
   const ts = typeStyles[itemType] || typeStyles.Extraction;
 
+  const isDefinition = Boolean(item.ControlId);
   const primaryText =
+    (isDefinition && `${item.ControlId} — ${item.Candidate?.title || item.Title}`) ||
     item.ControlStatement ||
     item.ResponsibilityStatement ||
     item.FindingStatement ||
@@ -344,6 +444,7 @@ const QueueCard = ({ item, isCompliance, onDecide, isPending }) => {
     "Untitled item";
 
   const secondaryText =
+    (isDefinition && item.ControlStatement) ||
     item.RiskStatement || item.OrphanReason || item.RemediationRequired || "";
 
   return (
@@ -397,6 +498,9 @@ const QueueCard = ({ item, isCompliance, onDecide, isPending }) => {
             >
               {itemType}
             </span>
+            {isDefinition && item.ChangeKind && (
+              <StatusBadge label={item.ChangeKind} small />
+            )}
             {item.DocumentType && (
               <StatusBadge label={item.DocumentType} small />
             )}
@@ -405,7 +509,7 @@ const QueueCard = ({ item, isCompliance, onDecide, isPending }) => {
             {item.CompletenessFlag === "DEFICIENT" && (
               <StatusBadge label="Deficient" small />
             )}
-            {isLowConf && (
+            {isLowConf && !isDefinition && (
               <span
                 style={{
                   fontSize: 9,
@@ -452,7 +556,7 @@ const QueueCard = ({ item, isCompliance, onDecide, isPending }) => {
             <div
               style={{
                 fontSize: 11,
-                color: "#A32D2D",
+                color: isDefinition ? "var(--color-text-secondary)" : "#A32D2D",
                 flex: 1,
                 lineHeight: 1.4,
               }}
@@ -462,9 +566,15 @@ const QueueCard = ({ item, isCompliance, onDecide, isPending }) => {
                 : secondaryText}
             </div>
           )}
-          <div style={{ minWidth: 110 }}>
-            <ConfidenceBar score={confidence} />
-          </div>
+          {isDefinition ? (
+            <span style={{ fontSize: 10, color: "var(--color-text-tertiary)", whiteSpace: "nowrap" }}>
+              From document
+            </span>
+          ) : (
+            <div style={{ minWidth: 110 }}>
+              <ConfidenceBar score={confidence} />
+            </div>
+          )}
         </div>
 
         {/* Source */}
@@ -548,8 +658,10 @@ const QueueCard = ({ item, isCompliance, onDecide, isPending }) => {
               marginTop: 4,
             }}
           >
+            {isDefinition && <DefinitionPanel item={item} />}
+
             {/* Control details */}
-            {item.ControlStatement && (
+            {item.ControlStatement && !isDefinition && (
               <>
                 {item.RiskStatement && (
                   <Field l="Risk" v={item.RiskStatement} />

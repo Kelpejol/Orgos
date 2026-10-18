@@ -175,6 +175,16 @@ class LibraryIndex:
         ]
 
     @property
+    def defined_ids(self) -> list[str]:
+        """Control IDs with exactly one defining statement, sorted."""
+        return sorted(cid for cid, s in self._definers.items() if s)
+
+    @property
+    def contested_ids(self) -> list[str]:
+        """Control IDs two equally authoritative documents both define."""
+        return sorted(self._contested)
+
+    @property
     def defining_documents(self) -> list[ParsedDocument]:
         """Documents that define at least one control."""
         docs = {id(s.document): s.document for s in self._definers.values() if s}
