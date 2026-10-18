@@ -18,7 +18,6 @@ import { CascadeImpactPreview } from "../../components/shared/CascadeImpactModal
 import ReviseDocumentModal from "../../components/shared/ReviseDocumentModal.jsx";
 import CdiFixPanel from "../../components/shared/CdiFixPanel.jsx";
 import DocumentViewer from "../../components/shared/DocumentViewer.jsx";
-import ReadOnlyLink from "../../components/shared/ReadOnlyLink.jsx";
 import FeedbackAmendPanel from "../../components/shared/FeedbackAmendPanel.jsx";
 import apiClient from "../../api/grcApi.js";
 import { useAiSuggestion } from "../../hooks/useAiSuggestion.js";
@@ -440,14 +439,6 @@ const DetailsModal = ({ doc, onClose }) => {
         )}
 
         {/* SharePoint file link */}
-        {/* Never the editable webUrl: revisions go download → revise → upload,
-            so the CDI check runs. Editing in place would bypass it. */}
-        {doc.SharePointFileUrl && (
-          <div style={{ marginTop: 14 }}>
-            <ReadOnlyLink docId={doc.id} />
-          </div>
-        )}
-
         <div style={{ marginTop: 18 }}>
           <button onClick={onClose}
             style={{ padding: "8px 16px", fontSize: 12, borderRadius: 8,

@@ -11,7 +11,6 @@
 // =============================================================================
 
 import { useEffect, useState } from "react";
-import ReadOnlyLink from "./ReadOnlyLink.jsx";
 
 const BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
@@ -84,7 +83,6 @@ export default function DocumentViewer({ doc, onClose, onDownload }) {
                 Download
               </button>
             )}
-            {doc.SharePointFileUrl && <ReadOnlyLink docId={doc.id} />}
             <button onClick={onClose} style={{ fontSize: 22, lineHeight: 1, border: "none",
               background: "transparent", color: "var(--color-text-tertiary)", cursor: "pointer" }}>×</button>
           </div>
