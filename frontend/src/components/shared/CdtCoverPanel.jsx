@@ -261,9 +261,12 @@ export default function CdtCoverPanel({ docId, docCode, lifecycleApi, onClose })
       try {
         // Best-effort and never blocking: the panel must open to edit cover
         // facts even if the file itself cannot be inspected right now.
-        lifecycleApi.coverStatus(docId)
-          .then((st) => { if (live) setCoverStatus(st); })
-          .catch(() => { if (live) setCoverStatus(null); });
+        if (typeof lifecycleApi.coverStatus === "function" &&
+            typeof lifecycleApi.attachCover === "function") {
+          lifecycleApi.coverStatus(docId)
+            .then((st) => { if (live) setCoverStatus(st); })
+            .catch(() => { if (live) setCoverStatus(null); });
+        }
 
         const data = await lifecycleApi.getCover(docId);
         if (!live) return;
@@ -381,6 +384,11 @@ export default function CdtCoverPanel({ docId, docCode, lifecycleApi, onClose })
     try {
       const result = await lifecycleApi.attachCover(docId);
       const st = await lifecycleApi.coverStatus(docId).catch(() => null);
+      if (result.wrote_to_sharepoint === false) {
+        notify({ tone: "info", title: "Dev mode",
+                 message: result.detail || "The SharePoint document was not changed." });
+        setCoverStatus(st); setAttaching(false); return;
+      }
       setCoverStatus(st);
       notify(result.already_templated
         ? { tone: "info", title: "Already has a cover", message: result.detail || "Nothing to attach." }

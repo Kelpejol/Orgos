@@ -99,6 +99,14 @@ class Settings(BaseSettings):
     log_level: str = Field(default="DEBUG")
     skip_auth: bool = Field(default=False)
 
+    # Whether the app may WRITE BACK to the documents in SharePoint — applying
+    # CDI fixes, applying amendments, attaching a CDT cover. In "dev" the edit
+    # is still made and shown in full (preview, outcomes, re-check), it is just
+    # never uploaded, so the live library cannot be marked up while the
+    # workflow is still being tried out. "live" writes as normal.
+    #   DOCUMENT_WRITE_MODE=dev | live   (unset: dev in development, live in prod)
+    document_write_mode: str = Field(default="")
+
     # ── OpenTelemetry / Grafana observability ────────────────────────────
     # Single-line enablement for DevOps:
     # OTEL_EXPORTER_OTLP_ENDPOINT=http://grafana-alloy:4318
@@ -179,6 +187,18 @@ class Settings(BaseSettings):
     @property
     def is_development(self) -> bool:
         return self.environment.lower() == "development"
+
+    @property
+    def document_writes_live(self) -> bool:
+        """True when edits may be uploaded back to the SharePoint document."""
+        mode = (self.document_write_mode or "").strip().lower()
+        if mode in ("live", "prod", "production", "on", "true"):
+            return True
+        if mode in ("dev", "development", "off", "false", "dry-run", "dry_run"):
+            return False
+        # Unset: follow the environment, so a development server does not edit
+        # the real library until someone says so.
+        return not self.is_development
 
     @property
     def graph_token_url(self) -> str:

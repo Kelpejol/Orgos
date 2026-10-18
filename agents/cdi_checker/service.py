@@ -1397,3 +1397,58 @@ async def run_cdi_check(
         "checks":       checks,
         "used_ai":      used_ai,
     }
+
+
+# =============================================================================
+#  Fix validation — a fix must actually satisfy the check it claims to fix
+#
+#  The insert templates are editable, so a reviewer can type anything into
+#  them. Writing "Version: Draft" into a controlled document leaves CDI-15
+#  failing for the same reason as before, and the reviewer tries again — which
+#  is how one document ended up carrying three contradictory version lines.
+#
+#  So the content is run through the very check it is meant to satisfy BEFORE
+#  it is written. Deterministic checks only: the language checks (CDI-06/07/08)
+#  need the whole document for context and are not insert-based anyway.
+# =============================================================================
+
+_INSERT_VALIDATORS = {
+    "CDI-02": check_02_revision_history,
+    "CDI-03": check_03_purpose_section,
+    "CDI-04": check_04_scope_section,
+    "CDI-05": check_05_responsibilities_section,
+    "CDI-09": check_09_standards_references,
+    "CDI-10": check_10_related_documents,
+    "CDI-11": check_11_classification_label,
+    "CDI-12": check_12_owner_identified,
+    "CDI-14": check_14_effective_date,
+    "CDI-15": check_15_version_number,
+}
+
+
+def validate_fix_content(check_id: str, text: str, heading: str = "") -> tuple[bool, str]:
+    """
+    Would this content satisfy `check_id`? Returns (ok, reason).
+
+    The heading is included because that is how the content will read in the
+    document — a Purpose section is its heading plus its body, and the check
+    looks for both.
+    """
+    validator = _INSERT_VALIDATORS.get(check_id)
+    if validator is None:
+        return True, ""
+    candidate = f"{heading}\n{text}" if heading else (text or "")
+    if not candidate.strip():
+        return False, "There is nothing to write."
+    try:
+        result = validator(candidate)
+    except Exception as exc:                       # never block on a checker bug
+        logger.warning(f"Fix validation for {check_id} could not run: {exc}")
+        return True, ""
+    if result.get("result") == "PASS":
+        return True, ""
+    rule = _CHECK_RULES.get(check_id, "")
+    return False, (
+        f"This would not satisfy {check_id} — the document would still fail for "
+        f"the same reason, so it has not been written. {rule}"
+    )

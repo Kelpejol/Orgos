@@ -19,7 +19,6 @@ import ReviseDocumentModal from "../../components/shared/ReviseDocumentModal.jsx
 import CdiFixPanel from "../../components/shared/CdiFixPanel.jsx";
 import DocumentViewer from "../../components/shared/DocumentViewer.jsx";
 import FeedbackAmendPanel from "../../components/shared/FeedbackAmendPanel.jsx";
-import CdtCoverPanel from "../../components/shared/CdtCoverPanel.jsx";
 import apiClient from "../../api/grcApi.js";
 import { useAiSuggestion } from "../../hooks/useAiSuggestion.js";
 
@@ -1211,7 +1210,6 @@ const LifecycleCard = ({
   const [showCdiFix,      setShowCdiFix]      = useState(false);
   const [showViewer,      setShowViewer]      = useState(false);
   const [showAmend,       setShowAmend]       = useState(false);
-  const [showCdtCover,    setShowCdtCover]    = useState(false);
   const [approverAction,  setApproverAction]  = useState(null);   // "change" | "reverse"
   const [approverBusy,    setApproverBusy]    = useState(false);
   const [approverErr,     setApproverErr]     = useState("");
@@ -1330,10 +1328,6 @@ const LifecycleCard = ({
     {showAmend && (
       <FeedbackAmendPanel docId={doc.id} docCode={doc.DocumentCode}
         onClose={() => setShowAmend(false)} />
-    )}
-    {showCdtCover && (
-      <CdtCoverPanel docId={doc.id} docCode={doc.DocumentCode} lifecycleApi={lifecycleApi}
-        onClose={() => setShowCdtCover(false)} />
     )}
     <div style={{
       background: "var(--color-background-primary)",
@@ -1806,19 +1800,6 @@ const LifecycleCard = ({
                   cursor: "pointer",
                 }}>
                   Fix CDI issues
-                </button>
-              )}
-              {/* CDT (v06) — cover facts, preview, and (only when the document
-                  has no cover) attaching one. Whether a cover exists is read
-                  from the file by the panel, so this is one button, not two
-                  the officer has to choose between. */}
-              {doc.SharePointFileUrl && (isOwner || isCompliance) && (
-                <button onClick={() => setShowCdtCover(true)} style={{
-                  padding: "7px", fontSize: 11, borderRadius: 7, fontWeight: 600,
-                  border: "1.5px solid #AFA9EC", background: "#EEEDFE", color: "#3C3489",
-                  cursor: "pointer",
-                }}>
-                  Cover & preview
                 </button>
               )}
               {/* Reassign */}

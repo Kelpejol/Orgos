@@ -378,6 +378,18 @@ def _is_heading(p: Paragraph) -> bool:
         return False
 
 
+def _heading_present(doc: Document, heading: str) -> bool:
+    """True if a paragraph already stands as this heading (not prose mentioning it)."""
+    target = normalize_collapsed(heading)
+    if not target:
+        return False
+    for para in doc.paragraphs:
+        text = normalize_collapsed(_para_text(para))
+        if text in (target, f"{target}:") or re.fullmatch(rf"[\d.\s]*{re.escape(target)}:?", text):
+            return True
+    return False
+
+
 def _insertion_anchor(doc: Document, position: str):
     """Return (paragraph, 'before') to insert relative to, or (None, 'end')."""
     paras = doc.paragraphs
@@ -404,6 +416,80 @@ def _new_paragraph(doc: Document, text: str, *, heading: bool = False) -> Paragr
     return para
 
 
+_LABELLED_LINE_RE = re.compile(r"^\s*([^:]{1,40}?)\s*:\s*(.*)$")
+
+
+def _split_label(line: str) -> tuple[str, str]:
+    """'Version: 1.0' -> ('version', '1.0'). ('', line) when it has no label."""
+    m = _LABELLED_LINE_RE.match(line or "")
+    if not m:
+        return "", (line or "").strip()
+    return normalize_collapsed(m.group(1)), m.group(2).strip()
+
+
+def _find_cover_table(doc: Document):
+    """
+    The document's cover table, if it has one: the two-column table near the
+    front whose first column holds control-fact labels. A cover fact belongs
+    IN that table — adding "Version: 1.0" as a floating line above the title
+    of a document that already has a proper cover is not a fix, it is litter.
+    """
+    from lifecycle.cover_detect import COVER_LABELS, _norm_label
+    best, best_hits = None, 0
+    for table in doc.tables:
+        hits = 0
+        for row in table.rows:
+            if len(row.cells) >= 2 and _norm_label(row.cells[0].text) in COVER_LABELS:
+                hits += 1
+        if hits > best_hits:
+            best, best_hits = table, hits
+    return best if best_hits >= 3 else None
+
+
+def _set_cover_row(table, label: str, value: str) -> Optional[str]:
+    """Fill an existing cover row with `value`. Returns the row text, or None."""
+    from lifecycle.cover_detect import _norm_label
+    target = normalize_collapsed(label)
+    for row in table.rows:
+        cells = row.cells
+        if len(cells) < 2:
+            continue
+        cell_label = _norm_label(cells[0].text)
+        if cell_label == target or _norm_label(label) == cell_label:
+            cell = cells[1]
+            para = cell.paragraphs[0]
+            if para.runs:
+                para.runs[0].text = value
+                for r in para.runs[1:]:
+                    r.text = ""
+            else:
+                para.add_run(value)
+            for extra in cell.paragraphs[1:]:
+                for r in extra.runs:
+                    r.text = ""
+            return f"{cells[0].text.strip()} | {value}"
+    return None
+
+
+def _append_cover_row(table, label: str, value: str) -> str:
+    """Add a new label/value row to the cover table, styled like the last one."""
+    row = table.add_row()
+    cells = row.cells
+    cells[0].text = label
+    if len(cells) > 1:
+        cells[1].text = value
+    return f"{label} | {value}"
+
+
+def _existing_labelled_para(doc: Document, label: str) -> Optional[Paragraph]:
+    """A body paragraph that already carries this label, e.g. 'Version: Draft'."""
+    for para in doc.paragraphs:
+        existing, _ = _split_label(_para_text(para))
+        if existing and existing == label:
+            return para
+    return None
+
+
 def _apply_insert(doc: Document, fix_id: str, check_id: str, spec: dict) -> FixOutcome:
     heading = (spec.get("heading") or "").strip()
     text = (spec.get("text") or "").strip()
@@ -415,6 +501,38 @@ def _apply_insert(doc: Document, fix_id: str, check_id: str, spec: dict) -> FixO
         return FixOutcome(fix_id, check_id, "needs_input",
                           "Fill in the [bracketed] parts before applying — placeholders "
                           "must not be written into a controlled document.")
+
+    # ── A labelled cover fact ("Version: 1.0") goes in ONE place, and only
+    # once. Previously every apply inserted a fresh line at the top, so three
+    # attempts at the version left three contradictory lines in the document.
+    if kind == "line":
+        label, value = _split_label(text)
+        if label:
+            cover = _find_cover_table(doc)
+            if cover is not None:
+                row_text = _set_cover_row(cover, label, value)
+                if row_text is None:
+                    pretty = text.split(":", 1)[0].strip()
+                    row_text = _append_cover_row(cover, pretty, value)
+                return FixOutcome(fix_id, check_id, "applied",
+                                  "Set on the document's cover table.",
+                                  before="", after=row_text, changed_texts=[row_text, value])
+
+            existing = _existing_labelled_para(doc, label)
+            if existing is not None:
+                before = _para_text(existing)
+                if normalize_collapsed(before) == normalize_collapsed(text):
+                    return FixOutcome(fix_id, check_id, "already_present",
+                                      f"The document already says “{before}”.", before, before)
+                _restore_para(existing, text)
+                return FixOutcome(fix_id, check_id, "applied",
+                                  "Updated the line already in the document.",
+                                  before, text, changed_texts=[text])
+
+    if heading and _heading_present(doc, heading):
+        return FixOutcome(fix_id, check_id, "already_present",
+                          f"The document already has a “{heading}” section — "
+                          "edit that one rather than adding a second.")
 
     elements = []
     if kind != "line" and heading:

@@ -216,3 +216,29 @@ def test_every_failing_check_states_its_rule():
     flagged = [x for x in res["checks"] if x["result"] in ("FAIL", "WARN")]
     assert flagged and all(x["rule"] for x in flagged)
     assert "v1.0" in c["CDI-15"]["rule"]
+
+
+# ── a fix must satisfy the check it claims to fix ───────────────────────────
+def test_version_words_are_refused_before_they_reach_the_document():
+    from agents.cdi_checker.service import validate_fix_content
+    for bad in ("Version: Draft", "Version: Initial Draft", "Version: TBC"):
+        ok, reason = validate_fix_content("CDI-15", bad)
+        assert not ok and "CDI-15" in reason and "v1.0" in reason
+    assert validate_fix_content("CDI-15", "Version: 1.0")[0]
+
+
+def test_a_date_that_is_not_a_date_is_refused():
+    from agents.cdi_checker.service import validate_fix_content
+    assert not validate_fix_content("CDI-14", "Effective Date: 18|10|2026")[0]
+    assert validate_fix_content("CDI-14", "Effective Date: 18/10/2026")[0]
+
+
+def test_a_section_is_validated_with_its_heading():
+    from agents.cdi_checker.service import validate_fix_content
+    assert validate_fix_content("CDI-03", "This procedure establishes X.", "Purpose")[0]
+    assert not validate_fix_content("CDI-09", "nothing relevant", "Standards References")[0]
+
+
+def test_language_checks_are_not_insert_validated():
+    from agents.cdi_checker.service import validate_fix_content
+    assert validate_fix_content("CDI-07", "anything at all")[0]

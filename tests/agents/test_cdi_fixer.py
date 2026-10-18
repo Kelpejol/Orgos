@@ -231,3 +231,73 @@ def test_preview_of_an_unfixed_document_marks_nothing():
     from agents.cdi_checker.fixer import document_preview
     blocks = document_preview(_build(["A", "B"]))
     assert blocks and not any(x["changed"] for x in blocks)
+
+
+# ── a cover fact goes in ONE place, and only once ────────────────────────────
+def _with_cover(rows, extra=("Body.",)):
+    d = Document()
+    d.add_paragraph("Cloud Access Procedure")
+    t = d.add_table(rows=len(rows), cols=2)
+    for i, (k, v) in enumerate(rows):
+        t.cell(i, 0).text = k
+        t.cell(i, 1).text = v
+    for p in extra:
+        d.add_paragraph(p)
+    b = io.BytesIO(); d.save(b)
+    return b.getvalue()
+
+
+_COVER = [("Document title", "Cloud Access Procedure"),
+          ("Document code", "DRG-ISMS-PRO-CLOUDACCESS"),
+          ("Document owner", "Information Security Officer"),
+          ("Classification", "Internal")]
+
+
+def _line(text, check_id="CDI-15", fix_id="v"):
+    return {"fix_id": fix_id, "check_id": check_id, "action": "insert",
+            "insert": {"kind": "line", "position": "top", "text": text}}
+
+
+def test_cover_fact_is_added_to_the_cover_table_not_above_the_title():
+    nb, out = apply_fixes(_with_cover(_COVER), [_line("Version: 1.0")])
+    assert out[0].status == "applied"
+    d = Document(io.BytesIO(nb))
+    rows = {r.cells[0].text: r.cells[1].text for r in d.tables[0].rows}
+    assert rows["Version"] == "1.0"
+    assert "Version: 1.0" not in "\n".join(p.text for p in d.paragraphs)
+
+
+def test_an_existing_cover_row_is_set_not_duplicated():
+    nb, out = apply_fixes(_with_cover(_COVER + [("Version", "Draft")]),
+                          [_line("Version: 1.0")])
+    d = Document(io.BytesIO(nb))
+    versions = [r.cells[1].text for r in d.tables[0].rows if r.cells[0].text == "Version"]
+    assert versions == ["1.0"]          # set in place, not a second row
+
+
+def test_repeated_attempts_leave_one_line_not_three():
+    """The reported bug: Draft, then Initial Draft, then 1.0 — three lines."""
+    b = _build(["Cloud Access Procedure", "Body."])
+    for attempt in ("Version: Draft", "Version: Initial Draft", "Version: 1.0"):
+        b, out = apply_fixes(b, [_line(attempt)])
+    text = _text(b)
+    assert text.count("Version:") == 1
+    assert "Version: 1.0" in text
+
+
+def test_identical_content_is_reported_not_rewritten():
+    b = _build(["Policy", "Version: 1.0", "Body."])
+    nb, out = apply_fixes(b, [_line("Version: 1.0")])
+    assert out[0].status == "already_present"
+    assert _text(nb).count("Version: 1.0") == 1
+
+
+def test_a_second_copy_of_an_existing_section_is_refused():
+    d = Document()
+    d.add_paragraph("Policy")
+    d.add_paragraph("Purpose", style="Heading 1")
+    d.add_paragraph("Existing purpose text.")
+    b = io.BytesIO(); d.save(b)
+    nb, out = apply_fixes(b.getvalue(), [_insert("Purpose", "A different purpose.")])
+    assert out[0].status == "already_present"
+    assert _text(nb).count("Purpose") == 1

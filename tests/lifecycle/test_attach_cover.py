@@ -93,10 +93,12 @@ async def test_attach_cover_no_file_yet_returns_404():
 
 
 async def test_attach_cover_grafts_backs_up_and_replaces_file():
+    """The LIVE path — writes are only made when DOCUMENT_WRITE_MODE allows it."""
     doc = _lifecycle_doc()
     grafted_bytes = b"GRAFTED-DOCX-WITH-MARKERS"
 
-    with patch("lifecycle.router.get_list_item", new_callable=AsyncMock) as mock_get, \
+    with patch.object(type(lr.settings), "document_writes_live", property(lambda self: True)), \
+         patch("lifecycle.router.get_list_item", new_callable=AsyncMock) as mock_get, \
          patch("lifecycle.router.update_list_item", new_callable=AsyncMock) as mock_update, \
          patch("lifecycle.router.download_file_from_sharepoint", new_callable=AsyncMock) as mock_dl, \
          patch("lifecycle.router._upload_to_sharepoint", new_callable=AsyncMock) as mock_upload, \
@@ -219,3 +221,30 @@ async def test_download_returns_503_when_file_fetch_fails():
             await lr.download_doc_file("10", user=COMPLIANCE_USER)
 
     assert getattr(exc_info.value, "status_code", None) == 503
+
+
+async def test_attach_cover_in_dev_mode_does_not_touch_sharepoint():
+    """Dev mode still grafts and reports, so the officer sees what would happen —
+    it simply never uploads, so the live library cannot be marked up."""
+    doc = _lifecycle_doc()
+
+    with patch.object(type(lr.settings), "document_writes_live", property(lambda self: False)), \
+         patch("lifecycle.router.get_list_item", new_callable=AsyncMock) as mock_get, \
+         patch("lifecycle.router.update_list_item", new_callable=AsyncMock) as mock_update, \
+         patch("lifecycle.router.download_file_from_sharepoint", new_callable=AsyncMock) as mock_dl, \
+         patch("lifecycle.router._upload_to_sharepoint", new_callable=AsyncMock) as mock_upload, \
+         patch("lifecycle.router.load_master_template", new_callable=AsyncMock) as mock_template, \
+         patch("lifecycle.router.graft_cover_onto_document") as mock_graft:
+
+        mock_get.return_value = {"id": "10", "fields": doc}
+        mock_dl.return_value = (_PLAIN_DOCX, "source.docx")
+        mock_template.return_value = b"MASTER-TEMPLATE-BYTES"
+        mock_graft.return_value = GraftResult(document=b"GRAFTED", images_carried=2, images_skipped=0)
+
+        result = await lr.attach_cdt_cover("10", user=COMPLIANCE_USER)
+
+    assert result["wrote_to_sharepoint"] is False
+    assert result["images_carried"] == 2
+    mock_graft.assert_called_once()          # the work was still done
+    mock_upload.assert_not_called()          # ...and never written
+    mock_update.assert_not_called()

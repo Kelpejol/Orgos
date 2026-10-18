@@ -2182,6 +2182,18 @@ async def attach_cdt_cover(
 
         graft_result = graft_cover_onto_document(existing_bytes, master_bytes)
 
+        if not settings.document_writes_live:
+            logger.info(f"DOCUMENT_WRITE_MODE=dev — cover grafted in memory for "
+                        f"{item_id}; SharePoint not updated.")
+            return {
+                "already_templated": False, "wrote_to_sharepoint": False,
+                "images_carried": graft_result.images_carried,
+                "images_skipped": graft_result.images_skipped,
+                "backup_url": "",
+                "detail": "Dev mode: the cover was grafted and verified, but the "
+                          "SharePoint document was NOT changed.",
+            }
+
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         backup_filename = f"original_upload_{timestamp}.docx"
         backup_url = await _upload_to_sharepoint(item_id, backup_filename, existing_bytes)
@@ -2746,10 +2758,39 @@ async def cdi_fix_apply(
                 detail="Auto-fix only supports .docx files. Upload the editable Word document.",
             )
 
-        # Apply (pure, deterministic)
-        from agents.cdi_checker.fixer import apply_fixes, document_preview
-        fixes = [f.model_dump() for f in body.fixes]
+        # A fix must satisfy the check it claims to fix. Without this, a
+        # reviewer could write "Version: Draft" into the document, see CDI-15
+        # fail for the same reason, try again — and leave the document carrying
+        # every attempt. Rejected fixes are reported, never written.
+        from agents.cdi_checker.service import validate_fix_content
+        fixes, rejected = [], []
+        for f in body.fixes:
+            spec = f.model_dump()
+            if (spec.get("action") or "").lower() == "insert":
+                ins = spec.get("insert") or {}
+                ok, reason = validate_fix_content(
+                    spec.get("check_id", ""), ins.get("text", ""), ins.get("heading", ""))
+            else:
+                ok, reason = validate_fix_content(spec.get("check_id", ""), spec.get("replace", ""))
+            (fixes if ok else rejected).append(spec if ok else (spec, reason))
+
+        from agents.cdi_checker.fixer import FixOutcome, apply_fixes, document_preview
+        rejected_outcomes = [
+            FixOutcome(str(spec.get("fix_id", "")), str(spec.get("check_id", "")),
+                       "rejected", reason)
+            for spec, reason in rejected
+        ]
+        if not fixes:
+            return {
+                "document_id": item_id, "applied_count": 0,
+                "outcomes": [_outcome_dict(o) for o in rejected_outcomes],
+                "preview": [], "wrote_to_sharepoint": False,
+                "cdi_status": doc.get("CDIStatus", ""),
+                "message": "Nothing was written — see the reason on each fix.",
+            }
+
         new_bytes, outcomes = apply_fixes(file_bytes, fixes)
+        outcomes = outcomes + rejected_outcomes
 
         applied = [o for o in outcomes if o.status == "applied"]
         if not applied:
@@ -2761,22 +2802,28 @@ async def cdi_fix_apply(
                 "cdi_status": doc.get("CDIStatus", ""),
             }
 
-        # Save as a new version (same path → SharePoint keeps version history)
-        file_url = await _upload_to_sharepoint(item_id, filename, new_bytes)
-
-        # Re-run the CDI check on the fixed document
+        # Re-run the CDI check on the fixed document (on the bytes, either way,
+        # so the reviewer sees the real result even when nothing is uploaded).
         doc_code = item.get("fields", {}).get("DocumentCode", "")
         recheck = await run_cdi_check(new_bytes, filename, doc_code)
         cdi_status, cdi_failures = _cdi_result_to_storage(recheck)
 
-        await update_list_item(_get_list_id(), _LIST_NAME, item_id, {
-            "SharePointFileUrl": file_url,
-            "Revised":           True,
-            "CDIStatus":         cdi_status,
-            "CDIFailures":       cdi_failures,
-        })
-
-        await _audit_cdi_fixes(item_id, doc, user, applied)
+        file_url = ""
+        wrote = settings.document_writes_live
+        if wrote:
+            # Same path → SharePoint keeps the previous version in its history.
+            file_url = await _upload_to_sharepoint(item_id, filename, new_bytes)
+            await update_list_item(_get_list_id(), _LIST_NAME, item_id, {
+                "SharePointFileUrl": file_url,
+                "Revised":           True,
+                "CDIStatus":         cdi_status,
+                "CDIFailures":       cdi_failures,
+            })
+            await _audit_cdi_fixes(item_id, doc, user, applied)
+        else:
+            logger.info(
+                f"DOCUMENT_WRITE_MODE=dev — {len(applied)} CDI fix(es) applied in "
+                f"memory for {item_id}; SharePoint not updated.")
 
         # What the document now says, with the applied changes marked, so the
         # reviewer confirms the result in place rather than trusting a count.
@@ -2794,7 +2841,13 @@ async def cdi_fix_apply(
             "cdi_status":     cdi_status,
             "remaining_failures": recheck.get("fail_count", 0) if not recheck.get("passed") else 0,
             "sharepoint_url": file_url,
-            "message":        f"Applied {len(applied)} fix(es). CDI re-check: {cdi_status}.",
+            "wrote_to_sharepoint": wrote,
+            "message": (
+                f"Applied {len(applied)} fix(es). CDI re-check: {cdi_status}."
+                if wrote else
+                f"Dev mode: {len(applied)} fix(es) applied and re-checked "
+                f"({cdi_status}), but the SharePoint document was NOT changed."
+            ),
         }
 
     except HTTPException:
@@ -3020,11 +3073,22 @@ async def amend_apply(
                     "outcomes": [_outcome_dict(o) for o in outcomes],
                     "message": "No amendments could be applied — see per-item reasons."}
 
-        file_url = await _upload_to_sharepoint(item_id, filename, new_bytes)
-
         doc_code = item.get("fields", {}).get("DocumentCode", "")
         recheck = await run_cdi_check(new_bytes, filename, doc_code)
         cdi_status, cdi_failures = _cdi_result_to_storage(recheck)
+
+        if not settings.document_writes_live:
+            logger.info(f"DOCUMENT_WRITE_MODE=dev — {len(applied)} amendment(s) applied "
+                        f"in memory for {item_id}; SharePoint not updated.")
+            return {
+                "document_id": item_id, "applied_count": len(applied),
+                "outcomes": [_outcome_dict(o) for o in outcomes],
+                "wrote_to_sharepoint": False, "cdi_status": cdi_status,
+                "message": f"Dev mode: {len(applied)} amendment(s) applied and "
+                           "re-checked, but the SharePoint document was NOT changed.",
+            }
+
+        file_url = await _upload_to_sharepoint(item_id, filename, new_bytes)
 
         # Neutral change summary for the approver (no stakeholder names).
         applied_ids = {o.fix_id for o in applied}

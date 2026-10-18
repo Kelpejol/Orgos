@@ -375,8 +375,17 @@ function Results({ result, onDone }) {
           CDI re-check: <b style={{ color: passed ? C.auto.fg : C.choice.fg }}>{result.cdi_status}</b>
           {!passed && result.remaining_failures > 0 &&
             ` — ${result.remaining_failures} issue${result.remaining_failures === 1 ? "" : "s"} remaining.`}
-          {passed && " — the document now passes. A new version was saved."}
+          {passed && result.wrote_to_sharepoint !== false &&
+            " — the document now passes. A new version was saved."}
         </div>
+        {result.wrote_to_sharepoint === false && (
+          <div style={{ marginTop: 8, fontSize: 11.5, fontWeight: 600, color: C.choice.fg,
+            background: "var(--color-background-primary)", border: `1px dashed ${C.choice.bd}`,
+            borderRadius: 8, padding: "7px 10px" }}>
+            Dev mode — the SharePoint document was not changed. This is the result
+            the fixes would produce.
+          </div>
+        )}
       </div>
 
       <ChangePreview blocks={result.preview || []} />
@@ -387,12 +396,17 @@ function Results({ result, onDone }) {
           <b style={{ color: C.auto.fg }}>{o.check_id}</b> applied
         </div>
       ))}
-      {other.map((o, i) => (
-        <div key={i} style={{ fontSize: 12, padding: "8px 10px", marginBottom: 6, borderRadius: 8,
-          background: C.manual.bg, border: `1px solid ${C.manual.bd}`, color: "var(--color-text-secondary)" }}>
-          <b>{o.check_id}</b> — {o.detail}
-        </div>
-      ))}
+      {other.map((o, i) => {
+        const blocked = o.status === "rejected" || o.status === "already_present";
+        return (
+          <div key={i} style={{ fontSize: 12, padding: "8px 10px", marginBottom: 6, borderRadius: 8,
+            background: blocked ? C.choice.bg : C.manual.bg,
+            border: `1px solid ${blocked ? C.choice.bd : C.manual.bd}`,
+            color: blocked ? C.choice.fg : "var(--color-text-secondary)" }}>
+            <b>{o.check_id}</b>{o.status === "rejected" ? " — not written" : ""} — {o.detail}
+          </div>
+        );
+      })}
 
       <button onClick={onDone} style={{ marginTop: 12, width: "100%", padding: "10px", fontSize: 13,
         fontWeight: 600, borderRadius: 9, border: "none", background: "var(--color-text-primary)",
