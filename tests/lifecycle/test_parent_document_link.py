@@ -161,7 +161,8 @@ async def test_progress_writes_parent_title_only_when_no_url_match():
     doc = _lifecycle_doc(CDTCoverFacts=CdtCoverFacts(parent_document="Some Unrelated Document").to_json())
     body = lr.ProgressDoc(current_stage="Review", stakeholders=[{"oid": "s1", "name": "Stakeholder One"}])
 
-    with patch("lifecycle.router.get_list_item", new_callable=AsyncMock) as mock_get, \
+    with patch.object(type(lr.settings), "app_url", property(lambda self: "")), \
+         patch("lifecycle.router.get_list_item", new_callable=AsyncMock) as mock_get, \
          patch("lifecycle.router.update_list_item", new_callable=AsyncMock) as mock_update, \
          patch("grc.service.get_documents", new_callable=AsyncMock) as mock_docs:
 
@@ -178,7 +179,8 @@ async def test_progress_skips_parent_lookup_when_no_parent_document_set():
     doc = _lifecycle_doc(CDTCoverFacts=CdtCoverFacts().to_json())
     body = lr.ProgressDoc(current_stage="Review", stakeholders=[{"oid": "s1", "name": "Stakeholder One"}])
 
-    with patch("lifecycle.router.get_list_item", new_callable=AsyncMock) as mock_get, \
+    with patch.object(type(lr.settings), "app_url", property(lambda self: "")), \
+         patch("lifecycle.router.get_list_item", new_callable=AsyncMock) as mock_get, \
          patch("lifecycle.router.update_list_item", new_callable=AsyncMock) as mock_update, \
          patch("grc.service.get_documents", new_callable=AsyncMock) as mock_docs:
 
@@ -189,3 +191,38 @@ async def test_progress_skips_parent_lookup_when_no_parent_document_set():
     mock_docs.assert_not_called()
     assert mock_update.call_count == 1  # only the critical write, no parent-link follow-up
 
+
+
+# -----------------------------------------------------------------------------
+#  ReadDocumentUrl — the ready-made link Power Automate puts in Teams
+# -----------------------------------------------------------------------------
+
+async def test_progress_writes_a_ready_made_read_link():
+    """The flow should pick a field, not build a URL — and never link the
+    editable Word file, which most people here can change by typing in it."""
+    doc = _lifecycle_doc(CDTCoverFacts=CdtCoverFacts().to_json())
+    body = lr.ProgressDoc(current_stage="Review", stakeholders=[{"oid": "s1", "name": "S One"}])
+
+    with patch.object(type(lr.settings), "app_url", property(lambda self: "https://orgos.example")), \
+         patch("lifecycle.router.get_list_item", new_callable=AsyncMock) as mock_get, \
+         patch("lifecycle.router.update_list_item", new_callable=AsyncMock) as mock_update:
+
+        mock_get.return_value = {"id": "10", "fields": doc}
+        await lr.progress_doc("10", body, user=COMPLIANCE_USER)
+
+    _, best_effort = mock_update.call_args_list
+    assert best_effort.args[3] == {"ReadDocumentUrl": "https://orgos.example/read/10"}
+
+
+async def test_progress_succeeds_when_no_app_url_is_configured():
+    doc = _lifecycle_doc(CDTCoverFacts=CdtCoverFacts().to_json())
+    body = lr.ProgressDoc(current_stage="Review", stakeholders=[{"oid": "s1", "name": "S One"}])
+
+    with patch.object(type(lr.settings), "app_url", property(lambda self: "")), \
+         patch("lifecycle.router.get_list_item", new_callable=AsyncMock) as mock_get, \
+         patch("lifecycle.router.update_list_item", new_callable=AsyncMock) as mock_update:
+
+        mock_get.return_value = {"id": "10", "fields": doc}
+        await lr.progress_doc("10", body, user=COMPLIANCE_USER)
+
+    assert mock_update.call_count == 1   # only the critical write

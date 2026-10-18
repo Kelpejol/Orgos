@@ -223,6 +223,8 @@ export default function LifecycleApprove() {
   const isApproved = doc.ApprovalStatus === "Approved";
   const isRejected = doc.ApprovalStatus === "Rejected" && doc.Stage === "Review";
   const canDecide = isDesignatedApprover && doc.Stage === "Approval" && !isApproved;
+  // Decided — nothing here is a decision aid any more.
+  const decided = isApproved || isRejected;
 
   // Parse feedback
   let feedbackList = [];
@@ -255,12 +257,14 @@ export default function LifecycleApprove() {
         </div>
         <div style={{ fontSize: 20, fontWeight: 700, marginBottom: 8 }}>{doc.Title}</div>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <span style={{
-            fontSize: 11, padding: "2px 8px", borderRadius: 4,
-            background: "#E6F1FB", color: "#0C447C", border: "0.5px solid #85B7EB",
-          }}>
-            {doc.Stage === "Approval" ? "Pending approval" : doc.Stage}
-          </span>
+          {!decided && (
+            <span style={{
+              fontSize: 11, padding: "2px 8px", borderRadius: 4,
+              background: "#E6F1FB", color: "#0C447C", border: "0.5px solid #85B7EB",
+            }}>
+              {doc.Stage === "Approval" ? "Pending approval" : doc.Stage}
+            </span>
+          )}
           {isApproved && (
             <span style={{
               fontSize: 11, padding: "2px 8px", borderRadius: 4,
@@ -281,7 +285,7 @@ export default function LifecycleApprove() {
       </div>
 
       {/* Role banner */}
-      {!isDesignatedApprover && doc.Stage === "Approval" && (
+      {!isDesignatedApprover && doc.Stage === "Approval" && !decided && (
         <div style={{
           background: "#FFF8E1", border: "1px solid #FAC775", borderRadius: 10,
           padding: "12px 16px", marginBottom: 20, fontSize: 12, color: "#633806",
@@ -335,15 +339,28 @@ export default function LifecycleApprove() {
           </div>
 
           {/* AI approval brief — document merits + neutral change summary.
-              The approver does NOT see raw stakeholder comments. */}
-          {(() => {
+              The approver does NOT see raw stakeholder comments. Hidden once a
+              decision is made: it is a decision aid, not a record. */}
+          {!decided && (() => {
             // Robust to shape: {brief}, the brief itself, or a JSON string.
             let s = aiAssessmentHook.suggestion;
             if (typeof s === "string") { try { s = JSON.parse(s); } catch { s = null; } }
-            const brief =
+            let brief =
               (s && s.brief) ||
               (s && (s.purpose || s.readiness || s.key_controls) ? s : {}) ||
               {};
+            if (typeof brief === "string") {
+              try { brief = JSON.parse(brief); } catch { brief = { readiness_note: brief }; }
+            }
+            // A brief saved before the parsing fix carries the whole JSON in
+            // readiness_note. Recover it rather than showing the reader braces.
+            if (typeof brief.readiness_note === "string" &&
+                brief.readiness_note.trim().startsWith("{")) {
+              try { brief = { ...brief, ...JSON.parse(brief.readiness_note) }; } catch { /**/ }
+            }
+            // Never render an object or array as if it were a sentence.
+            const line = (v) => (typeof v === "string" ? v : Array.isArray(v) ? v.join("; ")
+                                 : v == null ? "" : JSON.stringify(v));
             const ready = brief.readiness === "Ready for approval";
             return (
               <div style={{
@@ -383,11 +400,12 @@ export default function LifecycleApprove() {
                     {brief.readiness_note && (
                       <div style={{ fontSize: 12.5, color: "#333", lineHeight: 1.6,
                         padding: "10px 12px", background: "#F8F8F8", borderRadius: 8 }}>
-                        {brief.readiness_note}
+                        {line(brief.readiness_note)}
                       </div>
                     )}
-                    {[["Purpose", brief.purpose], ["Scope", brief.scope],
-                      ["Standards", brief.standards_coverage], ["Document quality", brief.cdi_note]]
+                    {[["Purpose", line(brief.purpose)], ["Scope", line(brief.scope)],
+                      ["Standards", line(brief.standards_coverage)],
+                      ["Document quality", line(brief.cdi_note)]]
                       .filter(([, v]) => v).map(([l, v]) => (
                       <div key={l}>
                         <div style={{ fontSize: 10.5, fontWeight: 700, color: "#999",
@@ -401,7 +419,7 @@ export default function LifecycleApprove() {
                           textTransform: "uppercase", letterSpacing: "0.4px", marginBottom: 5 }}>Key controls</div>
                         <ul style={{ margin: 0, paddingLeft: 18 }}>
                           {brief.key_controls.map((c, i) => (
-                            <li key={i} style={{ fontSize: 12.5, color: "#333", lineHeight: 1.5, marginBottom: 2 }}>{c}</li>
+                            <li key={i} style={{ fontSize: 12.5, color: "#333", lineHeight: 1.5, marginBottom: 2 }}>{line(c)}</li>
                           ))}
                         </ul>
                       </div>
@@ -416,7 +434,7 @@ export default function LifecycleApprove() {
                           {brief.change_summary.map((c, i) => (
                             <div key={i} style={{ fontSize: 12, color: "#0B5C48", lineHeight: 1.5,
                               padding: "6px 10px", background: "#E7F5F0", borderRadius: 8,
-                              border: "0.5px solid #9FD9C8" }}>{c}</div>
+                              border: "0.5px solid #9FD9C8" }}>{line(c)}</div>
                           ))}
                         </div>
                       ) : (
@@ -549,8 +567,11 @@ export default function LifecycleApprove() {
               <div style={{ fontSize: 14, fontWeight: 600, color: "#085041", marginBottom: 4 }}>
                 Document approved
               </div>
-              <div style={{ fontSize: 12, color: "#085041" }}>
+              <div style={{ fontSize: 12, color: "#085041", lineHeight: 1.6 }}>
                 Approved by {doc.ApproverName || "the approver"} on {formatDate(doc.ApprovedDate)}.
+                <div style={{ marginTop: 6, opacity: 0.85 }}>
+                  It is published to the Document Register and no longer needs a decision.
+                </div>
               </div>
             </div>
           )}

@@ -286,6 +286,8 @@ async def _sp_to_doc(item: dict) -> dict:
         # have been added by an admin and/or no match was found in the Register.
         "ParentDocumentTitle":      f.get("ParentDocumentTitle", ""),
         "ParentDocumentUrl":        f.get("ParentDocumentUrl", ""),
+        # Ready-made read-only link for Teams notifications — see progress_doc().
+        "ReadDocumentUrl":          f.get("ReadDocumentUrl", ""),
         # CDT control facts (v06) — absent/blank until the CDTCoverFacts column
         # has been added by an admin (OrgOS cannot create columns itself) and/or
         # until Compliance has entered any cover facts for this document.
@@ -810,6 +812,13 @@ async def progress_doc(
 
         _parent_doc_fields: dict = {}   # best-effort write, see below
 
+        # A ready-made link to the OrgOS read-only page, for the Power Automate
+        # flow to put in its Teams notification. Without it the flow links at
+        # SharePointFileUrl — the editable Word file — so a reviewer can change
+        # the controlled source by typing in it.
+        if settings.app_url:
+            _parent_doc_fields["ReadDocumentUrl"] = f"{settings.app_url}/read/{item_id}"
+
         if body.current_stage == "Review" and body.stakeholders:
             fields["Stakeholders"] = json.dumps(body.stakeholders)
             if body.sensitisation_deadline:
@@ -846,9 +855,10 @@ async def progress_doc(
                 await update_list_item(_get_list_id(), _LIST_NAME, item_id, _parent_doc_fields)
             except Exception as exc:
                 logger.info(
-                    f"Lifecycle {item_id} progressed, but Parent Document link was not "
-                    f"saved (are the 'ParentDocumentTitle'/'ParentDocumentUrl' columns "
-                    f"present on the Document Lifecycle list yet?): {exc}"
+                    f"Lifecycle {item_id} progressed, but the Parent Document / read "
+                    f"link was not saved (are the 'ParentDocumentTitle', "
+                    f"'ParentDocumentUrl' and 'ReadDocumentUrl' columns present on the "
+                    f"Document Lifecycle list yet?): {exc}"
                 )
 
         # ── Best-effort: write the Person/Group column in a separate PATCH ─────
@@ -3152,7 +3162,7 @@ Return ONLY a JSON array; each item:
 Maximum 12 amendments. Return [] if none apply."""
     try:
         response = await llm_generate(prompt, tier="light", temperature=0.2)
-        data = json.loads(_extract_json_payload(response))
+        data = _extract_json_payload(response)
         return data if isinstance(data, list) else []
     except Exception as exc:
         logger.warning(f"Amendment proposal failed to parse: {exc}")
@@ -3346,13 +3356,17 @@ Return only the JSON object, no other text."""
 
         response_text = await llm_generate(prompt, tier="heavy", temperature=0.2)
 
-        brief = {}
-        try:
-            brief = json.loads(_extract_json_payload(response_text))
-            if not isinstance(brief, dict):
-                brief = {}
-        except Exception:
-            brief = {"readiness_note": response_text} if response_text else {}
+        parsed = _extract_json_payload(response_text)
+        brief = parsed if isinstance(parsed, dict) else {}
+        if not brief:
+            # Unparseable. Say so in one line — never paste the raw model output
+            # into a prose field, which is how the page ended up showing JSON.
+            logger.warning(f"Approval brief for {item_id} was not valid JSON")
+            brief = {
+                "readiness": "Review recommended",
+                "readiness_note": "The brief could not be generated this time. "
+                                  "Try again, or read the document itself.",
+            }
 
         # Ensure the recorded changes always surface even if the model omitted them.
         if recorded_changes and not brief.get("change_summary"):

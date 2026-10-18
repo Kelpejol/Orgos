@@ -107,6 +107,11 @@ class Settings(BaseSettings):
     #   DOCUMENT_WRITE_MODE=dev | live   (unset: dev in development, live in prod)
     document_write_mode: str = Field(default="")
 
+    # Where OrgOS is reached from a browser, e.g. https://orgos.dragnet-solutions.com
+    # Used to build the ready-made "read this document" link that Power Automate
+    # puts in its Teams notifications. Falls back to the first allowed origin.
+    app_base_url: str = Field(default="")
+
     # ── OpenTelemetry / Grafana observability ────────────────────────────
     # Single-line enablement for DevOps:
     # OTEL_EXPORTER_OTLP_ENDPOINT=http://grafana-alloy:4318
@@ -183,6 +188,15 @@ class Settings(BaseSettings):
     def compliance_intake_folder_list(self) -> List[str]:
         """Parse semicolon-separated SharePoint intake folders."""
         return [f.strip() for f in self.compliance_intake_folders.split(";") if f.strip()]
+
+    @property
+    def app_url(self) -> str:
+        """The browser-facing base URL, without a trailing slash."""
+        base = (self.app_base_url or "").strip()
+        if not base:
+            origins = self.allowed_origins_list
+            base = origins[0] if origins else ""
+        return base.rstrip("/")
 
     @property
     def is_development(self) -> bool:
