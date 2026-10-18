@@ -92,6 +92,7 @@ class Settings(BaseSettings):
     audit_log_list_id: str = Field(default="placeholder")
     strategic_risk_register_list_id: str = Field(default="placeholder")
     gap_analysis_list_id: str = Field(default="placeholder")
+    records_catalogue_list_id: str = Field(default="placeholder")
     # ── Application ────────────────────────────────────────────────────────
     environment: str = Field(default="development")
     allowed_origins: str = Field(default="http://localhost:5173")
