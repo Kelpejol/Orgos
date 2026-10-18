@@ -39,10 +39,14 @@ from cdi.model import DocumentRole, ParsedDocument, Severity
 from cdi.parser import parse_document
 from cdi.reader import UnsupportedDocument
 
-# Names that suggest a copy should not be ingested. Reported, not excluded:
-# the real conventions are confirmed from this report first.
+# Names that suggest a copy should not be ingested. Reported, not excluded.
+# NOT "draft": the live library names every document under review "Draft",
+# "Working Draft" or "Draft for Approval" — those are the current documents.
+# NOT "backup": "BCDR Backup, Restore and Recovery Validation Procedure" is a
+# procedure about backups, not a backup copy. Two files sharing one document
+# code (reported under ACROSS DOCUMENTS) is the stronger signal of an old copy.
 _SUSPECT_NAME = re.compile(
-    r"\b(wip|draft|superseded|archived?|old|retired|obsolete|copy of|backup|deprecated)\b",
+    r"\b(wip|superseded|archived?|old|retired|obsolete|copy of|deprecated)\b",
     re.IGNORECASE,
 )
 _ROLE_ORDER = [r.value for r in DocumentRole]
@@ -120,6 +124,23 @@ def report(entries: list[Entry]) -> dict:
         print(f"  {e.path[:62]:62}  {d.role.value:12} {d.header.code or '-':24} "
               f"defines {len(d.controls):3}  carries out {len(d.implemented_ids):3}  {flag}")
 
+    cross = lib.findings()
+    print("\n" + "=" * 100)
+    print("ACROSS DOCUMENTS")
+    print("=" * 100)
+    for kind, n in Counter(f.finding.kind.value for f in cross).most_common():
+        print(f"  {kind:26} {n}")
+    for f in cross:
+        if f.finding.severity is not Severity.INFO:
+            print(f"    {f.finding.severity.value:7} {f.document}: {f.finding.message[:110]}")
+
+    suspects = [e.path for e in entries if _SUSPECT_NAME.search(e.path)]
+    print("\n" + "=" * 100)
+    print("NAMES THAT LOOK LIKE OLD COPIES (not excluded — check these)")
+    print("=" * 100)
+    for p in suspects or ["  (none)"]:
+        print(f"  {p}")
+
     structured = sum(n for r, n in roles.items() if r != DocumentRole.UNSTRUCTURED.value)
     print("\n" + "=" * 100)
     print("SUMMARY")
@@ -134,22 +155,6 @@ def report(entries: list[Entry]) -> dict:
     print(f"  Controls defined: {sum(len(d.controls) for d in docs)}  "
           f"distinct IDs carried out: {len(lib.implemented_by)}")
 
-    cross = lib.findings()
-    print("\n" + "=" * 100)
-    print("ACROSS DOCUMENTS")
-    print("=" * 100)
-    for kind, n in Counter(f.finding.kind.value for f in cross).most_common():
-        print(f"  {kind:26} {n}")
-    for f in cross:
-        if f.finding.severity is not Severity.INFO:
-            print(f"    {f.finding.severity.value:7} {f.document}: {f.finding.message[:110]}")
-
-    suspects = [e.path for e in entries if _SUSPECT_NAME.search(e.path)]
-    print("\n" + "=" * 100)
-    print("NAMES THAT LOOK LIKE DRAFTS OR OLD COPIES (not excluded — check these)")
-    print("=" * 100)
-    for p in suspects or ["  (none)"]:
-        print(f"  {p}")
 
     return {
         "documents": [
