@@ -615,26 +615,21 @@ async def get_withdrawal_impact(item_id: str) -> dict:
     ]
 
     # Standards Map: which clauses will lose all active control coverage?
-    from standards_map.router import CLAUSES
     all_active = [
         i for i in controls
         if i.get("fields", {}).get("Status") not in ("Withdrawn", "Superseded", "Under Review")
     ]
     clauses_at_risk = []
-    for clause_def in CLAUSES:
-        code = clause_def["clause"]
-        clause_controls = [
-            c for c in all_active
-            if c.get("fields", {}).get("ISOClause", "").startswith(code)
-        ]
+    for row in _clause_rows(controls):
+        clause_controls = _covering(row, all_active)
         affected_in_clause = [c for c in clause_controls if str(c["id"]) in affected_control_ids]
         if not affected_in_clause:
             continue
         remaining = [c for c in clause_controls if str(c["id"]) not in affected_control_ids]
         clauses_at_risk.append({
-            "standard":                  clause_def["standard"],
-            "clause":                    code,
-            "title":                     clause_def["title"],
+            "standard":                  row.standard,
+            "clause":                    row.clause,
+            "title":                     row.title,
             "affected_controls_count":   len(affected_in_clause),
             "remaining_active_controls": len(remaining),
             "will_lose_all_coverage":    len(remaining) == 0,
@@ -665,6 +660,28 @@ async def get_withdrawal_impact(item_id: str) -> dict:
     }
 
 
+def _clause_rows(controls: list[dict]) -> list:
+    """
+    Every clause to check: those Dragnet must cover, and any a control maps
+    to. From the shared catalogue, so this agrees with the Standards Map.
+    """
+    from standards_map import catalogue
+    rows = {c.key: c for c, _ in catalogue.applicable_clauses()}
+    refs = [r for c in controls for r in catalogue.control_mapping(c.get("fields", {}))]
+    for c in catalogue.rows_for(refs):
+        rows.setdefault(c.key, c)
+    return list(rows.values())
+
+
+def _covering(row, controls: list[dict]) -> list[dict]:
+    """The controls that count towards a clause — exact standard and clause path."""
+    from standards_map import catalogue
+    return [
+        c for c in controls
+        if any(catalogue.covers(row, r) for r in catalogue.control_mapping(c.get("fields", {})))
+    ]
+
+
 async def _auto_create_coverage_gaps(
     affected_control_ids: set[str],
     all_controls: list[dict],
@@ -678,8 +695,6 @@ async def _auto_create_coverage_gaps(
     Auto-creates Critical gap findings for clauses that now have zero active controls.
     Returns a list of GapIds created.
     """
-    from standards_map.router import CLAUSES
-
     active_controls = [
         i for i in all_controls
         if i.get("fields", {}).get("Status") not in ("Withdrawn", "Superseded", "Under Review")
@@ -689,29 +704,22 @@ async def _auto_create_coverage_gaps(
     year_short = _today().strftime("%y")
     created_gap_ids: list[str] = []
 
-    for clause_def in CLAUSES:
-        code     = clause_def["clause"]
-        standard = clause_def["standard"]
+    for row in _clause_rows(all_controls):
+        code, standard, title = row.clause, row.standard, row.title or row.key
 
         # Only care about clauses that had at least one of the affected controls
-        had_affected = any(
-            str(i["id"]) in affected_control_ids
-            and i.get("fields", {}).get("ISOClause", "").startswith(code)
-            for i in all_controls
-        )
+        had_affected = any(str(c["id"]) in affected_control_ids for c in _covering(row, all_controls))
         if not had_affected:
             continue
 
-        remaining_active = [
-            c for c in active_controls
-            if c.get("fields", {}).get("ISOClause", "").startswith(code)
-        ]
-        if remaining_active:
+        if _covering(row, active_controls):
             continue  # Clause still covered by at least one other control
 
-        # Check whether an open gap already exists for this clause
+        # Check whether an open gap already exists for this clause — of THIS
+        # standard: ISO 27001 7.5 and ISO 9001 7.5 are different clauses.
         already_open = any(
             i.get("fields", {}).get("Clause") == code
+            and i.get("fields", {}).get("Standard", standard) == standard
             and i.get("fields", {}).get("Status") in ("Open", "In progress")
             for i in existing_gaps
         )
@@ -732,17 +740,17 @@ async def _auto_create_coverage_gaps(
                 LIST_IDS["gap_analysis"],
                 LIST_NAMES["gap_analysis"],
                 {
-                    "Title":        f"Coverage gap: {code} — {clause_def['title']}",
+                    "Title":        f"Coverage gap: {code} — {title}",
                     "GapId":        gap_id,
                     "GapKey":       f"{standard}|{code}|CoverageGap|{doc_code}",
                     "Standard":     standard,
                     "Clause":       code,
-                    "ClauseTitle":  clause_def["title"],
+                    "ClauseTitle":  row.title,
                     "GapCategory":  "Coverage gap from document withdrawal",
                     "Severity":     "Critical",
                     "Finding": (
                         f"Document {doc_code} was withdrawn. All controls covering clause "
-                        f"{code} ({clause_def['title']}) are now Under Review. "
+                        f"{code} ({title}) are now Under Review. "
                         f"No active control coverage exists for this clause."
                     ),
                     "Impact": (

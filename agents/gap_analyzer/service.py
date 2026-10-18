@@ -24,51 +24,17 @@ from datetime import date, timedelta
 from agents.llm_client import llm_generate
 from config import settings
 from graph.client import get_list_items
+from standards_map import catalogue
 
 logger = logging.getLogger(__name__)
 
 # =============================================================================
-#  Standards clause list — what must be covered
+#  What must be covered — the shared clause catalogue
+#
+#  The clause list, and how a control is matched to a clause, come from
+#  standards_map/catalogue.py — the same source the Standards Map uses, so the
+#  two can no longer disagree about what Dragnet must cover.
 # =============================================================================
-
-REQUIRED_CLAUSES = [
-    {"standard": "ISO 27001", "clause": "A.5.1",  "title": "Policies for information security",
-     "requires": "policy"},
-    {"standard": "ISO 27001", "clause": "A.5.12", "title": "Classification of information",
-     "requires": "control"},
-    {"standard": "ISO 27001", "clause": "A.5.15", "title": "Access control",
-     "requires": "control"},
-    {"standard": "ISO 27001", "clause": "A.5.16", "title": "Identity management",
-     "requires": "control"},
-    {"standard": "ISO 27001", "clause": "A.5.17", "title": "Authentication information",
-     "requires": "control"},
-    {"standard": "ISO 27001", "clause": "A.5.18", "title": "Access rights",
-     "requires": "control+record"},
-    {"standard": "ISO 27001", "clause": "A.5.25", "title": "Assessment of security events",
-     "requires": "control"},
-    {"standard": "ISO 27001", "clause": "A.5.26", "title": "Response to incidents",
-     "requires": "control+record"},
-    {"standard": "ISO 27001", "clause": "A.6.1",  "title": "Screening",
-     "requires": "control"},
-    {"standard": "ISO 27001", "clause": "A.8.1",  "title": "User endpoint devices",
-     "requires": "control+record"},
-    {"standard": "ISO 27001", "clause": "A.8.24", "title": "Use of cryptography",
-     "requires": "control+record"},
-    {"standard": "ISO 27001", "clause": "A.8.25", "title": "Secure development life cycle",
-     "requires": "control"},
-    {"standard": "ISO 27001", "clause": "A.8.32", "title": "Change management",
-     "requires": "control"},
-    {"standard": "ISO 9001",  "clause": "7.5",    "title": "Documented information",
-     "requires": "policy"},
-    {"standard": "ISO 9001",  "clause": "9.2",    "title": "Internal audit",
-     "requires": "control+record"},
-    {"standard": "ISO 9001",  "clause": "10.2",   "title": "Nonconformity and corrective action",
-     "requires": "control"},
-    {"standard": "NDPA",      "clause": "S.39",   "title": "Breach notification to Commission",
-     "requires": "control+record"},
-    {"standard": "NDPA",      "clause": "S.40",   "title": "Breach notification to data subject",
-     "requires": "control"},
-]
 
 # Canonical severity target days — aligned with spec: Critical 30d, Major 60d, Minor 90d
 SEVERITY_DAYS = {"Critical": 30, "Major": 60, "Minor": 90}
@@ -86,7 +52,7 @@ async def _load_controls() -> list[dict]:
         {
             "id":         str(i["id"]),
             "statement":  i.get("fields", {}).get("ControlStatement", ""),
-            "iso_clause": i.get("fields", {}).get("ISOClause", ""),
+            "refs":       catalogue.control_mapping(i.get("fields", {})),
             "owner_role": i.get("fields", {}).get("OwnerRole", ""),
             "owner_oid":  i.get("fields", {}).get("OwnerEntraId", ""),
             "status":     i.get("fields", {}).get("Status", "Active"),
@@ -154,17 +120,16 @@ def _find_gaps(
     Returns list of gap findings with type, severity, and GapKey.
     """
     gaps = []
-    records_by_control = {r["linked_ctrl"]: r for r in records}
+    # One control may be evidenced by several records; any one means "a record
+    # requirement is defined" for the evidence-gap check below.
+    controls_with_records = {r["linked_ctrl"] for r in records if r["linked_ctrl"]}
 
-    for clause_def in REQUIRED_CLAUSES:
-        clause   = clause_def["clause"]
-        standard = clause_def["standard"]
-        title    = clause_def["title"]
-        requires = clause_def["requires"]
+    for row, requires in catalogue.applicable_clauses():
+        clause, standard = row.clause, row.standard
+        title = row.title or f"{standard} {clause}"
 
         clause_controls = [
-            c for c in controls
-            if c["iso_clause"] and c["iso_clause"].startswith(clause)
+            c for c in controls if any(catalogue.covers(row, ref) for ref in c["refs"])
         ]
 
         # Missing artefact — no controls at all
@@ -223,7 +188,7 @@ def _find_gaps(
         # Evidence gap — controls exist but no evidence requirement is defined
         if "record" in requires:
             for ctrl in clause_controls:
-                if ctrl["id"] not in records_by_control:
+                if ctrl["id"] not in controls_with_records:
                     gaps.append({
                         "standard":    standard,
                         "clause":      clause,

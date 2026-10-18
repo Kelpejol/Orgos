@@ -160,3 +160,21 @@ def test_control_id_shapes_in_use():
 def test_a_legacy_document_code_is_not_read_as_a_control():
     """Inside DRG-QI-PRO-CDI-01-26, 'PRO-CDI-01' has exactly a control ID's shape."""
     assert find_control_ids("Supersedes DRG-QI-PRO-CDI-01-26 and DRG-ISMS-POL-IUHC-01-26") == []
+
+
+# ── laws, ranges and standards named together ───────────────────────────────
+
+def test_ndpa_sections_in_every_form_the_library_uses():
+    assert keys("NDPA 16, 18")[0] == ["NDPA S.16", "NDPA S.18"]            # bare numbers
+    assert keys("NDPA Sections 39 to 41")[0] == ["NDPA S.39", "NDPA S.40", "NDPA S.41"]
+    assert keys("NDPA 2023 s24")[0] == ["NDPA S.24"]
+
+
+def test_the_gaid_is_cited_by_article_and_schedule():
+    assert keys("NDPA 2023 Sections 24 to 25, GAID 2025 Articles 17, Schedules 4") == (
+        ["NDPA S.24", "NDPA S.25", "GAID Art.17", "GAID Sch.4"], [])
+    assert keys("GAID 2025 Articles 7 to 9")[0] == ["GAID Art.7", "GAID Art.8", "GAID Art.9"]
+
+
+def test_two_iso_standards_named_together_are_both_kept():
+    assert keys("ISO/IEC 27017 and 27018") == (["ISO 27017", "ISO 27018"], [])

@@ -32,9 +32,10 @@ const standardsApi = {
     apiClient.get("/api/v1/standards/map",
       standard ? { params: { standard } } : {}).then(r => r.data),
 
-  clause: (clauseCode) =>
-    apiClient.get(`/api/v1/standards/map/${encodeURIComponent(clauseCode)}`)
-      .then(r => r.data),
+  // The standard is always sent: 7.5 is a clause of ISO 27001, 9001 and 22301.
+  clause: (standard, clauseCode) =>
+    apiClient.get(`/api/v1/standards/map/${encodeURIComponent(clauseCode)}`,
+      { params: { standard } }).then(r => r.data),
 };
 
 // =============================================================================
@@ -60,14 +61,14 @@ const TrafficLight = ({ status, size = 10 }) => {
 //  Clause detail view — the full audit chain
 // =============================================================================
 
-const ClauseDetail = ({ clauseCode, onBack }) => {
+const ClauseDetail = ({ standard: standardName, clauseCode, onBack }) => {
   const { data, isLoading, error } = useQuery({
-    queryKey: ["clause", clauseCode],
-    queryFn:  () => standardsApi.clause(clauseCode),
+    queryKey: ["clause", standardName, clauseCode],
+    queryFn:  () => standardsApi.clause(standardName, clauseCode),
     staleTime: 30_000,
   });
 
-  if (isLoading) return <LoadingState message={`Loading ${clauseCode}...`} />;
+  if (isLoading) return <LoadingState message={`Loading ${standardName} ${clauseCode}...`} />;
   if (error) return (
     <div>
       <button onClick={onBack}
@@ -257,6 +258,10 @@ const ClauseDetail = ({ clauseCode, onBack }) => {
   );
 };
 
+// The standards the catalogue holds (standards_map/catalogue.py). Others a
+// control maps to still appear under "All".
+const STANDARD_FILTERS = ["All", "ISO 27001", "ISO 9001", "ISO 22301", "NDPA", "GAID"];
+
 // =============================================================================
 //  Main component — clause list with traffic lights
 // =============================================================================
@@ -293,7 +298,8 @@ export default function StandardsMap() {
   }), [clauses]);
 
   if (selectedClause) {
-    return <ClauseDetail clauseCode={selectedClause} onBack={() => setSelectedClause(null)} />;
+    return <ClauseDetail standard={selectedClause.standard} clauseCode={selectedClause.clause}
+                         onBack={() => setSelectedClause(null)} />;
   }
 
   if (isLoading) return <LoadingState message="Calculating standards coverage..." />;
@@ -307,7 +313,7 @@ export default function StandardsMap() {
           <div>
             <div style={{ fontSize: 17, fontWeight: 600, marginBottom: 3 }}>Standards map</div>
             <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>
-              Audit readiness view — live coverage across ISO 9001, ISO 27001, and NDPA.
+              Audit readiness view — live coverage across every standard Dragnet maps to.
               Click any clause to see the full audit chain.
             </div>
           </div>
@@ -330,7 +336,7 @@ export default function StandardsMap() {
       {/* Filters */}
       <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
         {/* Standard filter */}
-        {["All", "ISO 27001", "ISO 9001", "NDPA"].map(s => (
+        {STANDARD_FILTERS.map(s => (
           <button key={s} onClick={() => setStandardFilter(s)}
             style={{ padding: "5px 10px", fontSize: 11, borderRadius: 6, cursor: "pointer",
                      fontWeight: standardFilter === s ? 600 : 400,
@@ -401,8 +407,8 @@ export default function StandardsMap() {
               <div
                 key={`${clause.standard}-${clause.clause}`}
                 role="button" tabIndex={0}
-                onClick={() => setSelectedClause(clause.clause)}
-                onKeyDown={e => e.key === "Enter" && setSelectedClause(clause.clause)}
+                onClick={() => setSelectedClause(clause)}
+                onKeyDown={e => e.key === "Enter" && setSelectedClause(clause)}
                 style={{
                   display: "grid", gridTemplateColumns: "80px 1fr 80px 60px 80px",
                   padding: "10px 14px",
@@ -429,7 +435,10 @@ export default function StandardsMap() {
                 </div>
                 <div style={{ fontSize: 12, color: "var(--color-text-primary)",
                                lineHeight: 1.4, paddingRight: 12 }}>
-                  {clause.title}
+                  {clause.title || (
+                    // Laws are held without titles rather than with possibly wrong ones.
+                    <span style={{ color: "var(--color-text-tertiary)" }}>—</span>
+                  )}
                 </div>
                 <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>
                   {clause.controls_count}

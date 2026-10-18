@@ -63,7 +63,7 @@ _STANDARD = re.compile(
       | ISO\s*(?P<iso>\d{4,5})
       | (?P<ndpa_full>Nigeria(?:n)?\s+Data\s+Protection\s+Act)
       | (?P<ndpr_full>Nigeria(?:n)?\s+Data\s+Protection\s+Regulations?)
-      | (?P<law>NDPA|NDPR|GDPR)
+      | (?P<law>NDPA|NDPR|GDPR|GAID)
     )
     (?:\s*:\s*(?P<ed_colon>\d{4}))?             # ISO 9001:2015
     (?:\s+(?P<ed_year>(?:19|20)\d{2})\b(?!\.))?  # NDPA 2023
@@ -71,7 +71,22 @@ _STANDARD = re.compile(
     """,
     re.IGNORECASE | re.VERBOSE,
 )
-_LAWS = {"NDPA", "NDPR", "GDPR"}
+_LAWS = {"NDPA", "NDPR", "GDPR", "GAID"}
+# A law is cited by Section, Article or Schedule. A bare number takes the unit
+# named before it in the same group, or the law's usual one: the NDPA is cited
+# by section, the GAID (its 2025 implementation directive) by article.
+_LAW_UNITS = {
+    "s": "S", "s.": "S", "sec": "S", "sec.": "S", "section": "S", "sections": "S",
+    "art": "Art", "art.": "Art", "article": "Art", "articles": "Art",
+    "sch": "Sch", "sch.": "Sch", "schedule": "Sch", "schedules": "Sch",
+}
+_DEFAULT_LAW_UNIT = {"GAID": "Art"}
+_LAW_TOKEN = re.compile(
+    r"^(?:(?P<unit>sections?|sec\.?|s\.?|articles?|art\.?|schedules?|sch\.?)\s*)?"
+    r"(?P<a>\d+[A-Za-z]?)(?:\s*(?:to|–|—)\s*(?P<b>\d+))?\s*(?P<rest>.*)$",
+    re.IGNORECASE,
+)
+_MAX_RANGE = 60
 
 
 def _canonical_standard(m: re.Match) -> str:
@@ -120,7 +135,17 @@ def parse_mapping(text: str) -> tuple[list[StandardsRef], list[str]]:
         edition = m.group("ed_colon") or m.group("ed_year") or ""
         segment = body[m.end(): matches[k + 1].start() if k + 1 < len(matches) else len(body)]
         annex = False
-        found_before = len(refs) + len(bad)
+        unit = _DEFAULT_LAW_UNIT.get(standard, "S")
+        bad_before, start = len(bad), len(refs)
+        own = [False]   # did this standard get a clause of its own?
+
+        def add(std: str, clause: str, qualifier: str, tok: str) -> None:
+            own[0] = own[0] or std == standard
+            key = (std, clause, qualifier)
+            if key not in seen:
+                seen.add(key)
+                refs.append(StandardsRef(std, clause, qualifier, edition if std == standard else "", tok))
+
         for token in re.split(r"[;,]|\band\b", segment):
             tok = token.strip()
             if not tok:
@@ -135,11 +160,29 @@ def parse_mapping(text: str) -> tuple[list[StandardsRef], list[str]]:
             if not t:
                 continue
 
-            clause = qualifier = ""
             if standard in _LAWS:
-                mm = re.match(r"^(?:s\.?|sec\.?|section)\s*(\d+[A-Za-z]?)\s*(.*)$", t, re.IGNORECASE)
-                if mm:
-                    clause, qualifier = f"S.{mm.group(1).upper()}", mm.group(2)
+                mm = _LAW_TOKEN.match(t)
+                if not mm or mm.group("rest").strip():
+                    bad.append(tok)
+                    continue
+                if mm.group("unit"):
+                    unit = _LAW_UNITS[mm.group("unit").lower()]
+                a, b = mm.group("a").upper(), mm.group("b")
+                if b and a.isdigit() and 0 < int(b) - int(a) <= _MAX_RANGE:
+                    numbers = [str(n) for n in range(int(a), int(b) + 1)]
+                else:
+                    numbers = [a]
+                for n in numbers:
+                    add(standard, f"{unit}.{n}", "", tok)
+                continue
+
+            if re.fullmatch(r"\d{4,5}", t):
+                # "ISO/IEC 27017 and 27018": a number this size is another
+                # standard, not a clause of the one before it.
+                add(f"ISO {t}", "", "", tok)
+                continue
+
+            clause = qualifier = ""
             if not clause:
                 mm = re.match(r"^A\.\s?(\d+(?:\.\d+)*)\s*(.*)$", t)
                 if mm:
@@ -159,16 +202,12 @@ def parse_mapping(text: str) -> tuple[list[StandardsRef], list[str]]:
             qualifier = qualifier.strip()
             if not re.fullmatch(r"\(?[a-z]{1,2}\)|\(?[ivx]{1,4}\)", qualifier):
                 qualifier = ""
-            key = (standard, clause, qualifier)
-            if key in seen:
-                continue
-            seen.add(key)
-            refs.append(StandardsRef(standard, clause, qualifier, edition, tok))
+            add(standard, clause, qualifier, tok)
 
-        if len(refs) + len(bad) == found_before and (standard, "", "") not in seen:
+        if not own[0] and len(bad) == bad_before and (standard, "", "") not in seen:
             # The standard is named with no clause: a reference to all of it.
             seen.add((standard, "", ""))
-            refs.append(StandardsRef(standard, "", "", edition, m.group(0).strip()))
+            refs.insert(start, StandardsRef(standard, "", "", edition, m.group(0).strip()))
 
     return refs, bad
 

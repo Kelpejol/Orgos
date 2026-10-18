@@ -11,12 +11,13 @@ import time
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
 
 from auth.validator import CurrentUser, get_current_user
 from config import settings
 from graph.client import get_list_items
-from graph.exceptions import GraphAPIError
+# The clauses — and how a control is matched to one — come from the catalogue,
+# shared with the Gap Analyzer.
+from standards_map import catalogue
 
 logger = logging.getLogger(__name__)
 
@@ -27,88 +28,6 @@ router = APIRouter(prefix="/api/v1/standards", tags=["Standards Map"])
 # is fine for a traffic-light overview and spares Graph the repeated scans.
 _MAP_CACHE_TTL_SECONDS = 15.0
 _map_cache: dict[str, tuple[float, list]] = {}
-
-# =============================================================================
-#  ISO 27001:2022, ISO 9001:2015, NDPA clauses relevant to Dragnet
-# =============================================================================
-
-CLAUSES = [
-    # ISO 27001:2022
-    {
-        "standard": "ISO 27001",
-        "clause": "A.5.1",
-        "title": "Policies for information security",
-    },
-    {
-        "standard": "ISO 27001",
-        "clause": "A.5.12",
-        "title": "Classification of information",
-    },
-    {"standard": "ISO 27001", "clause": "A.5.15", "title": "Access control"},
-    {"standard": "ISO 27001", "clause": "A.5.16", "title": "Identity management"},
-    {
-        "standard": "ISO 27001",
-        "clause": "A.5.17",
-        "title": "Authentication information",
-    },
-    {"standard": "ISO 27001", "clause": "A.5.18", "title": "Access rights"},
-    {
-        "standard": "ISO 27001",
-        "clause": "A.5.25",
-        "title": "Assessment of information security events",
-    },
-    {
-        "standard": "ISO 27001",
-        "clause": "A.5.26",
-        "title": "Response to information security incidents",
-    },
-    {"standard": "ISO 27001", "clause": "A.6.1", "title": "Screening"},
-    {
-        "standard": "ISO 27001",
-        "clause": "A.7.1",
-        "title": "Physical security perimeter",
-    },
-    {"standard": "ISO 27001", "clause": "A.8.1", "title": "User endpoint devices"},
-    {"standard": "ISO 27001", "clause": "A.8.24", "title": "Use of cryptography"},
-    {
-        "standard": "ISO 27001",
-        "clause": "A.8.25",
-        "title": "Secure development life cycle",
-    },
-    {"standard": "ISO 27001", "clause": "A.8.32", "title": "Change management"},
-    # ISO 9001:2015
-    {"standard": "ISO 9001", "clause": "7.5", "title": "Documented information"},
-    {
-        "standard": "ISO 9001",
-        "clause": "8.4",
-        "title": "Control of externally provided processes",
-    },
-    {
-        "standard": "ISO 9001",
-        "clause": "9.1",
-        "title": "Monitoring, measurement, analysis",
-    },
-    {"standard": "ISO 9001", "clause": "9.2", "title": "Internal audit"},
-    {
-        "standard": "ISO 9001",
-        "clause": "10.2",
-        "title": "Nonconformity and corrective action",
-    },
-    # NDPA
-    {"standard": "NDPA", "clause": "S.24", "title": "Data protection principles"},
-    {"standard": "NDPA", "clause": "S.30", "title": "Lawful basis for processing"},
-    {
-        "standard": "NDPA",
-        "clause": "S.39",
-        "title": "Breach notification to Commission",
-    },
-    {
-        "standard": "NDPA",
-        "clause": "S.40",
-        "title": "Breach notification to data subject",
-    },
-]
-
 
 def _calculate_traffic_light(
     controls: list[dict],
@@ -168,14 +87,39 @@ def _calculate_traffic_light(
 # =============================================================================
 
 
+async def _registers() -> tuple[list[dict], dict[str, list[dict]]]:
+    """Controls (each with its mapped clauses) and records grouped by control."""
+    cr_items = await get_list_items(settings.control_register_list_id, "Control Register")
+    record_items = await get_list_items(settings.evidence_tracker_list_id, "Evidence Tracker")
+
+    controls = []
+    for item in cr_items:
+        f = item.get("fields", {})
+        controls.append({"id": str(item["id"]), **f, "_refs": catalogue.control_mapping(f)})
+
+    # One control may need several records: group them, never keep the last.
+    records_by_control: dict[str, list[dict]] = {}
+    for item in record_items:
+        f = item.get("fields", {})
+        records_by_control.setdefault(f.get("LinkedControlId", ""), []).append(
+            {"id": str(item["id"]), **f}
+        )
+    return controls, records_by_control
+
+
+def _controls_for(row: catalogue.Clause, controls: list[dict]) -> list[dict]:
+    return [c for c in controls if any(catalogue.covers(row, r) for r in c["_refs"])]
+
+
 @router.get("/map")
 async def get_standards_map(
     standard: Optional[str] = None,
     user: CurrentUser = Depends(get_current_user),
 ) -> list[dict]:
     """
-    Returns all clauses with traffic lights calculated from live register data.
-    Optional filter by standard: ISO 27001 | ISO 9001 | NDPA
+    Every clause Dragnet must cover, plus every clause a control maps to,
+    each with a traffic light calculated from the live registers.
+    Optional filter by standard: ISO 27001 | ISO 9001 | ISO 22301 | NDPA | …
     """
     cache_key = standard or "__all__"
     cached = _map_cache.get(cache_key)
@@ -183,81 +127,33 @@ async def get_standards_map(
         return cached[1]
 
     try:
-        # Fetch all controls and record items
-        cr_items = await get_list_items(
-            settings.control_register_list_id, "Control Register"
-        )
-        record_items = await get_list_items(
-            settings.evidence_tracker_list_id, "Evidence Tracker"
-        )
+        controls, records_by_control = await _registers()
 
-        controls = [
-            {
-                "id": str(i["id"]),
-                "ControlStatement": i.get("fields", {}).get("ControlStatement", ""),
-                "ControlType": i.get("fields", {}).get("ControlType", ""),
-                "ISOClause": i.get("fields", {}).get("ISOClause", ""),
-                "OwnerRole": i.get("fields", {}).get("OwnerRole", ""),
-                "OwnerEntraId": i.get("fields", {}).get("OwnerEntraId", ""),
-                "Status": i.get("fields", {}).get("Status", "Active"),
-            }
-            for i in cr_items
-        ]
-
-        records = [
-            {
-                "id": str(i["id"]),
-                "EvidenceDescription": i.get("fields", {}).get(
-                    "EvidenceDescription", ""
-                ),
-                "EvidenceType": i.get("fields", {}).get("EvidenceType", ""),
-                "Status": i.get("fields", {}).get("Status", "Pending"),
-                "LinkedControlId": i.get("fields", {}).get("LinkedControlId", ""),
-                "EvidenceLink": i.get("fields", {}).get("EvidenceLink", ""),
-                "Frequency": i.get("fields", {}).get("Frequency", ""),
-                "OwnerRole": i.get("fields", {}).get("OwnerRole", ""),
-                "OwnerEntraId": i.get("fields", {}).get("OwnerEntraId", ""),
-            }
-            for i in record_items
-        ]
-
-        # Index records by the control they're linked to — once, O(R) — so each
-        # clause is O(its controls) instead of scanning all records per clause.
-        records_by_control: dict[str, list[dict]] = {}
-        for r in records:
-            records_by_control.setdefault(r.get("LinkedControlId", ""), []).append(r)
-
-        # Ownership is a role (job title / group / alias) → resolve once and
-        # reuse for every clause rather than per-control Graph calls.
         from ownership.resolver import get_ownership_index
         ownership = await get_ownership_index()
 
-        # Build result per clause
-        clauses_to_show = [
-            c for c in CLAUSES if not standard or c["standard"] == standard
-        ]
+        rows: dict[str, tuple[catalogue.Clause, Optional[str]]] = {
+            c.key: (c, requires) for c, requires in catalogue.applicable_clauses()
+        }
+        for c in catalogue.rows_for(r for ctrl in controls for r in ctrl["_refs"]):
+            rows.setdefault(c.key, (c, None))
 
         result = []
-        for clause_def in clauses_to_show:
-            clause_code = clause_def["clause"]
-            clause_controls = [
-                c for c in controls if c.get("ISOClause", "").startswith(clause_code)
-            ]
-            clause_records = [
-                r for c in clause_controls for r in records_by_control.get(c["id"], [])
-            ]
-            traffic = _calculate_traffic_light(clause_controls, clause_records, ownership)
-            records_accepted = sum(
-                1 for r in clause_records if r.get("Status") == "Accepted"
-            )
-            result.append(
-                {
-                    **clause_def,
-                    "controls_count": len(clause_controls),
-                    "records_accepted": records_accepted,
-                    "traffic_light": traffic,
-                }
-            )
+        for row, requires in rows.values():
+            if standard and row.standard != standard:
+                continue
+            clause_controls = _controls_for(row, controls)
+            clause_records = [r for c in clause_controls for r in records_by_control.get(c["id"], [])]
+            result.append({
+                "standard": row.standard,
+                "clause": row.clause,
+                "title": row.title,
+                "applicable": requires is not None,
+                "requires": requires,
+                "controls_count": len(clause_controls),
+                "records_accepted": sum(1 for r in clause_records if r.get("Status") == "Accepted"),
+                "traffic_light": _calculate_traffic_light(clause_controls, clause_records, ownership),
+            })
 
         _map_cache[cache_key] = (time.monotonic() + _MAP_CACHE_TTL_SECONDS, result)
         return result
@@ -270,42 +166,42 @@ async def get_standards_map(
 @router.get("/map/{clause_code:path}")
 async def get_clause_detail(
     clause_code: str,
+    standard: Optional[str] = None,
     user: CurrentUser = Depends(get_current_user),
 ) -> dict:
     """
     Full chain for one clause: controls, record items, owners, record links.
     This is what an auditor sees when they drill down on a clause.
+
+    `standard` says which standard's clause is meant. Without it, a clause
+    number shared by several standards (7.5 is in ISO 27001, 9001 and 22301)
+    cannot be resolved and is refused rather than guessed.
     """
     try:
-        clause_def = next((c for c in CLAUSES if c["clause"] == clause_code), None)
-        if not clause_def:
-            raise HTTPException(
-                status_code=404, detail=f"Clause {clause_code} not found"
-            )
+        if standard:
+            row = catalogue.clause(standard, clause_code)
+        else:
+            # Across the WHOLE catalogue: once a control maps to ISO 27001 7.5,
+            # the map shows it beside ISO 9001 7.5, and a bare "7.5" could be
+            # either.
+            candidates = [c for c in catalogue.CLAUSES.values() if c.clause == clause_code]
+            if len(candidates) > 1:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Clause {clause_code} exists in more than one standard "
+                           f"({', '.join(c.standard for c in candidates)}); say which.",
+                )
+            row = candidates[0] if candidates else None
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"Clause {clause_code} not found")
 
-        cr_items = await get_list_items(
-            settings.control_register_list_id, "Control Register"
-        )
-        record_items = await get_list_items(
-            settings.evidence_tracker_list_id, "Evidence Tracker"
-        )
+        controls, records_by_control = await _registers()
+        clause_controls = _controls_for(row, controls)
+        clause_records = [r for c in clause_controls for r in records_by_control.get(c["id"], [])]
 
-        controls = [
-            i
-            for i in cr_items
-            if i.get("fields", {}).get("ISOClause", "").startswith(clause_code)
-        ]
-        control_ids = {str(c["id"]) for c in controls}
-        records = [
-            i
-            for i in record_items
-            if i.get("fields", {}).get("LinkedControlId", "") in control_ids
-        ]
-
-        def fmt_control(item):
-            f = item.get("fields", {})
+        def fmt_control(f: dict) -> dict:
             return {
-                "id": str(item["id"]),
+                "id": f["id"],
                 "ControlStatement": f.get("ControlStatement", ""),
                 "ControlType": f.get("ControlType", ""),
                 "OwnerRole": f.get("OwnerRole", ""),
@@ -317,10 +213,9 @@ async def get_clause_detail(
                 "SourceClause": f.get("SourceClause", ""),
             }
 
-        def fmt_record(item):
-            f = item.get("fields", {})
+        def fmt_record(f: dict) -> dict:
             return {
-                "id": str(item["id"]),
+                "id": f["id"],
                 "RecordDescription": f.get("EvidenceDescription", ""),
                 "EvidenceType": f.get("EvidenceType", ""),
                 "SourceSystem": f.get("SourceSystem", ""),
@@ -333,21 +228,15 @@ async def get_clause_detail(
                 "LastCollected": f.get("LastCollected", ""),
             }
 
-        fmt_controls = [fmt_control(c) for c in controls]
-        fmt_records = [fmt_record(r) for r in records]
         from ownership.resolver import get_ownership_index
         ownership = await get_ownership_index()
-        traffic = _calculate_traffic_light(
-            [{"id": str(c["id"]), **c.get("fields", {})} for c in controls],
-            [{"id": str(r["id"]), **r.get("fields", {})} for r in records],
-            ownership,
-        )
-
         return {
-            **clause_def,
-            "traffic_light": traffic,
-            "controls": fmt_controls,
-            "records": fmt_records,
+            "standard": row.standard,
+            "clause": row.clause,
+            "title": row.title,
+            "traffic_light": _calculate_traffic_light(clause_controls, clause_records, ownership),
+            "controls": [fmt_control(c) for c in clause_controls],
+            "records": [fmt_record(r) for r in clause_records],
         }
 
     except HTTPException:
