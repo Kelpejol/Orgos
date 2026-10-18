@@ -56,7 +56,7 @@ So this Procedure implements **five** controls that already exist in the BCDR St
 2. **An implementation step was captured as a control.** The requirement belongs to BCDR-01 in the Standard. Clause 4.1 is *how Dragnet does it*. Both matter, but they are different objects.
 3. **The role was permitted, not resolved.** This one is more subtle than it looks, and worth getting right before anyone concludes the model misbehaved.
 
-The extractor *does* inject a role vocabulary into the prompt — up to 120 live Entra job titles plus OrgOS group names (`agents/extractor/ollama_client.py:189-221`). But the instruction ends:
+The extractor *does* inject a role vocabulary into the prompt: your OrgOS group names plus every distinct job title held by an enabled Entra user — about 38 today (`agents/extractor/ollama_client.py:189-221`, `agents/extractor/service.py:775-788`). But the instruction ends:
 
 > *"Return the single best-fitting title exactly as written above. **Only if none is a reasonable fit, use the role as written in the document.**"*
 
@@ -70,7 +70,9 @@ Then nothing downstream caught it. At Zone 1 accept the only test is whether the
 
 So an unresolvable role is written to the Control Register as **Active**. It is detected later — the Gap Analyzer raises a Major "Ownership gap" (`agents/gap_analyzer/service.py:190-215`) and the Standards Map shows red — but by then a reviewer has already signed it off.
 
-Two things are worth fixing regardless of the rest of this work: the 120-title cap silently truncates the vocabulary for an org of any size, and the accept cascade should resolve the role rather than test it for emptiness.
+The accept cascade should resolve the role rather than test it for emptiness — that is worth fixing regardless of the rest of this work.
+
+> **Correction.** An earlier version of this document said a 120-title cap truncates the vocabulary. It does not, at your size: `job_titles[:120]` is a ceiling, and with ~38 titles plus your groups every one is sent. The problem is not *how many* titles the model sees but *what kind of thing* a job title is — see §6.
 
 ### The record reference was thrown away
 
@@ -337,7 +339,7 @@ Small, safe, and it fixes the reported bug.
 
 - Add `control_id` to the extraction schema **and to the Control Register**. Nothing else works without it.
 - Resolve every extracted role through `OwnershipIndex` **at Zone 1 accept**, not just at read time. Where it does not resolve, **flag it as unrecognised** and show the verbatim quote. Never substitute. (Today the accept cascade only tests the string for emptiness, so an unresolvable role is stored Active.)
-- Remove the 120-title cap on the prompt vocabulary, or replace prompt injection with post-hoc matching.
+- Replace prompt-side role matching with post-hoc matching: extract the role exactly as written, then resolve it in code, so "as written" and "as resolved" are separate fields.
 - Capture the `REC-nnnn` tokens already present in the text instead of discarding them.
 - Split `proposed_owner_role` into `accountable_role` and `executing_role`.
 - Split `evidence_frequency` into `control_trigger` and `evidence_check_frequency`; leave either blank when the document does not say.
@@ -429,7 +431,7 @@ Short form, if it helps:
 | No `control_id` in the schema | `agents/extractor/schemas.py:236-262`; Control Register has no control code either |
 | Role not resolved at intake | `review_queue/router.py:296` — `"Active" if owner_role else "Blocked"` is the only test |
 | Prompt asks for 4 fields | `agents/extractor/ollama_client.py:113-127` |
-| Vocabulary capped at 120 | `agents/extractor/ollama_client.py:207` — `job_titles[:120]` |
+| Vocabulary = groups + ~38 job titles | `agents/extractor/service.py:775-788`; the `[:120]` at `ollama_client.py:207` is a ceiling never reached |
 | Role Register retired | `README.md:984`; no `grc/schemas.py` role classes; `ownership/resolver.py` is the live model |
 | Records have no ID/custodian/retention | `record_tracker/router.py:61-87` — full column list, none present |
 
