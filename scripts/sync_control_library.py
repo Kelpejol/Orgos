@@ -56,7 +56,9 @@ async def run(local: str | None, folder: str | None, apply: bool) -> int:
     await startup()
     try:
         register, queue = await _registers()
-        plan = plan_sync(index, register, queue)
+        from ownership.resolver import get_ownership_index
+        owners = await get_ownership_index()
+        plan = plan_sync(index, register, queue, owners.resolve)
         catalogue = await _catalogue()
         resolutions = plan_resolutions(index, queue, catalogue)
 
@@ -67,6 +69,7 @@ async def run(local: str | None, folder: str | None, apply: bool) -> int:
               f"close {plan.count('close_item')} stale review item(s))")
         print(f"  already waiting in the queue: {plan.already_queued}; "
               f"rejected earlier, unchanged since: {plan.declined}")
+        print(f"  status re-checked against roles: {plan.count('refresh_status')} change(s)")
         if plan.contested:
             print(f"  NOT SYNCED — defined twice with equal authority: {', '.join(plan.contested)}")
         if plan.no_longer_defined:

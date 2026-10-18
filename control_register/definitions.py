@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from typing import Any, Callable, Optional
 
+from cdi.library import LibraryIndex, document_label
 from cdi.model import ControlDefinition, ParsedDocument
 
 # (key, label) in the order a reviewer reads them
@@ -38,8 +39,13 @@ REVIEWED_FIELDS: list[tuple[str, str]] = [
 ]
 
 
-def candidate_from(doc: ParsedDocument, control: ControlDefinition) -> dict[str, Any]:
-    """The definition of `control` as `doc` states it."""
+def candidate_from(doc: ParsedDocument, control: ControlDefinition,
+                   index: Optional[LibraryIndex] = None) -> dict[str, Any]:
+    """
+    The definition of `control` as `doc` states it. With the library `index`,
+    also where it is carried out — derived from other documents, so it is
+    refreshed by a sync, not reviewed.
+    """
     r = control.responsibility
     h = doc.header
     return {
@@ -73,7 +79,25 @@ def candidate_from(doc: ParsedDocument, control: ControlDefinition) -> dict[str,
             "layout": control.layout,
         },
         "parser_version": doc.parser_version,
+        "implemented_in": _implemented_in(control.control_id, index),
+        "supported_by": sorted({document_label(d) for d in index.supported_by.get(control.control_id, [])})
+                        if index else [],
     }
+
+
+def _implemented_in(control_id: str, index: Optional[LibraryIndex]) -> list[dict]:
+    """[{document, section}] — a procedure citing the control only by list gives no section."""
+    if index is None:
+        return []
+    out, with_steps = [], set()
+    for doc, step in index.implementations(control_id):
+        with_steps.add(id(doc))
+        out.append({"document": document_label(doc),
+                    "section": " ".join(filter(None, [step.section_number, step.section_title]))})
+    for doc in index.implemented_by.get(control_id, []):
+        if id(doc) not in with_steps:
+            out.append({"document": document_label(doc), "section": ""})
+    return out
 
 
 def _same_text(value: Any) -> Any:

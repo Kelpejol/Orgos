@@ -27,6 +27,7 @@ from cdi.library import LibraryIndex
 from control_register.definitions import (
     candidate_from,
     completeness,
+    decide_status,
     diff,
     is_unchanged,
 )
@@ -41,7 +42,7 @@ RETIRED_CONTROL = {"Withdrawn", "Superseded"}
 
 @dataclass
 class SyncAction:
-    kind: str                       # create_item | update_item | close_item | refresh_control
+    kind: str                       # create_item | update_item | close_item | refresh_control | refresh_status
     control_id: str
     candidate: dict
     change: str = ""                # New | Changed
@@ -60,6 +61,7 @@ class SyncPlan:
     contested: list[str] = field(default_factory=list)
     no_longer_defined: list[str] = field(default_factory=list)
     duplicate_controls: list[str] = field(default_factory=list)
+    _status: dict = field(default_factory=dict, repr=False)   # cid → (Status, BlockedReason)
 
     def count(self, kind: str) -> int:
         return sum(a.kind == kind for a in self.actions)
@@ -74,6 +76,7 @@ def _json(fields: dict, column: str) -> Optional[dict]:
 
 def _confirmed_by_id(register: list[dict], plan: SyncPlan) -> dict[str, tuple[str, Optional[dict]]]:
     out: dict[str, tuple[str, Optional[dict]]] = {}
+    plan._status = {}
     for item in register:
         f = item.get("fields") or {}
         cid = (f.get("ControlId") or "").strip()
@@ -83,6 +86,7 @@ def _confirmed_by_id(register: list[dict], plan: SyncPlan) -> dict[str, tuple[st
             plan.duplicate_controls.append(cid)
             continue
         out[cid] = (str(item["id"]), _json(f, "DefinitionJson"))
+        plan._status[cid] = (f.get("Status") or "", f.get("BlockedReason") or "")
     return out
 
 
@@ -96,14 +100,20 @@ def _latest_queued(queue: list[dict]) -> dict[str, dict]:
     return out
 
 
-def plan_sync(index: LibraryIndex, register: list[dict], queue: list[dict]) -> SyncPlan:
+def plan_sync(index: LibraryIndex, register: list[dict], queue: list[dict],
+              resolve=None) -> SyncPlan:
+    """
+    `resolve` (OwnershipIndex.resolve), when given, also re-checks the status
+    of every confirmed control: one Blocked for an unrecognised role becomes
+    Active once the role is recognised, and the reverse.
+    """
     plan = SyncPlan(contested=index.contested_ids)
     confirmed = _confirmed_by_id(register, plan)
     queued = _latest_queued(queue)
 
     for cid in index.defined_ids:
         doc, control = index.definition(cid)
-        candidate = candidate_from(doc, control)
+        candidate = candidate_from(doc, control, index)
         control_item_id, current = confirmed.get(cid, ("", None))
         latest = queued.get(cid)
         latest_fields = (latest or {}).get("fields") or {}
@@ -136,6 +146,18 @@ def plan_sync(index: LibraryIndex, register: list[dict], queue: list[dict]) -> S
         else:
             plan.actions.append(SyncAction("create_item", cid, candidate, change, changes,
                                            control_item_id=control_item_id))
+
+    if resolve is not None:
+        for cid, (control_item_id, definition) in confirmed.items():
+            if not definition:
+                continue
+            if plan._status.get(cid, ("",))[0] not in ("Active", "Blocked"):
+                continue                     # a status a person set (Under Review, …) stands
+            status, reason = decide_status(definition, resolve)
+            if (status, reason) != plan._status.get(cid):
+                plan.actions.append(SyncAction("refresh_status", cid, definition,
+                                               control_item_id=control_item_id,
+                                               fields={"Status": status, "BlockedReason": reason}))
 
     defined = set(index.defined_ids) | set(index.contested_ids)
     plan.no_longer_defined = sorted(cid for cid in confirmed if cid not in defined)
@@ -218,6 +240,8 @@ async def apply_sync(plan: SyncPlan) -> list[str]:
                         "Closed by library sync: the defining document now "
                         "matches the confirmed definition."),
                 })
+            elif a.kind == "refresh_status":
+                await update_list_item(cr, "Control Register", a.control_item_id, a.fields)
             elif a.kind == "refresh_control":
                 await update_list_item(cr, "Control Register", a.control_item_id,
                                        refresh_fields(a.candidate))

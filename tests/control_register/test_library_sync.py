@@ -192,3 +192,66 @@ async def test_a_definition_cannot_be_edited_in_the_queue():
             await rq.zone1_decide("50", rq.Zone1DecideBody(
                 decision="Edit and Accept", rationale="Tidying the wording here."), user=USER)
     assert exc.value.status_code == 422 and "Document Lifecycle" in exc.value.detail
+
+
+# ── Phase 4: where it is carried out, live status, records, ownership ──────
+
+from cdi.parser import parse_document as _parse                       # noqa: E402
+from tests.cdi.builders import implementing_procedure                   # noqa: E402
+
+
+def test_a_definition_says_which_procedures_carry_it_out():
+    index = library()
+    index = LibraryIndex(index.documents + [_parse(implementing_procedure().bytes(), "pro.docx")])
+    [action, _] = plan_sync(index, [], []).actions
+    assert action.candidate["implemented_in"][0]["document"] == "DRG-ISMS-PRO-TST"
+    assert action.candidate["implemented_in"][0]["section"].startswith("4.0")
+
+
+def test_a_procedure_change_refreshes_the_control_without_a_reviewer():
+    index = library()
+    register = confirmed_register(index)
+    with_procedure = LibraryIndex(index.documents + [_parse(implementing_procedure().bytes(), "pro.docx")])
+    assert {a.kind for a in plan_sync(with_procedure, register, []).actions} == {"refresh_control"}
+
+
+def test_a_blocked_control_becomes_active_once_its_role_is_recognised():
+    index = library()
+    register = confirmed_register(index, status="Blocked")
+    [a1, a2] = plan_sync(index, register, [], resolve=lambda r: {"kind": "group"}).actions
+    assert {a1.kind, a2.kind} == {"refresh_status"}
+    assert a1.fields == {"Status": "Active", "BlockedReason": ""}
+
+
+def test_a_status_a_person_set_is_never_overridden():
+    index = library()
+    register = confirmed_register(index, status="Under Review")
+    assert plan_sync(index, register, [], resolve=lambda r: {"kind": "group"}).actions == []
+
+
+async def test_a_controls_records_are_joined_to_the_catalogue():
+    import control_register.router as cr
+    from records_catalogue import service as catalogue
+    from records_catalogue.model import RecordEntry
+    entries = {"REC-0001": RecordEntry("REC-0001", "Change Log", admission_status="Governed Record",
+                                       custodian="IT Executive", location="S01 SharePoint",
+                                       retention_validation="Recommended - business review pending")}
+    control = {"id": "1", "Definition": {"evidence": [
+        {"record_id": "REC-0001", "name": "Change log"},
+        {"record_id": "REC-0999", "name": "Lost"},
+        {"record_id": None, "name": "Internal audit report"}]}}
+    with patch.object(catalogue, "load", new=AsyncMock(return_value=entries)):
+        rows = await cr._records_for(control)
+    assert [r["catalogue"] for r in rows] == ["governed", "not in Catalogue", "no Record ID"]
+    assert rows[0]["custodian"] == "IT Executive" and rows[0]["automated_disposition_allowed"] is False
+
+
+async def test_a_document_defined_controls_owner_is_not_reassigned_in_orgos():
+    import control_register.router as cr
+    row = confirmed_register(library())[0]
+    with patch.object(cr, "get_list_item", new=AsyncMock(return_value=row)), \
+         patch.object(cr, "update_list_item", new=AsyncMock()) as update:
+        with pytest.raises(cr.HTTPException) as exc:
+            await cr.reassign_control_owner("1", cr.ReassignControlOwner(owner_role="CEO"), user=USER)
+    assert exc.value.status_code == 422 and "Role Catalogue" in exc.value.detail
+    update.assert_not_called()

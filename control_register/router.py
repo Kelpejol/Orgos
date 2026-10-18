@@ -76,6 +76,7 @@ def _sp_to_control(item: dict) -> dict:
         "QueueItemId":      f.get("QueueItemId", ""),
         "ControlId":        f.get("ControlId", ""),
         "BlockedReason":    f.get("BlockedReason", ""),
+        "ConfirmedDate":    f.get("ConfirmedDate", ""),
         "Definition":       _definition(f),
         "created":          item.get("createdDateTime", ""),
         "modified":         item.get("lastModifiedDateTime", ""),
@@ -128,6 +129,47 @@ async def list_controls(
         _handle(exc, "list controls")
 
 
+async def _records_for(control: dict) -> list[dict]:
+    """
+    The control's evidence records, each joined to the Records Catalogue: what
+    it is, who keeps it, where, and whether its retention is validated. A
+    record the document names without an ID is listed as such — a gap.
+    """
+    definition = control.get("Definition") or {}
+    refs = definition.get("evidence") or []
+    if not refs:
+        return []
+    try:
+        from records_catalogue import service as catalogue
+        entries = await catalogue.load()
+    except Exception as exc:
+        logger.info(f"Records Catalogue unavailable for control {control.get('id')}: {exc}")
+        entries = None
+
+    out = []
+    for ref in refs:
+        rid = ref.get("record_id")
+        row = {"record_id": rid, "name_as_written": ref.get("name", "")}
+        if not rid:
+            row["catalogue"] = "no Record ID"
+        elif entries is None:
+            row["catalogue"] = "not loaded"
+        elif rid not in entries:
+            row["catalogue"] = "not in Catalogue"
+        else:
+            e = entries[rid]
+            allowed, _ = e.disposition_gate()
+            row.update({
+                "catalogue": "withdrawn" if e.withdrawn else "governed",
+                "name": e.name, "record_type": e.record_type, "custodian": e.custodian,
+                "location": e.location, "retention_rule": e.retention_rule,
+                "retention_validation": e.retention_validation,
+                "automated_disposition_allowed": allowed,
+            })
+        out.append(row)
+    return out
+
+
 @router.get("/api/v1/controls/{item_id}")
 async def get_control(
     item_id: str,
@@ -135,7 +177,9 @@ async def get_control(
 ) -> dict:
     try:
         item = await get_list_item(_cr_list_id(), _CR_LIST_NAME, item_id)
-        return (await _stamp_ownership([_sp_to_control(item)]))[0]
+        control = (await _stamp_ownership([_sp_to_control(item)]))[0]
+        control["Records"] = await _records_for(control)
+        return control
     except Exception as exc:
         _handle(exc, f"get control {item_id}")
 
@@ -159,6 +203,12 @@ async def reassign_control_owner(
     if not owner_role:
         raise HTTPException(status_code=422, detail="owner_role is required.")
     try:
+        current = _sp_to_control(await get_list_item(_cr_list_id(), _CR_LIST_NAME, item_id))
+        if current["ControlId"]:
+            raise HTTPException(status_code=422, detail=(
+                f"{current['ControlId']}'s accountable role is stated by "
+                f"{current['SourceDocument'] or 'its defining document'}, so it changes there, "
+                "through Document Lifecycle. Who holds the role is set in the Role Catalogue."))
         # Only activate if the role actually resolves to someone.
         resolved = False
         try:

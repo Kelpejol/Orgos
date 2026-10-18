@@ -13,6 +13,7 @@ import apiClient from "../../api/grcApi.js";
 import JobTitleInput from "../../components/shared/JobTitleInput.jsx";
 import OwnerDisplay from "../../components/shared/OwnerDisplay.jsx";
 import { useCurrentUserRole } from "../../hooks/useCurrentUserRole.js";
+import ControlDefinitionView from "./ControlDefinitionView.jsx";
 
 const controlApi = {
   reassignOwner: (id, ownerRole) =>
@@ -48,20 +49,23 @@ export default function ControlRegister() {
 
   const { data: controls = [], isLoading, error, refetch } = useControls();
 
-  const blockedCount = controls.filter(c => c.Status === "Blocked").length;
+  const FILTERS = {
+    All:     () => true,
+    Active:  (c) => c.Status === "Active",
+    Blocked: (c) => c.Status === "Blocked",
+    Legacy:  (c) => !c.ControlId,          // extracted before Control IDs; no defining document
+  };
 
   const filtered = useMemo(() => {
-    let list = controls;
-    if (typeFilter !== "All") {
-      if (typeFilter === "Blocked") {
-        list = list.filter(c => c.Status === "Blocked");
-      } else {
-        list = list.filter(c => c.ControlType === typeFilter);
-      }
-    }
+    let list = controls.filter(FILTERS[typeFilter] || FILTERS.All);
+    list = [...list].sort((a, b) =>
+      (a.ControlId ? 0 : 1) - (b.ControlId ? 0 : 1) ||
+      (a.ControlId || "").localeCompare(b.ControlId || "", undefined, { numeric: true }));
     if (search.trim()) {
       const q = search.toLowerCase();
       list = list.filter(c =>
+        (c.ControlId        || "").toLowerCase().includes(q) ||
+        (c.Title            || "").toLowerCase().includes(q) ||
         (c.ControlStatement || "").toLowerCase().includes(q) ||
         (c.ISOClause        || "").toLowerCase().includes(q) ||
         (c.OwnerRole        || "").toLowerCase().includes(q) ||
@@ -72,6 +76,9 @@ export default function ControlRegister() {
   }, [controls, search, typeFilter]);
 
   // ── Detail view ────────────────────────────────────────────────────────────
+  if (selected?.ControlId) {
+    return <ControlDefinitionView control={selected} onBack={() => setSelected(null)} />;
+  }
   if (selected) {
     const tc = TYPE_COLORS[selected.ControlType] || TYPE_COLORS.Directive;
     return (
@@ -178,7 +185,7 @@ export default function ControlRegister() {
         <div>
           <div style={{ fontSize: 17, fontWeight: 600, marginBottom: 3 }}>Control register</div>
           <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>
-            Every control confirmed by the compliance team from the Extraction Review queue.
+            Every control confirmed by the compliance team, as its defining document states it.
           </div>
         </div>
         <div style={{ padding: "3px 10px", background: "#E1F5EE", borderRadius: 6,
@@ -190,14 +197,11 @@ export default function ControlRegister() {
 
       {/* Filters */}
       <div style={{ display: "flex", gap: 6, marginBottom: 12, flexWrap: "wrap" }}>
-        {[
-          { key: "All",       label: `All (${controls.length})` },
-          { key: "Preventive", label: `Preventive (${controls.filter(c => c.ControlType === "Preventive").length})` },
-          { key: "Detective",  label: `Detective (${controls.filter(c => c.ControlType === "Detective").length})` },
-          { key: "Corrective", label: `Corrective (${controls.filter(c => c.ControlType === "Corrective").length})` },
-          { key: "Directive",  label: `Directive (${controls.filter(c => c.ControlType === "Directive").length})` },
-          { key: "Blocked",   label: `Blocked (${blockedCount})` },
-        ].map(t => (
+        {["All", "Active", "Blocked", "Legacy"].map(k => ({
+          key: k,
+          label: `${k} (${controls.filter(FILTERS[k]).length})`,
+        })).filter(t => t.key !== "Legacy" || controls.some(FILTERS.Legacy))
+        .map(t => (
           <button key={t.key} onClick={() => setTypeFilter(t.key)}
             style={{ padding: "5px 10px", fontSize: 11, borderRadius: 6, cursor: "pointer",
                      fontWeight: typeFilter === t.key ? 600 : 400,
@@ -256,11 +260,20 @@ export default function ControlRegister() {
                                 alignItems: "flex-start", gap: 8 }}>
                     <div style={{ flex: 1 }}>
                       <div style={{ display: "flex", gap: 4, marginBottom: 4, flexWrap: "wrap" }}>
-                        <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 3,
-                                       fontWeight: 500, background: tc.bg,
-                                       color: tc.color, border: `0.5px solid ${tc.bd}` }}>
-                          {c.ControlType || "Directive"}
-                        </span>
+                        {c.ControlId ? (
+                          <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 3,
+                                         fontWeight: 600, fontFamily: "var(--font-mono)",
+                                         background: "var(--color-background-info)",
+                                         color: "var(--color-text-info)" }}>
+                            {c.ControlId}
+                          </span>
+                        ) : (
+                          <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 3,
+                                         fontWeight: 500, background: tc.bg,
+                                         color: tc.color, border: `0.5px solid ${tc.bd}` }}>
+                            Legacy{c.ControlType ? ` · ${c.ControlType}` : ""}
+                          </span>
+                        )}
                         {c.ISOClause && (
                           <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 3,
                                          fontFamily: "var(--font-mono)",
@@ -272,8 +285,11 @@ export default function ControlRegister() {
                         {isBlocked && <StatusBadge label="Blocked" />}
                       </div>
                       <div style={{ fontSize: 12, fontWeight: 600, lineHeight: 1.4, marginBottom: 3 }}>
-                        {c.ControlStatement || c.Title}
+                        {c.ControlId ? (c.Definition?.title || c.Title) : (c.ControlStatement || c.Title)}
                       </div>
+                      {c.ControlId && isBlocked && c.BlockedReason && (
+                        <div style={{ fontSize: 11, color: "#791F1F", marginBottom: 2 }}>{c.BlockedReason}</div>
+                      )}
                       <div style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>
                         {c.OwnerRole || "No owner"}{c.OwnerResolved === false && c.OwnerRole ? " (unassigned)" : ""} · {c.SourceDocument || "No source"}
                       </div>
