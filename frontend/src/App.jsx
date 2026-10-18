@@ -413,6 +413,7 @@ export default function OrgOS() {
         {/* Linked from Teams — read a document without opening the editable
             source. See pages/ReadDocument. */}
         <Route path="/read/:id" element={<ReadDocument />} />
+        <Route path="/read" element={<ReadDocument />} />
         <Route path="/lifecycle/feedback/:id" element={<LifecycleFeedback />} />
         <Route path="/lifecycle/approve/:id"  element={<LifecycleApprove />} />
         {/* All other paths → full app shell with sidebar */}

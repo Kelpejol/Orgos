@@ -11,7 +11,7 @@ import logging
 import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, quote, unquote, urlparse
 
 import httpx
 from fastapi import (
@@ -833,7 +833,13 @@ async def progress_doc(
                 parent_title, parent_url = await _resolve_parent_document_link(cover.parent_document)
                 _parent_doc_fields["ParentDocumentTitle"] = parent_title or cover.parent_document
                 if parent_url:
-                    _parent_doc_fields["ParentDocumentUrl"] = parent_url
+                    # Point at the OrgOS reader, not the file: the Teams card
+                    # opens this directly, and the register's own copy is an
+                    # editable Word document like any other.
+                    _parent_doc_fields["ParentDocumentUrl"] = (
+                        f"{settings.app_url}/read?url={quote(parent_url, safe='')}"
+                        if settings.app_url else parent_url
+                    )
 
         _approver_email_pg: str = ""   # saved for best-effort Person/Group write below
         if body.current_stage == "Sensitisation":

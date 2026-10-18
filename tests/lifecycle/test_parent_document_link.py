@@ -114,7 +114,8 @@ async def test_progress_writes_parent_link_as_separate_best_effort_call():
     doc = _lifecycle_doc()
     body = lr.ProgressDoc(current_stage="Review", stakeholders=[{"oid": "s1", "name": "Stakeholder One"}])
 
-    with patch("lifecycle.router.get_list_item", new_callable=AsyncMock) as mock_get, \
+    with patch.object(type(lr.settings), "app_url", property(lambda self: "https://orgos.example")), \
+         patch("lifecycle.router.get_list_item", new_callable=AsyncMock) as mock_get, \
          patch("lifecycle.router.update_list_item", new_callable=AsyncMock) as mock_update, \
          patch("grc.service.get_documents", new_callable=AsyncMock) as mock_docs:
 
@@ -131,7 +132,11 @@ async def test_progress_writes_parent_link_as_separate_best_effort_call():
     assert "ParentDocumentTitle" not in critical_call.args[3]
 
     assert parent_call.args[3]["ParentDocumentTitle"] == "Information Security Policy"
-    assert parent_call.args[3]["ParentDocumentUrl"] == "https://sp/register/InfoSecPolicy.docx"
+    # The card opens this link directly, so it points at the OrgOS reader
+    # rather than at the register's own (editable) Word file.
+    assert parent_call.args[3]["ParentDocumentUrl"] == (
+        "https://orgos.example/read?url=https%3A%2F%2Fsp%2Fregister%2FInfoSecPolicy.docx"
+    )
 
 
 async def test_progress_still_succeeds_when_parent_link_column_missing():
@@ -226,3 +231,21 @@ async def test_progress_succeeds_when_no_app_url_is_configured():
         await lr.progress_doc("10", body, user=COMPLIANCE_USER)
 
     assert mock_update.call_count == 1   # only the critical write
+
+
+async def test_parent_link_falls_back_to_the_file_when_no_app_url_is_set():
+    """Better a working SharePoint link than none — the flow still has a target."""
+    doc = _lifecycle_doc()
+    body = lr.ProgressDoc(current_stage="Review", stakeholders=[{"oid": "s1", "name": "S One"}])
+
+    with patch.object(type(lr.settings), "app_url", property(lambda self: "")), \
+         patch("lifecycle.router.get_list_item", new_callable=AsyncMock) as mock_get, \
+         patch("lifecycle.router.update_list_item", new_callable=AsyncMock) as mock_update, \
+         patch("grc.service.get_documents", new_callable=AsyncMock) as mock_docs:
+
+        mock_get.return_value = {"id": "10", "fields": doc}
+        mock_docs.return_value = [_document_read()]
+        await lr.progress_doc("10", body, user=COMPLIANCE_USER)
+
+    _, parent_call = mock_update.call_args_list
+    assert parent_call.args[3]["ParentDocumentUrl"] == "https://sp/register/InfoSecPolicy.docx"
