@@ -15,11 +15,12 @@ from graph.client import download_file_from_sharepoint, get_list_items
 from grc.constants import DOC_FIELDS
 
 # Same rule the lifecycle uses: only these types are extraction targets.
-_TARGET_TYPES = {"policy", "procedure", "sop", "guidelines"}
-
-
 def _extractor_type(doc_type: str):
-    return "Policy" if (doc_type or "").strip().lower() in _TARGET_TYPES else None
+    """The one decision, made in one place. This script kept its own copy of
+    the type list, so it skipped exactly the documents approval skipped —
+    which made the bug invisible from here too."""
+    from lifecycle.router import _extractor_type_for_lifecycle
+    return _extractor_type_for_lifecycle(doc_type)
 
 
 def _match(items, field, value):

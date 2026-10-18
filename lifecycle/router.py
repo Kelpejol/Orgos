@@ -131,16 +131,49 @@ def _filename_from_sharepoint_url(url: str, content_type: str = "") -> str:
     return f"{stem or 'document'}.docx"
 
 
+# Which register document types carry controls, and which extractor schema
+# reads them. EVERY value of grc.schemas.DocumentType is listed, so adding a
+# type there without deciding this is a test failure rather than a document
+# that silently never extracts — which is how Standards, Manuals, Guidelines
+# (singular) and Combined documents reached the Register and stopped.
+#
+# A Standard is Layer 3 and among the most control-dense documents Dragnet
+# writes; it was skipped purely because the set below said "guidelines" and
+# not "standard".
+_EXTRACTOR_TYPE_BY_DOCUMENT_TYPE: dict[str, Optional[str]] = {
+    # Controlled documents — the policy control extractor reads them.
+    "policy":     "Policy",
+    "standard":   "Policy",
+    "procedure":  "Policy",
+    "sop":        "Policy",
+    "manual":     "Policy",
+    "guideline":  "Policy",
+    "guidelines": "Policy",   # legacy plural spelling, kept distinct in the enum
+    "combined":   "Policy",   # combined policy-and-procedure documents
+    # An SLA states obligations against a counterparty, which is what the
+    # contract extractor is for (counterparty, clause, expiry).
+    "sla":        "Contract",
+    # Records, not control sources.
+    "form":       None,
+}
+
+
 def _extractor_type_for_lifecycle(document_type: str) -> Optional[str]:
     """
-    Map lifecycle/register document types to extractor document types.
-    Procedure/SOP/Guidelines are controlled-document sources, so extract them
-    with the policy control extractor. Forms do not usually contain controls.
+    The extractor schema for a register document type, or None when the type
+    is not a control source. Unknown types extract as a controlled document:
+    missing controls is the costly failure, a few spurious queue items is not.
     """
     normalized = (document_type or "").strip().lower()
-    if normalized in {"policy", "procedure", "sop", "guidelines"}:
-        return "Policy"
-    return None
+    if not normalized:
+        return None
+    if normalized in _EXTRACTOR_TYPE_BY_DOCUMENT_TYPE:
+        return _EXTRACTOR_TYPE_BY_DOCUMENT_TYPE[normalized]
+    logger.info(
+        f"Document type '{document_type}' is not in the extractor map — "
+        f"extracting it as a controlled document."
+    )
+    return "Policy"
 
 
 async def _extract_approved_document_to_review_queue(doc: dict) -> dict:
@@ -1050,6 +1083,11 @@ def _extraction_outcome_note(ex: dict) -> str:
             f"enough to queue.")
 
 
+# Strong references to in-flight background tasks — see the create_task call
+# in _finalize_document_approval for why this is not optional.
+_BACKGROUND_TASKS: set[asyncio.Task] = set()
+
+
 async def _background_extract_and_flag(
     item_id: str, doc: dict, register_item_id: str
 ) -> None:
@@ -1327,9 +1365,21 @@ async def _finalize_document_approval(
     # retried. The document is already Approved + in the Register above, so fire
     # extraction as a background task and return immediately. It populates the
     # review queue shortly after and flags the item if it finds nothing.
-    asyncio.create_task(
-        _background_extract_and_flag(item_id, dict(doc), register_item_id)
+    # The document the task extracts must be the one that was just published —
+    # a CDT merge replaces the file, and the pre-update `doc` still points at
+    # the unmerged source.
+    doc_for_extraction = dict(doc)
+    if published_url:
+        doc_for_extraction["SharePointFileUrl"] = published_url
+
+    task = asyncio.create_task(
+        _background_extract_and_flag(item_id, doc_for_extraction, register_item_id)
     )
+    # asyncio keeps only a WEAK reference to a task, so one that nothing holds
+    # can be garbage-collected mid-run — the document reaches the Register and
+    # extraction simply never happens. Hold it until it finishes.
+    _BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_BACKGROUND_TASKS.discard)
 
     return register_item_id, {
         "started": True,
