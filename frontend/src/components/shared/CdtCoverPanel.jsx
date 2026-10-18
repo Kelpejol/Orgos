@@ -250,11 +250,21 @@ export default function CdtCoverPanel({ docId, docCode, lifecycleApi, onClose })
   const [suggestions, setSuggestions] = useState({});
   const [applied, setApplied] = useState([]);   // fields filled from a suggestion, not yet edited
   const [domains, setDomains] = useState([]);
+  // Whether the document already carries a CDT cover, read from the file. The
+  // officer should not have to know this before choosing a button.
+  const [coverStatus, setCoverStatus] = useState(null);
+  const [attaching, setAttaching] = useState(false);
 
   useEffect(() => {
     let live = true;
     (async () => {
       try {
+        // Best-effort and never blocking: the panel must open to edit cover
+        // facts even if the file itself cannot be inspected right now.
+        lifecycleApi.coverStatus(docId)
+          .then((st) => { if (live) setCoverStatus(st); })
+          .catch(() => { if (live) setCoverStatus(null); });
+
         const data = await lifecycleApi.getCover(docId);
         if (!live) return;
         const loaded = { ...EMPTY_COVER, ...(data.cover || {}) };
@@ -363,6 +373,30 @@ export default function CdtCoverPanel({ docId, docCode, lifecycleApi, onClose })
     }
   };
 
+  // Grafts the master template's cover onto a document that has none. The
+  // backend keeps the original upload as a timestamped backup and refuses to
+  // graft onto a document that already has a cover, so this cannot duplicate one.
+  const attach = async () => {
+    setAttaching(true); setError("");
+    try {
+      const result = await lifecycleApi.attachCover(docId);
+      const st = await lifecycleApi.coverStatus(docId).catch(() => null);
+      setCoverStatus(st);
+      notify(result.already_templated
+        ? { tone: "info", title: "Already has a cover", message: result.detail || "Nothing to attach." }
+        : { tone: "success", title: "Cover attached",
+            message: `${result.images_carried} image(s) carried over` +
+                     (result.images_skipped ? `, ${result.images_skipped} skipped` : "") +
+                     ". The original upload was kept as a backup." });
+    } catch (e) {
+      const msg = e?.response?.data?.detail || e.message || "Attach cover failed.";
+      setError(msg);
+      notify({ tone: "danger", title: "Attach cover failed", message: msg });
+    } finally {
+      setAttaching(false);
+    }
+  };
+
   const preview = async () => {
     setPreviewing(true); setError("");
     try {
@@ -404,6 +438,31 @@ export default function CdtCoverPanel({ docId, docCode, lifecycleApi, onClose })
         </div>
 
         <div style={{ padding: "16px 22px", overflowY: "auto", flex: 1 }}>
+          {coverStatus && (
+            <div style={{ marginBottom: 12, padding: "10px 12px", borderRadius: 10, fontSize: 12,
+              lineHeight: 1.5,
+              background: coverStatus.has_cover ? "#E7F5F0"
+                        : coverStatus.can_attach ? "#EEEDFE" : "#FDF3E2",
+              border: `1px solid ${coverStatus.has_cover ? "#9FD9C8"
+                        : coverStatus.can_attach ? "#AFA9EC" : "#F0CE94"}`,
+              color: coverStatus.has_cover ? "#085041"
+                   : coverStatus.can_attach ? "#3C3489" : "#8A5A00" }}>
+              <div style={{ fontWeight: 700, marginBottom: 3 }}>
+                {coverStatus.has_cover
+                  ? `CDT cover present (${coverStatus.source})`
+                  : coverStatus.can_attach ? "No CDT cover yet" : "Cover could not be checked"}
+              </div>
+              <div style={{ opacity: 0.9 }}>{coverStatus.detail}</div>
+              {coverStatus.can_attach && coverStatus.may_edit && (
+                <button onClick={attach} disabled={attaching}
+                  style={{ marginTop: 9, padding: "7px 14px", fontSize: 12, fontWeight: 700,
+                    borderRadius: 8, border: "none", background: "#3C3489", color: "#fff",
+                    cursor: attaching ? "default" : "pointer", opacity: attaching ? 0.6 : 1 }}>
+                  {attaching ? "Attaching…" : "Attach CDT cover"}
+                </button>
+              )}
+            </div>
+          )}
           {loading && <div style={{ fontSize: 13, color: "var(--color-text-secondary)" }}>Loading cover facts…</div>}
           {error && (
             <div style={{ fontSize: 12.5, color: "#A32D2D", background: "#FCEBEB",

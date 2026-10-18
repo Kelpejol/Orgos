@@ -43,6 +43,7 @@ from graph.client import (
 from graph.exceptions import GraphAPIError, GraphNotFoundError
 from lifecycle.cover_suggest import REVIEW_PERIOD_DAYS, library_path_from_url, prefill_insert, suggest_cover_facts
 from lifecycle.domains import APPROVAL_ROUTES, Domain
+from lifecycle.cover_detect import detect_cover
 from lifecycle.graft import graft_cover_onto_document
 from lifecycle.merge import MergeError, merge, scan_markers
 from lifecycle.schemas import CdtCoverFacts, MergeContext, RevisionHistoryEntry, StandardEntry
@@ -2073,6 +2074,44 @@ async def view_document_pdf(
         _handle_error(exc, f"view lifecycle document {item_id}")
 
 
+@router.get("/documents/{item_id}/cover/status")
+async def cdt_cover_status(
+    item_id: str,
+    user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    """
+    Whether this document already carries a CDT cover, read from the file
+    itself — either live {{ markers }} or an already-merged cover table.
+
+    "Attach CDT cover" is only the right offer for a document that has none;
+    offering it on every document left the officer to know the answer first,
+    and grafting onto a document that already has a cover duplicates it.
+    """
+    try:
+        item = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
+        doc  = await _sp_to_doc(item)
+        url  = doc.get("SharePointFileUrl", "")
+        if not url:
+            return {"document_id": item_id, "has_file": False, "has_cover": False,
+                    "source": "none", "can_attach": False,
+                    "detail": "No file has been uploaded for this document yet."}
+
+        file_bytes, content_type = await download_file_from_sharepoint(url)
+        detection = detect_cover(file_bytes, _filename_from_sharepoint_url(url, content_type))
+        return {
+            "document_id": item_id,
+            "has_file": True,
+            # Only a readable .docx with no cover can be grafted onto.
+            "can_attach": not detection.has_cover and detection.source == "none",
+            "may_edit": _may_correct_approval(doc, user),
+            **detection.as_dict(),
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _handle_error(exc, f"cover status {item_id}")
+
+
 @router.post("/documents/{item_id}/attach-cover")
 async def attach_cdt_cover(
     item_id: str,
@@ -2118,8 +2157,14 @@ async def attach_cdt_cover(
 
         existing_bytes, _ = await download_file_from_sharepoint(file_url)
 
-        if scan_markers(existing_bytes):
-            return {"already_templated": True, "images_carried": 0, "images_skipped": 0, "backup_url": ""}
+        detection = detect_cover(existing_bytes, _filename_from_sharepoint_url(file_url))
+        if detection.has_cover:
+            # Markers, or a cover table already merged in. Either way a second
+            # graft would put a duplicate cover on the front of the document.
+            return {"already_templated": True, "images_carried": 0, "images_skipped": 0,
+                    "backup_url": "", "source": detection.source, "detail": detection.detail}
+        if detection.source == "unreadable":
+            raise HTTPException(status_code=422, detail=detection.detail)
 
         doc_type = doc.get("DocumentType", "")
         try:

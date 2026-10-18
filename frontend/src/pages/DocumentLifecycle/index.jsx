@@ -89,6 +89,9 @@ const lifecycleApi = {
   cdiDomains: () =>
     apiClient.get(`/api/v1/lifecycle/cdi/domains`).then(r => r.data),
 
+  coverStatus: (id) =>
+    apiClient.get(`/api/v1/lifecycle/documents/${id}/cover/status`).then(r => r.data),
+
   attachCover: (id) =>
     apiClient.post(`/api/v1/lifecycle/documents/${id}/attach-cover`).then(r => r.data),
 
@@ -1209,9 +1212,6 @@ const LifecycleCard = ({
   const [showViewer,      setShowViewer]      = useState(false);
   const [showAmend,       setShowAmend]       = useState(false);
   const [showCdtCover,    setShowCdtCover]    = useState(false);
-  const [attachingCover,  setAttachingCover]  = useState(false);
-  const [attachCoverMsg,  setAttachCoverMsg]  = useState("");
-  const [attachCoverErr,  setAttachCoverErr]  = useState("");
   const [approverAction,  setApproverAction]  = useState(null);   // "change" | "reverse"
   const [approverBusy,    setApproverBusy]    = useState(false);
   const [approverErr,     setApproverErr]     = useState("");
@@ -1314,33 +1314,6 @@ const LifecycleCard = ({
       setDownloadError(err.message || "Download failed");
     } finally {
       setDownloading(false);
-    }
-  };
-
-  // ── Attach CDT cover — onboard a document with no cover onto the master
-  // template. Idempotent (already_templated: true is a no-op), never
-  // destructive (backend keeps the original upload as a backup). Opens the
-  // cover-facts panel immediately afterwards so the officer can fill it in.
-  const handleAttachCover = async () => {
-    setAttachingCover(true);
-    setAttachCoverErr("");
-    setAttachCoverMsg("");
-    try {
-      const result = await lifecycleApi.attachCover(doc.id);
-      if (result.already_templated) {
-        setShowCdtCover(true);
-      } else {
-        qc.invalidateQueries({ queryKey: ["lifecycle"] });
-        const parts = [`Cover attached (${result.images_carried} image(s) carried over`];
-        if (result.images_skipped) parts.push(`, ${result.images_skipped} skipped`);
-        parts.push(")");
-        setAttachCoverMsg(parts.join(""));
-        setShowCdtCover(true);
-      }
-    } catch (err) {
-      setAttachCoverErr(err?.response?.data?.detail || err.message || "Attach cover failed");
-    } finally {
-      setAttachingCover(false);
     }
   };
 
@@ -1503,18 +1476,6 @@ const LifecycleCard = ({
         <div style={{ padding: "5px 8px", background: "#FCEBEB", borderRadius: 6,
                       fontSize: 11, color: "#791F1F", marginBottom: 6 }}>
           Download failed: {downloadError}
-        </div>
-      )}
-      {attachCoverErr && (
-        <div style={{ padding: "5px 8px", background: "#FCEBEB", borderRadius: 6,
-                      fontSize: 11, color: "#791F1F", marginBottom: 6 }}>
-          Attach cover failed: {attachCoverErr}
-        </div>
-      )}
-      {attachCoverMsg && (
-        <div style={{ padding: "5px 8px", background: "#E7F5F0", borderRadius: 6,
-                      fontSize: 11, color: "#085041", marginBottom: 6 }}>
-          {attachCoverMsg}
         </div>
       )}
 
@@ -1847,8 +1808,10 @@ const LifecycleCard = ({
                   Fix CDI issues
                 </button>
               )}
-              {/* CDT (v06) — cover facts + live PDF preview. Any stage, once a
-                  file exists; same people who can edit it on the backend. */}
+              {/* CDT (v06) — cover facts, preview, and (only when the document
+                  has no cover) attaching one. Whether a cover exists is read
+                  from the file by the panel, so this is one button, not two
+                  the officer has to choose between. */}
               {doc.SharePointFileUrl && (isOwner || isCompliance) && (
                 <button onClick={() => setShowCdtCover(true)} style={{
                   padding: "7px", fontSize: 11, borderRadius: 7, fontWeight: 600,
@@ -1856,21 +1819,6 @@ const LifecycleCard = ({
                   cursor: "pointer",
                 }}>
                   Cover & preview
-                </button>
-              )}
-              {/* Attach CDT cover — onboards a document written outside the
-                  template (or any existing document with no cover at all)
-                  onto the master template. Backend is idempotent — safe to
-                  show any time a file exists, whether or not it already has
-                  a cover; if it does, this just opens the cover panel. */}
-              {doc.SharePointFileUrl && (isOwner || isCompliance) && (
-                <button onClick={handleAttachCover} disabled={attachingCover} style={{
-                  padding: "7px", fontSize: 11, borderRadius: 7, fontWeight: 600,
-                  border: "1.5px solid #AFA9EC", background: "transparent", color: "#3C3489",
-                  cursor: attachingCover ? "default" : "pointer",
-                  opacity: attachingCover ? 0.6 : 1,
-                }}>
-                  {attachingCover ? "Attaching…" : "Attach CDT cover"}
                 </button>
               )}
               {/* Reassign */}
