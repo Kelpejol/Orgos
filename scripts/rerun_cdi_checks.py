@@ -34,7 +34,7 @@ from config import settings
 from graph.auth import get_graph_access_token
 from graph.client import download_file_from_sharepoint, get_list_items, shutdown, startup, update_list_item
 from agents.cdi_checker.service import run_cdi_check
-from lifecycle.router import _cdi_result_to_storage
+from lifecycle.router import _cdi_result_to_storage, _filename_from_sharepoint_url
 
 logger = logging.getLogger("rerun_cdi")
 
@@ -101,11 +101,13 @@ async def main(dry_run: bool, only_failed: bool, limit: int = 0) -> None:
             if limit and done >= limit:
                 break
             done += 1
-            filename = filename_from_url(url)
             try:
                 # Same download the app uses: by the item's stored URL, so it
                 # works wherever the file lives (no folder-path guessing).
-                content, _ = await download_file_from_sharepoint(url)
+                content, content_type = await download_file_from_sharepoint(url)
+                # Stored URLs are often Word viewer links (".../Doc.aspx?file=X.docx");
+                # the app's helper reads the real name, so the checker sees ".docx".
+                filename = _filename_from_sharepoint_url(url, content_type)
             except Exception as exc:
                 stats["Error"] += 1
                 print(f"[{i}/{len(items)}] {title:<52} DOWNLOAD FAILED: {str(exc)[:60]}")
@@ -125,6 +127,8 @@ async def main(dry_run: bool, only_failed: bool, limit: int = 0) -> None:
             rescued_total += rescued
             stats[new_status] += 1
 
+            if result.get("error"):
+                print(f"      ↳ {filename}: {str(result['error'])[:140]}")
             change = f"{old_status or '—'} → {new_status}"
             extra = f" | AI-rescued {rescued} check(s)" if rescued else ""
             print(f"[{i}/{len(items)}] {title:<52} {change}"
