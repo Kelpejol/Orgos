@@ -137,6 +137,9 @@ class FixOutcome:
     detail: str = ""
     before: str = ""
     after: str = ""
+    # The exact text this fix put into the document, so a preview can show the
+    # reviewer WHERE it landed. One entry per paragraph/row the fix produced.
+    changed_texts: list[str] = field(default_factory=list)
 
 
 # =============================================================================
@@ -275,7 +278,8 @@ def _apply_one(
         _restore_para(occ.para, before)
         return FixOutcome(fix_id, check_id, "verify_failed",
                           "Replacement did not verify — rolled back.", before, after)
-    return FixOutcome(fix_id, check_id, "applied", "Fix applied.", before, after)
+    return FixOutcome(fix_id, check_id, "applied", "Fix applied.", before, after,
+                      changed_texts=[after])
 
 
 def _restore_para(paragraph: Paragraph, original_joined: str) -> None:
@@ -453,8 +457,12 @@ def _apply_insert(doc: Document, fix_id: str, check_id: str, spec: dict) -> FixO
                 parent.remove(el)
         return FixOutcome(fix_id, check_id, "verify_failed",
                           "Inserted content did not verify — rolled back.")
+    inserted = ([heading] if (kind != "line" and heading) else []) + [
+        ln.strip() for ln in text.splitlines() if ln.strip()
+    ]
     return FixOutcome(fix_id, check_id, "applied", "Content inserted.", before="",
-                      after=(heading + ": " if heading else "") + text.splitlines()[0])
+                      after=(heading + ": " if heading else "") + text.splitlines()[0],
+                      changed_texts=inserted)
 
 
 # =============================================================================
@@ -535,3 +543,67 @@ def apply_amendments(docx_bytes: bytes, amendments: list[dict]) -> tuple[bytes, 
     out = io.BytesIO()
     doc.save(out)
     return out.getvalue(), outcomes
+
+
+# =============================================================================
+#  Preview — show the reviewer the fixed document, with the changes marked
+#
+#  Reading the FINAL document (rather than replaying the edits) means the
+#  preview is what the file actually says, so a fix that silently did nothing
+#  cannot show up as applied. Blocks are matched by the text each fix produced,
+#  which survives the index shifts that inserting content causes.
+# =============================================================================
+
+def _table_rows(tbl, doc: Document) -> Iterable[str]:
+    from docx.table import Table
+    for row in Table(tbl, doc).rows:
+        cells = [" ".join(_para_text(p) for p in cell.paragraphs).strip()
+                 for cell in row.cells]
+        # A merged row repeats the same cell; collapse it so it reads as one.
+        deduped = [c for i, c in enumerate(cells) if i == 0 or c != cells[i - 1]]
+        line = " | ".join(c for c in deduped if c)
+        if line:
+            yield line
+
+
+def document_preview(docx_bytes: bytes, outcomes: Iterable[FixOutcome] = ()) -> list[dict]:
+    """
+    The document body as an ordered list of readable blocks:
+        [{"text": str, "changed": bool, "check_id": str, "heading": bool}, ...]
+    Paragraphs and table rows appear in document order. A block is marked
+    `changed` when it carries text one of the APPLIED fixes produced.
+    """
+    marks: list[tuple[str, str]] = []           # (normalised text, check_id)
+    for o in outcomes:
+        if o.status != "applied":
+            continue
+        for t in (o.changed_texts or ([o.after] if o.after else [])):
+            norm = normalize_collapsed(t)
+            if norm:
+                marks.append((norm, o.check_id))
+
+    doc = Document(io.BytesIO(docx_bytes))
+    blocks: list[dict] = []
+
+    def _emit(text: str, heading: bool) -> None:
+        text = text.strip()
+        if not text:
+            return
+        norm = normalize_collapsed(text)
+        check_id = next((cid for m, cid in marks if m and m in norm), "")
+        blocks.append({"text": text, "changed": bool(check_id),
+                       "check_id": check_id, "heading": heading})
+
+    for child in doc.element.body.iterchildren():
+        tag = child.tag.rsplit("}", 1)[-1]
+        if tag == "p":
+            para = Paragraph(child, doc)
+            try:
+                style = (para.style.name or "").lower()
+            except Exception:
+                style = ""
+            _emit(_para_text(para), style.startswith("heading") or style == "title")
+        elif tag == "tbl":
+            for line in _table_rows(child, doc):
+                _emit(line, False)
+    return blocks

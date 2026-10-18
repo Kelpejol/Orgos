@@ -8,7 +8,7 @@
 // human-in-the-loop surface for that.
 // =============================================================================
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import apiClient from "../../api/grcApi.js";
 
@@ -246,6 +246,91 @@ function FixCard({ f, decision, onChange }) {
   );
 }
 
+// ── document preview — the fixed document, changes highlighted ───────────────
+// Reading the result in place beats trusting a count: the reviewer sees what
+// the document now says, and can step through each change in document order.
+function ChangePreview({ blocks }) {
+  const [at, setAt] = useState(0);
+  const scrollRef = useRef(null);
+  const marks = useRef([]);
+
+  const changedIdx = useMemo(
+    () => blocks.map((b, i) => (b.changed ? i : -1)).filter((i) => i >= 0),
+    [blocks],
+  );
+
+  const jump = (delta) => {
+    if (!changedIdx.length) return;
+    const next = (at + delta + changedIdx.length) % changedIdx.length;
+    setAt(next);
+    const el = marks.current[changedIdx[next]];
+    if (el) el.scrollIntoView({ block: "center", behavior: "smooth" });
+  };
+
+  // Land on the first change rather than the top of the document.
+  useEffect(() => {
+    if (!changedIdx.length) return;
+    const el = marks.current[changedIdx[0]];
+    if (el && scrollRef.current) {
+      scrollRef.current.scrollTop = Math.max(0, el.offsetTop - scrollRef.current.offsetTop - 60);
+    }
+  }, [changedIdx]);
+
+  if (!blocks.length) return null;
+
+  const navBtn = (disabled) => ({
+    padding: "3px 9px", fontSize: 13, lineHeight: 1.2, borderRadius: 7,
+    border: "1.5px solid var(--color-border-tertiary)", background: "var(--color-background-primary)",
+    color: disabled ? "var(--color-text-tertiary)" : "var(--color-text-primary)",
+    cursor: disabled ? "not-allowed" : "pointer",
+  });
+
+  return (
+    <div style={{ marginBottom: 14, border: "1px solid var(--color-border-tertiary)",
+      borderRadius: 12, overflow: "hidden" }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center",
+        padding: "8px 12px", borderBottom: "1px solid var(--color-border-tertiary)",
+        background: "var(--color-background-secondary)" }}>
+        <div style={{ fontSize: 11.5, fontWeight: 700, color: "var(--color-text-secondary)" }}>
+          The document now reads
+        </div>
+        {changedIdx.length > 0 && (
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>
+              change {at + 1} of {changedIdx.length}
+            </span>
+            <button onClick={() => jump(-1)} title="Previous change"
+              disabled={changedIdx.length < 2} style={navBtn(changedIdx.length < 2)}>↑</button>
+            <button onClick={() => jump(1)} title="Next change"
+              disabled={changedIdx.length < 2} style={navBtn(changedIdx.length < 2)}>↓</button>
+          </div>
+        )}
+      </div>
+      <div ref={scrollRef} style={{ maxHeight: 260, overflowY: "auto", padding: "10px 12px",
+        background: "var(--color-background-primary)" }}>
+        {blocks.map((b, i) => (
+          <div key={i} ref={(el) => { marks.current[i] = el; }}
+            style={{
+              fontSize: b.heading ? 12.5 : 12, lineHeight: 1.55,
+              fontWeight: b.heading ? 700 : 400,
+              marginBottom: b.heading ? 4 : 6, padding: b.changed ? "4px 8px" : "0 8px",
+              borderRadius: 6,
+              background: b.changed ? C.auto.bg : "transparent",
+              borderLeft: b.changed ? `3px solid ${C.auto.fg}` : "3px solid transparent",
+              color: b.changed ? C.auto.fg : "var(--color-text-primary)",
+            }}>
+            {b.text}
+            {b.changed && b.check_id && (
+              <span style={{ marginLeft: 8, fontSize: 9.5, fontWeight: 700, opacity: 0.75,
+                textTransform: "uppercase", letterSpacing: "0.4px" }}>{b.check_id}</span>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ── results screen ────────────────────────────────────────────────────────────
 function Results({ result, onDone }) {
   const applied = result.outcomes.filter((o) => o.status === "applied");
@@ -265,6 +350,8 @@ function Results({ result, onDone }) {
           {passed && " — the document now passes. A new version was saved."}
         </div>
       </div>
+
+      <ChangePreview blocks={result.preview || []} />
 
       {applied.map((o, i) => (
         <div key={i} style={{ fontSize: 12, padding: "8px 10px", marginBottom: 6, borderRadius: 8,

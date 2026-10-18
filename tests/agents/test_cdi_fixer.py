@@ -196,3 +196,38 @@ def test_insert_refuses_unfilled_placeholders():
     nb, out = apply_fixes(b, [_insert("Scope", "Applies to [who and what].")])
     assert out[0].status == "needs_input"
     assert "Scope" not in _text(nb)
+
+
+# ── preview: the fixed document, with changes marked ─────────────────────────
+def test_preview_marks_only_changed_blocks():
+    from agents.cdi_checker.fixer import document_preview
+    b = _build(["Access Policy", "The team should endeavour to protect assets.", "Untouched line."])
+    nb, out = apply_fixes(b, [_fix("should endeavour to", "shall")])
+    blocks = document_preview(nb, out)
+    texts = [x["text"] for x in blocks]
+    assert "Untouched line." in texts
+    changed = [x for x in blocks if x["changed"]]
+    assert len(changed) == 1
+    assert "shall protect assets" in changed[0]["text"]
+    assert changed[0]["check_id"] == "CDI-06"
+
+
+def test_preview_marks_inserted_section_and_table_rows():
+    from agents.cdi_checker.fixer import document_preview
+    b = _build(["Access Policy", "Body."])
+    nb, out = apply_fixes(b, [
+        _insert("Purpose", "This policy establishes access control.", fix_id="p"),
+        _insert("Revision History", "Version | Date\n1.0 | 01/01/2026", kind="table", fix_id="t"),
+    ])
+    blocks = document_preview(nb, out)
+    changed = [x["text"] for x in blocks if x["changed"]]
+    assert "Purpose" in changed
+    assert "This policy establishes access control." in changed
+    assert any(t.startswith("1.0 | 01/01/2026") for t in changed)   # table row, readable
+    assert "Body." in [x["text"] for x in blocks if not x["changed"]]
+
+
+def test_preview_of_an_unfixed_document_marks_nothing():
+    from agents.cdi_checker.fixer import document_preview
+    blocks = document_preview(_build(["A", "B"]))
+    assert blocks and not any(x["changed"] for x in blocks)

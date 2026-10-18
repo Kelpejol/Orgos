@@ -2701,7 +2701,7 @@ async def cdi_fix_apply(
             )
 
         # Apply (pure, deterministic)
-        from agents.cdi_checker.fixer import apply_fixes
+        from agents.cdi_checker.fixer import apply_fixes, document_preview
         fixes = [f.model_dump() for f in body.fixes]
         new_bytes, outcomes = apply_fixes(file_bytes, fixes)
 
@@ -2732,10 +2732,19 @@ async def cdi_fix_apply(
 
         await _audit_cdi_fixes(item_id, doc, user, applied)
 
+        # What the document now says, with the applied changes marked, so the
+        # reviewer confirms the result in place rather than trusting a count.
+        try:
+            preview = document_preview(new_bytes, outcomes)
+        except Exception as exc:
+            logger.warning(f"CDI fix preview unavailable for {item_id}: {exc}")
+            preview = []
+
         return {
             "document_id":    item_id,
             "applied_count":  len(applied),
             "outcomes":       [_outcome_dict(o) for o in outcomes],
+            "preview":        preview,
             "cdi_status":     cdi_status,
             "remaining_failures": recheck.get("fail_count", 0) if not recheck.get("passed") else 0,
             "sharepoint_url": file_url,
