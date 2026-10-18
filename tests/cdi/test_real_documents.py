@@ -59,13 +59,21 @@ def test_cdi_standard_child_documents_survive_a_tracked_insertion():
     assert doc.findings[0].kind is FindingKind.TRACKED_CHANGES
 
 
-def test_cdi_procedure_carries_out_twenty_of_the_twenty_one_cdi_controls():
+def test_cdi_procedure_carries_out_all_twenty_one_cdi_controls():
     doc = load(PROCEDURE)
     assert doc.role is DocumentRole.IMPLEMENTING
     assert doc.header.parent_codes == ["DRG-QI-STD-CDI"]
     assert doc.controls == []
     cdi = sorted(i for i in doc.implemented_ids if i.startswith("CDI-"))
-    assert len(cdi) == 20 and "CDI-007" not in cdi
+    assert len(cdi) == 21
+
+
+def test_a_range_in_a_citing_heading_does_not_hide_the_ids_beside_it():
+    """'9.0 Evidence and Records (implements CDI-005, CDI-007, IRG-013 to IRG-018…)'
+    was rejected whole because of the range, losing CDI-007 with it."""
+    step = next(s for s in load(PROCEDURE).implementations if s.section_number == "9.0")
+    assert "CDI-007" in step.control_ids
+    assert {"IRG-013", "IRG-014", "IRG-015", "IRG-016", "IRG-017", "IRG-018"} <= set(step.control_ids)
 
 
 def test_bcdr_procedure_from_pdf():
@@ -106,4 +114,4 @@ def test_the_cdi_standard_and_procedure_read_together():
     assert [d.header.code for d, _ in lib.implementations("CDI-001")] == ["DRG-QI-PRO-CDI"]
     unimplemented = {f.finding.location.item for f in lib.findings()
                      if f.finding.kind is FindingKind.DEFINED_NOT_IMPLEMENTED}
-    assert "CDI-007" in unimplemented
+    assert not any(cid.startswith("CDI-") for cid in unimplemented)

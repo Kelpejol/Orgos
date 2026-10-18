@@ -62,6 +62,7 @@ class FindingKind(str, Enum):
     # Across documents (cdi/library.py)
     DUPLICATE_DOCUMENT_CODE = "duplicate_document_code"
     DEFINED_TWICE = "defined_twice"
+    RESTATEMENT_DIFFERS = "restatement_differs"
     IMPLEMENTS_UNDEFINED = "implements_undefined"
     DEFINED_NOT_IMPLEMENTED = "defined_not_implemented"
 
@@ -157,8 +158,14 @@ class ControlDefinition:
     exception_route: str = ""
     mapping: list[StandardsRef] = field(default_factory=list)
     mapping_as_written: str = ""
-    # Any other labelled field in the block, kept verbatim, so nothing a
-    # document states is lost because this parser did not expect it.
+    # The governing authority a control names (Access Control, IT) — one of
+    # the CDI extras Bobby asked for, where a document states it.
+    authority: str = ""
+    # How the document laid it out: "block" (heading + fields) or "row"
+    # (one row of a control table). Provenance, shown to the reviewer.
+    layout: str = "block"
+    # Any other labelled field, kept verbatim, so nothing a document states
+    # is lost because this parser did not expect it.
     other_fields: dict[str, str] = field(default_factory=dict)
     location: Location = Location()
 
@@ -209,6 +216,8 @@ class ImplementationStep:
     clauses: list[Clause] = field(default_factory=list)
     # "Risk statement (BCDR-01): …" — keyed by the control it names
     risk_statements: dict[str, str] = field(default_factory=dict)
+    # Labelled lines in the section — "Responsible handoff: …", "Evidence: …"
+    fields: dict[str, str] = field(default_factory=dict)
     record_ids: list[str] = field(default_factory=list)
     location: Location = Location()
 
@@ -282,6 +291,9 @@ class DocumentHeader:
     standards_as_written: str = ""
     controls_implemented: list[str] = field(default_factory=list)
     controls_implemented_as_written: str = ""
+    # Declared in the body instead of the control block — "This Procedure
+    # implements IUHC-001 to IUHC-012.", "Inherited controls: APPSEC-01 to …".
+    controls_declared_in_body: list[str] = field(default_factory=list)
     fields: dict[str, str] = field(default_factory=dict)
     sources: dict[str, str] = field(default_factory=dict)
 
@@ -312,6 +324,7 @@ class ParsedDocument:
         ids: list[str] = []
         for source in (
             self.header.controls_implemented,
+            self.header.controls_declared_in_body,
             [i for step in self.implementations for i in step.control_ids],
             [e.control_id for e in self.control_map],
         ):

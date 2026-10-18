@@ -9,7 +9,7 @@
 from __future__ import annotations
 
 import io
-from typing import Iterable, Optional, Union
+from typing import Iterable, Optional
 
 from docx import Document
 from docx.enum.style import WD_STYLE_TYPE

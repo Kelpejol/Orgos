@@ -18,6 +18,8 @@
 #   python scripts/cdi_library_census.py --folder "Policies" # one root folder
 #   python scripts/cdi_library_census.py --local docs/       # files on disk
 #   python scripts/cdi_library_census.py --json report.json # also write everything as JSON
+#   python scripts/cdi_library_census.py --save .cdi_corpus # keep a copy of every file read,
+#                                                            # to re-run later with --local
 # =============================================================================
 
 from __future__ import annotations
@@ -34,7 +36,7 @@ from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from cdi.library import LibraryIndex, document_label
+from cdi.library import LibraryIndex
 from cdi.model import DocumentRole, ParsedDocument, Severity
 from cdi.parser import parse_document
 from cdi.reader import UnsupportedDocument
@@ -46,7 +48,7 @@ from cdi.reader import UnsupportedDocument
 # procedure about backups, not a backup copy. Two files sharing one document
 # code (reported under ACROSS DOCUMENTS) is the stronger signal of an old copy.
 _SUSPECT_NAME = re.compile(
-    r"\b(wip|superseded|archived?|old|retired|obsolete|copy of|deprecated)\b",
+    r"\b(wip|superseded|archived?|old|retired|obsolete|copy|deprecated)\b",
     re.IGNORECASE,
 )
 _ROLE_ORDER = [r.value for r in DocumentRole]
@@ -74,7 +76,7 @@ def collect_local(root: str) -> list[Entry]:
     return entries
 
 
-async def collect_sharepoint(folder_filter: Optional[str]) -> list[Entry]:
+async def collect_sharepoint(folder_filter: Optional[str], save_dir: Optional[str] = None) -> list[Entry]:
     from graph.client import shutdown, startup
     from scripts.intake_sharepoint_to_lifecycle import (
         configured_intake_roots,
@@ -98,6 +100,10 @@ async def collect_sharepoint(folder_filter: Optional[str]) -> list[Entry]:
             except Exception as exc:
                 entries.append(Entry(path, error=f"download failed: {exc}"))
                 continue
+            if save_dir:
+                target = Path(save_dir) / f["folder_path"] / f["name"]
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(data)
             entries.append(_parse(path, data))
             if i % 25 == 0:
                 print(f"  {i}/{len(files)}", file=sys.stderr)
@@ -152,8 +158,13 @@ def report(entries: list[Entry]) -> dict:
     if docs:
         print(f"  Readable from structure, no AI needed: {structured} of {len(docs)} "
               f"({100 * structured // len(docs)}%)")
-    print(f"  Controls defined: {sum(len(d.controls) for d in docs)}  "
-          f"distinct IDs carried out: {len(lib.implemented_by)}")
+    statements = sum(len(d.controls) for d in docs)
+    defined = sum(1 for cid in lib.stated_by if lib.definition(cid))
+    print(f"  Controls with a defining document: {defined}  "
+          f"(from {len(lib.defining_documents)} documents)")
+    print(f"  Statements of controls read: {statements}  "
+          f"(the rest are procedures restating their Standard)")
+    print(f"  Distinct controls carried out by a procedure: {len(lib.implemented_by)}")
 
 
     return {
@@ -176,9 +187,11 @@ def main() -> None:
     ap.add_argument("--local", help="read documents from this directory instead of SharePoint")
     ap.add_argument("--folder", help="only this SharePoint root folder")
     ap.add_argument("--json", help="also write the full report to this file")
+    ap.add_argument("--save", help="keep a copy of every SharePoint file read in this directory")
     args = ap.parse_args()
 
-    entries = collect_local(args.local) if args.local else asyncio.run(collect_sharepoint(args.folder))
+    entries = (collect_local(args.local) if args.local
+               else asyncio.run(collect_sharepoint(args.folder, args.save)))
     data = report(entries)
     if args.json:
         Path(args.json).write_text(json.dumps(data, indent=2, ensure_ascii=False))

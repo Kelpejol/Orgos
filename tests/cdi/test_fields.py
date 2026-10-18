@@ -116,3 +116,47 @@ def test_control_ids_exclude_retention_and_governance_rules():
 
 def test_record_ids_are_exactly_four_digits():
     assert find_record_ids("REC-0675, REC-675, REC-06751 and REC-0675") == ["REC-0675"]
+
+
+# ── vocabulary and lists ────────────────────────────────────────────────────
+
+from cdi.codes import expand_control_ranges          # noqa: E402
+from cdi.fields import control_field, parse_control_list, split_labelled   # noqa: E402
+
+
+def test_every_spelling_reaches_one_canonical_field():
+    for label, field_name in [("Risk treated", "risk"), ("Risk statement", "risk"),
+                              ("Responsible role", "responsibility"), ("Owner", "responsibility"),
+                              ("Executor", "executing"), ("Evidence Record ID", "record_ids"),
+                              ("Trigger and monitoring", "trigger"),
+                              ("Governing authority", "authority")]:
+        assert control_field(label) == field_name, label
+
+
+def test_compound_table_headers_resolve_only_when_asked():
+    assert control_field("Evidence of operation / monitoring", allow_keywords=True) == "evidence"
+    assert control_field("Evidence of operation / monitoring") is None   # not as a paragraph label
+    assert control_field("Default or note", allow_keywords=True) is None
+
+
+def test_a_paragraph_splits_only_at_known_labels():
+    assert split_labelled("Owner: the CTO. Trigger: a change. Note: see annex.") == [
+        ("Owner", "the CTO."), ("Trigger", "a change. Note: see annex.")]
+    assert split_labelled("Evidence freshness: 90 days.") == [("Evidence freshness", "90 days.")]
+    assert split_labelled("The officer shall maintain an inventory: all accounts.") is None
+
+
+def test_ranges_expand_with_their_padding_and_letters():
+    assert parse_control_list("CM-01 to CM-03") == ["CM-01", "CM-02", "CM-03"]
+    assert parse_control_list("EVT-C08 to EVT-C10") == ["EVT-C08", "EVT-C09", "EVT-C10"]
+    assert expand_control_ranges("IRG-001 to IRG-002") == "IRG-001, IRG-002"
+
+
+def test_control_id_shapes_in_use():
+    assert find_control_ids("ACS-L3-01; EVT-C01; NETEDGE-17; DP-064") == [
+        "ACS-L3-01", "EVT-C01", "NETEDGE-17", "DP-064"]
+
+
+def test_a_legacy_document_code_is_not_read_as_a_control():
+    """Inside DRG-QI-PRO-CDI-01-26, 'PRO-CDI-01' has exactly a control ID's shape."""
+    assert find_control_ids("Supersedes DRG-QI-PRO-CDI-01-26 and DRG-ISMS-POL-IUHC-01-26") == []

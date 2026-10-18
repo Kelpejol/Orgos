@@ -157,15 +157,18 @@ def find_record_ids(text: str) -> list[str]:
 #  Control IDs
 # -----------------------------------------------------------------------------
 
-# A control ID is a family prefix and a two- or three-digit number: CDI-001,
-# IRG-024, BCDR-01. The prefix is deliberately open — every domain mints its
-# own — so the shape alone is not proof. RR-26 (a retention rule) and GR-01 (a
+# A control ID is a family prefix, an optional layer segment, and a two- or
+# three-digit number that may carry a letter: CDI-001, IRG-024, BCDR-01,
+# ACS-L3-01, EVT-C01. The prefix is deliberately open — every domain mints
+# its own — so the shape alone is not proof. RR-26 (a retention rule) and GR-01 (a
 # Catalogue governance rule) have the same shape and are excluded by name;
 # beyond that, callers only accept an ID where the document's STRUCTURE says
 # it is a control (a labelled control block, a citing section heading, a
 # control map). Never match this pattern against free prose and call the
 # result a control.
-CONTROL_ID_PATTERN = re.compile(r"\b([A-Z][A-Z0-9]{1,7})-(\d{2,3})\b")
+CONTROL_ID_PATTERN = re.compile(
+    r"\b([A-Z][A-Z0-9]{1,7})(?:-([A-Z][A-Z0-9]{0,5}))?-([A-Z]{0,2}\d{2,3})\b"
+)
 
 # Same shape, not controls.
 NON_CONTROL_PREFIXES: frozenset[str] = frozenset({
@@ -183,14 +186,39 @@ def is_control_id(token: str) -> bool:
     return bool(m) and m.group(1) not in NON_CONTROL_PREFIXES
 
 
+_RANGE = re.compile(
+    r"\b(?P<stem>[A-Z][A-Z0-9]{1,7}(?:-[A-Z][A-Z0-9]{0,5})?-[A-Z]{0,2})(?P<a>\d{2,3})"
+    r"\s*(?:to|–|—|through)\s*(?P=stem)(?P<b>\d{2,3})\b"
+)
+
+
+def expand_control_ranges(text: str) -> str:
+    """
+    "CM-01 to CM-06" → "CM-01, CM-02, …, CM-06". Only for text that lists
+    controls (a control-list field, an "Implements" line) — a range in prose
+    is a description, not a declaration.
+    """
+    def expand(m: re.Match) -> str:
+        a, b = int(m.group("a")), int(m.group("b"))
+        if not 0 < b - a < 100:
+            return m.group(0)
+        width = len(m.group("a"))
+        return ", ".join(f"{m.group('stem')}{n:0{width}d}" for n in range(a, b + 1))
+    return _RANGE.sub(expand, text or "")
+
+
 def find_control_ids(text: str) -> list[str]:
     """
     Every control-ID-shaped token in `text`, in order, without repeats. Only
     call this on text the document's structure already marks as listing
     controls — see CONTROL_ID_PATTERN.
+
+    Document codes are blanked out first: inside a legacy code such as
+    DRG-QI-PRO-CDI-01-26, "PRO-CDI-01" has exactly a control ID's shape.
     """
+    masked = DOC_CODE_SEARCH_PATTERN.sub(lambda m: " " * len(m.group(0)), text or "")
     found: list[str] = []
-    for m in CONTROL_ID_PATTERN.finditer(text or ""):
+    for m in CONTROL_ID_PATTERN.finditer(masked):
         if m.group(1) in NON_CONTROL_PREFIXES:
             continue
         if m.group(0) not in found:

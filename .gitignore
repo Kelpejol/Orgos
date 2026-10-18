@@ -63,3 +63,4 @@ backups/
 # CDI library census output (scripts/cdi_library_census.py)
 census.json
 census.txt
+.cdi_corpus/

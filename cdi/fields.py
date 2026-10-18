@@ -20,7 +20,7 @@ from __future__ import annotations
 import re
 from typing import Iterable
 
-from cdi.codes import find_control_ids, find_record_ids
+from cdi.codes import expand_control_ranges, find_control_ids, find_record_ids
 from cdi.model import RecordRef, Responsibility, StandardsRef
 
 _NONE_VALUES = {"none", "n/a", "na", "not applicable", "-", "—", "nil"}
@@ -268,7 +268,121 @@ def split_responsibility(text: str, known_roles: Iterable[str] = ()) -> Responsi
 def parse_control_list(text: str) -> list[str]:
     """
     Control IDs from a field whose whole job is to list them — "Standard
-    controls implemented: BCDR-01; BCDR-02" or a heading's "(implements
-    CDI-001, CDI-019)". Never call this on free prose.
+    controls implemented: BCDR-01; BCDR-02", a heading's "(implements CDI-001,
+    CDI-019)", "Controls: CM-01 to CM-06". Ranges are expanded. Never call
+    this on free prose.
     """
-    return find_control_ids(text or "")
+    return find_control_ids(expand_control_ranges(text or ""))
+
+
+# =============================================================================
+#  The control field vocabulary
+#
+#  Dragnet's documents name the same field many ways: "Risk", "Risk statement",
+#  "Risk treated"; "Accountable / Executing", "Responsible role", "Accountable
+#  / operating role". Every spelling seen in the library maps to one canonical
+#  field here, and every layout — labelled paragraphs, a per-control field
+#  table, a row-per-control table — reads through this one map. A new spelling
+#  is added once, here, and every layout learns it.
+# =============================================================================
+
+CONTROL_FIELD_ALIASES: dict[str, tuple[str, ...]] = {
+    "requirement": (
+        "requirement", "mandatory requirement", "mandatory control requirement",
+        "canonical requirement", "control requirement", "control statement",
+        "control", "statement",
+    ),
+    "trigger": (
+        "trigger", "trigger and monitoring", "trigger / frequency", "trigger / monitor",
+        "trigger / monitoring", "frequency", "timeline",
+    ),
+    "responsibility": (
+        "accountable / executing", "accountable/executing", "accountable and executing",
+        "accountable / operating role", "responsible role", "responsible roles",
+        "role", "roles", "responsible", "owner role", "owner", "control owner",
+    ),
+    "accountable": ("accountable", "accountable role"),
+    "executing": ("executing", "executing role", "operating role", "executor"),
+    "evidence": (
+        "evidence", "required evidence", "evidence record", "evidence records",
+        "evidence / governed object", "evidence / record route",
+        "required evidence / monitoring", "evidence and risk link",
+    ),
+    "record_ids": ("record ids", "record id", "record id(s)", "evidence record id", "evidence record ids"),
+    "risk": ("risk", "risk statement", "risk treated"),
+    "failure_route": ("failure route",),
+    "exception_route": ("exception route",),
+    "mapping": ("mapping", "standards mapping"),
+    "authority": ("governing authority", "authority"),
+    "clause": ("clause", "clauses", "clause in this procedure", "clauses of this procedure"),
+    "title": ("title", "control title", "name"),
+}
+_CONTROL_ALIAS_INDEX = {a: k for k, aliases in CONTROL_FIELD_ALIASES.items() for a in aliases}
+
+# For table headers that combine words ("Required evidence / monitoring"),
+# a keyword decides, in this order. Exact aliases are always tried first.
+_CONTROL_KEYWORDS: tuple[tuple[str, str], ...] = (
+    ("requirement", "requirement"),
+    ("control statement", "requirement"),
+    ("record id", "record_ids"),
+    ("evidence", "evidence"),
+    ("risk", "risk"),
+    ("accountable", "responsibility"),
+    ("responsib", "responsibility"),
+    ("role", "responsibility"),
+    ("trigger", "trigger"),
+    ("frequency", "trigger"),
+    ("authority", "authority"),
+    ("failure", "failure_route"),
+    ("exception", "exception_route"),
+    ("mapping", "mapping"),
+    ("clause", "clause"),
+)
+
+
+def control_field(label: str, *, allow_keywords: bool = False) -> str | None:
+    """
+    The canonical control field a label names, or None. `allow_keywords`
+    widens the match to compound table headers; leave it off for paragraph
+    labels, where "Note:" or "Example:" must not be read as a field.
+    """
+    key = norm(label)
+    if key in _CONTROL_ALIAS_INDEX:
+        return _CONTROL_ALIAS_INDEX[key]
+    if allow_keywords:
+        for word, field_name in _CONTROL_KEYWORDS:
+            if word in key:
+                return field_name
+    return None
+
+
+_LABEL_START = re.compile(r"(?:^|(?<=[.;]\s))(?P<label>[A-Z][A-Za-z /&()-]{1,40}?)\s*:\s")
+
+
+def split_labelled(text: str) -> list[tuple[str, str]] | None:
+    """
+    Read a paragraph of one or more "Label: value" pairs, or None if it does
+    not open with a known field label.
+
+    Access Control writes several to a paragraph — "Governing authority: X.
+    Responsible role: Y. Required evidence: Z. Record IDs: REC-0691" — so the
+    text is divided at every KNOWN label, and only known ones: a colon after
+    any other word ("Note:") stays part of the value.
+    """
+    opening = _LABEL_START.match(text)
+    if not opening:
+        return None
+    # The opening label may be one this vocabulary does not know — "Evidence
+    # freshness:", "Control bindings:" — and is kept rather than lost, as long
+    # as it is short enough to be a label and not a sentence with a colon.
+    if not control_field(opening.group("label")) and len(opening.group("label").split()) > 4:
+        return None
+    starts = [opening] + [
+        m for m in _LABEL_START.finditer(text, opening.end())
+        if control_field(m.group("label"))
+    ]
+    pairs = []
+    for k, m in enumerate(starts):
+        end = starts[k + 1].start() if k + 1 < len(starts) else len(text)
+        pairs.append((m.group("label").strip(), text[m.end():end].strip()))
+    return pairs

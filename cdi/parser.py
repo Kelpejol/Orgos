@@ -35,16 +35,21 @@ from typing import Iterable, Optional
 from cdi.codes import (
     CONTROL_ID_PATTERN,
     NON_CONTROL_PREFIXES,
+    expand_control_ranges,
     find_control_ids,
     find_doc_code_in_text,
     find_doc_codes,
     find_record_ids,
+    is_control_id,
     parse_doc_code,
 )
 from cdi.fields import (
+    control_field,
     norm,
     parse_evidence,
+    parse_control_list,
     parse_mapping,
+    split_labelled,
     split_responsibility,
 )
 from cdi.model import (
@@ -60,6 +65,7 @@ from cdi.model import (
     OpenParameter,
     ParsedDocument,
     RecordRef,
+    Responsibility,
     RoleDuty,
     Severity,
 )
@@ -70,7 +76,9 @@ from cdi.reader import DocumentContent, Paragraph, Table, read_document
 PARSER_VERSION = "1.0"
 
 # Document type codes (CDI Procedure Annex B) that support rather than control.
-_SUPPORTING_TYPES = {"GDL", "PBK", "CHK", "FM", "REG", "MAN"}
+_SUPPORTING_TYPES = {"GDL", "PBK", "CHK", "FM", "FRM", "REG", "MAN"}
+# Legacy SOP is a procedure by another name.
+_PROCEDURE_TYPES = {"PRO", "SPEC", "SOP"}
 
 
 def parse_document(
@@ -105,9 +113,14 @@ def parse_content(
     roles = _parse_roles(content, sections)
     vocabulary = [*known_roles, *(r.role for r in roles)]
 
-    controls = _parse_controls(content, sections, vocabulary, findings)
+    controls, row_links, partial = _parse_controls(content, sections, vocabulary, findings)
     implementations = _parse_implementations(content, sections)
-    control_map = _parse_control_map(content, sections)
+    if header.type_code in _PROCEDURE_TYPES:
+        implementations += _sections_headed_by_controls(partial)
+    header.controls_declared_in_body = [
+        i for i in _declared_in_body(content) if i not in header.controls_implemented
+    ]
+    control_map = _parse_control_map(content, sections) + row_links
     records = _parse_records(content, sections, findings)
     open_parameters = _parse_open_parameters(content, sections, findings)
 
@@ -158,8 +171,11 @@ def parse_content(
 #  Shared patterns
 # =============================================================================
 
+# Built from the one control-ID pattern, so heading recognition can never
+# drift from ID recognition (it did: three-part IDs like ACS-L3-01 were
+# recognised in text but not as headings).
 _CONTROL_HEADING = re.compile(
-    r"^(?P<id>[A-Z][A-Z0-9]{1,7}-\d{2,3})\s*[-–:.]?\s+(?P<title>\S.*)$"
+    r"^(?P<id>" + CONTROL_ID_PATTERN.pattern.replace(r"\b", "") + r")(?:\s*[-–:.]?\s+(?P<title>\S.*))?$"
 )
 _LABEL_LINE = re.compile(r"^(?P<label>[A-Z][A-Za-z][A-Za-z /&-]{0,40}?)\s*:\s*(?P<value>.*)$")
 _NUMBERED = re.compile(r"^(?P<num>\d+(?:\.\d+)+)\.?\s+(?P<text>\S.*)$")
@@ -233,9 +249,9 @@ def _row_cells(table: Table, row: tuple[str, ...], header_width: int) -> Optiona
 
 _HEADER_KEYS: dict[str, tuple[str, ...]] = {
     "title": ("document title", "title"),
-    "code": ("document code", "code", "document reference"),
+    "code": ("document code", "display code", "code", "document reference"),
     "layer": ("layer", "document type / layer", "document type", "type / layer"),
-    "domain": ("domain",),
+    "domain": ("domain", "primary domain"),
     "parent": ("parent document", "parent"),
     "children": ("child documents", "child document"),
     "related": ("related documents", "related document"),
@@ -263,6 +279,20 @@ _SOURCE_RANK = {"control block": 0, "cover": 1, "body": 2, "filename": 3}
 _MUST_AGREE = ("code", "title", "version", "domain")
 
 
+_LAYER_TYPES = (
+    ("specification", "SPEC"), ("procedure", "PRO"), ("standard", "STD"),
+    ("policy", "POL"), ("guideline", "GDL"), ("playbook", "PBK"),
+    ("checklist", "CHK"), ("register", "REG"), ("manual", "MAN"),
+    ("form", "FM"), ("template", "FM"),
+)
+
+
+def _type_from_layer(layer: str) -> str:
+    """'Standard (Layer 3)' → 'STD', for a document whose code is missing."""
+    text = norm(layer)
+    return next((code for word, code in _LAYER_TYPES if word in text), "")
+
+
 def _header_tables(content: DocumentContent) -> list[tuple[str, list[tuple[str, str]]]]:
     """
     Tables that are label/value control blocks, as (source, pairs).
@@ -284,7 +314,8 @@ def _header_tables(content: DocumentContent) -> list[tuple[str, list[tuple[str, 
             continue
         first = _cells(table.rows[0])
         opens_as_block = bool(first) and (
-            norm(" ".join(first)) == "control block" or norm(first[0]) in _HEADER_LABELS
+            norm(" ".join(first)) in ("control block", "field value", "field detail")
+            or norm(first[0]) in _HEADER_LABELS
         )
         if not opens_as_block:
             continue
@@ -364,6 +395,15 @@ def _parse_header(content: DocumentContent, filename: str, findings: list[Findin
     header.type_code = parse_doc_code(header.code)[1]
 
     header.layer_as_written = choose("layer")
+    # No type from the code: try the layer, then the title, then the file
+    # name — "IT and Infrastructure Control Standard" is a Standard.
+    for source, text in (("layer", header.layer_as_written), ("title", header.title),
+                         ("filename", filename)):
+        if header.type_code:
+            break
+        header.type_code = _type_from_layer(text)
+        if header.type_code:
+            header.sources["type_code"] = source
     header.domain = choose("domain")
     header.version = choose("version")
     header.issue_status = choose("issue_status")
@@ -408,47 +448,77 @@ def _parse_header(content: DocumentContent, filename: str, findings: list[Findin
         ))
 
     header.controls_implemented_as_written = choose("controls_implemented")
-    header.controls_implemented = find_control_ids(header.controls_implemented_as_written)
+    header.controls_implemented = parse_control_list(header.controls_implemented_as_written)
     return header
 
 
 # =============================================================================
 #  Control definitions
+#
+#  The library states controls in three physical layouts, and all three read
+#  through one field vocabulary (cdi.fields.CONTROL_FIELD_ALIASES):
+#
+#    BLOCK  a heading "CDI-001 Title", then the control's fields as
+#           paragraphs. Fields may be labelled one per line ("Trigger: …"),
+#           several to a line ("Governing authority: X. Responsible role:
+#           Y."), or in a small two-column table under the heading (IT); an
+#           unlabelled first paragraph is the requirement (Access Control).
+#    ROW    a table with one control per row: "ID | Mandatory control
+#           requirement | Required evidence | Risk statement" and its many
+#           variants (APPSEC, Data Protection, IUHC, …).
+#
+#  Whether a statement DEFINES a control or restates one defined elsewhere is
+#  not decided here: that takes the whole library (cdi.library), where a
+#  Standard outranks a Procedure.
 # =============================================================================
 
-_CONTROL_KEYS: dict[str, tuple[str, ...]] = {
-    "requirement": ("requirement",),
-    "trigger": ("trigger",),
-    "responsibility": ("accountable / executing", "accountable/executing", "accountable and executing"),
-    "accountable": ("accountable", "accountable role"),
-    "executing": ("executing", "executing role"),
-    "evidence": ("evidence", "evidence records"),
-    "risk": ("risk", "risk statement"),
-    "failure_route": ("failure route",),
-    "exception_route": ("exception route",),
-    "mapping": ("mapping", "standards mapping"),
-}
-_CONTROL_LABELS = {alias: key for key, aliases in _CONTROL_KEYS.items() for alias in aliases}
-# A block is a control when it states at least this many of the CDI fields;
-# fewer, and a heading that merely starts with an ID is not mistaken for one.
+# A block is a control when it states at least this many fields; fewer, and a
+# line that merely opens with an ID ("CDI-019 is implemented throughout…")
+# is not mistaken for one.
 _MIN_CONTROL_FIELDS = 3
+_CORE_FIELDS = {
+    "requirement", "trigger", "responsibility", "evidence", "risk",
+    "failure_route", "exception_route", "mapping", "authority",
+}
+# Headers that open a row-per-control table's ID column.
+_ID_HEADERS = {"id", "control id", "ref", "control ref", "control", "id and requirement"}
 
 
-class _OpenControl:
-    def __init__(self, control_id: str, title: str, location: Location):
-        self.control_id, self.title, self.location = control_id, title, location
+class _RawControl:
+    """A control as found, before its values are interpreted."""
+
+    def __init__(self, control_id: str, title: str, location: Location, layout: str,
+                 *, styled: bool = False):
+        self.control_id, self.title, self.location, self.layout = control_id, title, location, layout
+        self.styled = styled                  # opened by a heading-styled paragraph
         self.fields: dict[str, str] = {}
         self.other: dict[str, str] = {}
+        self.paragraphs: list[str] = []       # every paragraph in the block, in order
         self.last: Optional[tuple[str, str]] = None   # ("core"|"other", key)
 
-    def add(self, label: str, value: str) -> None:
-        key = _CONTROL_LABELS.get(norm(label))
-        if key:
-            self.fields[key] = value.strip()
+    def add(self, label: str, value: str, *, field_name: Optional[str] = None) -> None:
+        key = field_name or control_field(label)
+        value = value.strip()
+        if key and key != "title":
+            # The same field stated twice (a label line and a table row) is
+            # kept whole rather than one silently replacing the other.
+            self.fields[key] = f"{self.fields[key]}\n{value}" if self.fields.get(key) else value
             self.last = ("core", key)
+        elif key == "title" and not self.title:
+            self.title = value
         else:
-            self.other[label.strip()] = value.strip()
+            self.other[label.strip()] = value
             self.last = ("other", label.strip())
+
+    def open_label(self, label: str) -> None:
+        """A sub-heading: the paragraphs that follow belong to this field."""
+        key = control_field(label)
+        if key and key != "title":
+            self.last = ("core", key)
+            self.fields.setdefault(key, "")
+        else:
+            self.last = ("other", label.strip())
+            self.other.setdefault(label.strip(), "")
 
     def continue_last(self, text: str) -> None:
         if self.last is None:
@@ -458,11 +528,140 @@ class _OpenControl:
         target[key] = f"{target[key]}\n{text}".strip()
 
     @property
-    def core_count(self) -> int:
-        keys = set(self.fields)
+    def field_count(self) -> int:
+        keys = {k for k, v in self.fields.items() if v and k in _CORE_FIELDS | {"accountable", "executing"}}
         if {"accountable", "executing"} & keys:
             keys = (keys - {"accountable", "executing"}) | {"responsibility"}
         return len(keys)
+
+
+def _heading_level(p: Paragraph) -> Optional[int]:
+    """'Heading 2' → 2; None for a paragraph that is not heading-styled."""
+    m = re.match(r"heading\s*(\d)", p.style.lower())
+    return int(m.group(1)) if m else (0 if p.style.lower() == "title" else None)
+
+
+def _block_controls(content: DocumentContent, sections: list[str]) -> list[_RawControl]:
+    """Every ID-led block, full or not — the caller decides what each one is."""
+    found: list[_RawControl] = []
+    current: Optional[_RawControl] = None
+    control_level: Optional[int] = None
+    awaiting_first = False
+
+    for idx, block in enumerate(content.blocks):
+        if isinstance(block, Table):
+            if current is None:
+                continue
+            # A per-control field table: "Responsible role | IT Executive".
+            for row in block.rows:
+                cells = _cells(row)
+                if len(cells) >= 2 and control_field(cells[0]):
+                    current.add(cells[0], " ".join(cells[1:]))
+                    awaiting_first = False
+            continue
+
+        text = block.text
+        heading = _control_heading(text)
+        if heading:
+            control_id, title = heading.group("id"), (heading.group("title") or "").strip()
+            step_ref = ""
+            if is_control_id(title):
+                # "AP-01 ACS-L3-01": the procedure's own step number, then the
+                # control it carries out. The control is the second.
+                step_ref, control_id, title = control_id, title, ""
+            current = _RawControl(
+                control_id, title, Location(sections[idx], control_id), "block",
+                styled=block.is_heading_style,
+            )
+            if step_ref:
+                current.other["Step reference"] = step_ref
+            found.append(current)
+            control_level = _heading_level(block)
+            awaiting_first = True
+            continue
+        if current is None:
+            continue
+        level = _heading_level(block)
+        if (control_level is not None and level is not None and level > control_level
+                and not _NUMBERED.match(text)):
+            # A sub-heading inside the control — Change Management's "Control
+            # requirement", "Procedure" — labels the paragraphs beneath it.
+            current.open_label(text)
+            awaiting_first = False
+            continue
+        if _is_section_heading(block) or _NUMBERED.match(text):
+            current = None
+            continue
+
+        current.paragraphs.append(text)
+        pairs = split_labelled(text)
+        if pairs:
+            for label, value in pairs:
+                current.add(label, value)
+        elif awaiting_first and not current.fields:
+            # Access Control and IT open each control with its requirement,
+            # unlabelled, straight under the heading.
+            current.add("Requirement", text, field_name="requirement")
+        else:
+            current.continue_last(text)
+        awaiting_first = False
+
+    return found
+
+
+def _row_controls(
+    content: DocumentContent, sections: list[str], findings: list[Finding]
+) -> tuple[list[_RawControl], list[ControlMapEntry]]:
+    """Controls from tables with one control per row, plus any clause links."""
+    found: list[_RawControl] = []
+    links: list[ControlMapEntry] = []
+
+    for idx, table in content.tables():
+        hdr = _header_row(table)
+        if len(hdr) < 2 or hdr[0] not in _ID_HEADERS:
+            continue
+        columns: dict[str, int] = {}
+        for i, h in enumerate(hdr[1:], start=1):
+            name = control_field(h, allow_keywords=True)
+            if name and name not in columns:
+                columns[name] = i
+        combined = hdr[0] == "id and requirement"
+        if "requirement" not in columns and not combined:
+            continue   # a forms or parameter table: rows open with IDs, but state no control
+
+        location = Location(sections[idx], "Control table")
+        width = len(table.rows[0]) if table.positional else len(hdr)
+        positions = (
+            [i for i, c in enumerate(table.rows[0]) if c] if table.positional else list(range(len(hdr)))
+        )
+        for row in table.rows[1:]:
+            id_cell = row[positions[0]] if positions[0] < len(row) else ""
+            m = CONTROL_ID_PATTERN.match(id_cell.strip())
+            if not m or m.group(1) in NON_CONTROL_PREFIXES:
+                continue
+            cells = _row_cells(table, row, width)
+            if cells is None:
+                findings.append(Finding(
+                    FindingKind.TABLE_ROW_UNALIGNED, Severity.WARNING,
+                    f"The row for {m.group(0)} could not be aligned to its columns, so "
+                    "it was not read; check the source document.",
+                    location,
+                ))
+                continue
+            # Only the separator after the ID goes: "CIP-001 — The context
+            # MUST be reviewed." keeps its full stop.
+            rest = id_cell.strip()[m.end():].lstrip(" .:-–").strip()
+            raw = _RawControl(m.group(0), "" if combined else rest, Location(sections[idx], m.group(0)), "row")
+            if combined and rest:
+                raw.add("Requirement", rest, field_name="requirement")
+            for name, i in columns.items():
+                value = cells[positions[i]].strip() if positions[i] < len(cells) else ""
+                if value:
+                    raw.add(hdr[i], value, field_name=name)
+            if "clause" in raw.fields:
+                links.append(ControlMapEntry(m.group(0), raw.title, raw.fields.pop("clause"), location))
+            found.append(raw)
+    return found, links
 
 
 def _parse_controls(
@@ -470,105 +669,133 @@ def _parse_controls(
     sections: list[str],
     vocabulary: list[str],
     findings: list[Finding],
-) -> list[ControlDefinition]:
-    opened: list[_OpenControl] = []
-    current: Optional[_OpenControl] = None
-
-    for idx, block in enumerate(content.blocks):
-        if not isinstance(block, Paragraph):
-            continue
-        text = block.text
-        heading = _control_heading(text)
-        if heading:
-            current = _OpenControl(
-                heading.group("id"), heading.group("title").strip(),
-                Location(sections[idx], heading.group("id")),
-            )
-            opened.append(current)
-            continue
-        if current is None:
-            continue
-        if _is_section_heading(block) or _NUMBERED.match(text):
-            current = None
-            continue
-        label = _LABEL_LINE.match(text)
-        if label:
-            current.add(label.group("label"), label.group("value"))
-        else:
-            current.continue_last(text)
-
+) -> tuple[list[ControlDefinition], list[ControlMapEntry], list[_RawControl]]:
+    """
+    Returns (control statements, clause links from control tables, partial
+    blocks). A partial block is a heading-styled control heading that does
+    not state enough fields to be a control — in a procedure, that is a
+    section carrying the control out (see _sections_headed_by_controls).
+    """
+    blocks = _block_controls(content, sections)
+    full = [b for b in blocks if b.field_count >= _MIN_CONTROL_FIELDS]
+    partial = [b for b in blocks if b.field_count < _MIN_CONTROL_FIELDS and b.styled]
+    rows, links = _row_controls(content, sections, findings)
     controls: list[ControlDefinition] = []
     seen: set[str] = set()
-    for oc in opened:
-        if oc.core_count < _MIN_CONTROL_FIELDS:
-            continue   # an ID-led heading or line, not a control block
-        if oc.control_id in seen:
+    for raw in full + rows:
+        if raw.control_id in seen:
             findings.append(Finding(
                 FindingKind.CONTROL_DUPLICATE_ID, Severity.ERROR,
-                f"{oc.control_id} is defined more than once in this document; "
-                "only the first definition was read.",
-                oc.location,
+                f"{raw.control_id} is stated more than once in this document; "
+                "only the first was read.",
+                raw.location,
             ))
             continue
-        seen.add(oc.control_id)
-        controls.append(_build_control(oc, vocabulary, findings))
-    return controls
+        seen.add(raw.control_id)
+        controls.append(_build_control(raw, vocabulary, findings))
+    return controls, links, partial
 
 
-def _build_control(oc: _OpenControl, vocabulary: list[str], findings: list[Finding]) -> ControlDefinition:
-    f = oc.fields
-    if "responsibility" in f:
+def _sections_headed_by_controls(partial: list[_RawControl]) -> list[ImplementationStep]:
+    """
+    A procedure section headed by the control it carries out — "BCDR-01
+    Business impact assessment", "IT-01 Technology service requests", "AP-01
+    ACS-L3-01" — followed by its steps and labelled lines.
+    """
+    steps = []
+    for raw in partial:
+        step = ImplementationStep(
+            control_ids=[raw.control_id],
+            section_number="",
+            section_title=raw.title,
+            location=raw.location,
+        )
+        for text in raw.paragraphs:
+            pairs = split_labelled(text)
+            if pairs:
+                for label, value in pairs:
+                    step.fields[label] = value
+                continue
+            m = re.match(r"^(\d+(?:\.\d+)*)[.)]?\s+(\S.*)$", text)
+            step.clauses.append(Clause(m.group(1), m.group(2)) if m else Clause("", text))
+        step.record_ids = find_record_ids(
+            " ".join([c.text for c in step.clauses] + list(step.fields.values()))
+        )
+        steps.append(step)
+    return steps
+
+
+def _build_control(raw: _RawControl, vocabulary: list[str], findings: list[Finding]) -> ControlDefinition:
+    f = raw.fields
+    if f.get("responsibility"):
         responsibility = split_responsibility(f["responsibility"], vocabulary)
-    elif "accountable" in f or "executing" in f:
-        acc = f.get("accountable", "").rstrip(".")
-        exe = f.get("executing", "").rstrip(".") or acc
-        responsibility = split_responsibility(
-            acc if acc == exe else f"{acc} / {exe}", vocabulary
+    elif f.get("accountable") or f.get("executing"):
+        # Stated on separate lines, the split is already made; re-splitting
+        # "A / B" would only invent an ambiguity.
+        acc = f.get("accountable", "").rstrip(".").strip()
+        exe = f.get("executing", "").rstrip(".").strip() or acc
+        responsibility = Responsibility(
+            acc or exe, exe, f"Accountable: {acc or '—'}; Executing: {exe}"
         )
     else:
         responsibility = None
 
+    # Evidence may be named in one field and identified in another ("Required
+    # evidence: …. Record IDs: REC-0691; REC-0692"). The IDs are authoritative;
+    # the names stay in evidence_as_written for whoever matches them.
+    evidence = parse_evidence(f.get("evidence", ""))
+    listed_ids = find_record_ids(f.get("record_ids", ""))
+    if listed_ids:
+        evidence = [r for r in evidence if r.record_id]
+        known = {r.record_id for r in evidence}
+        evidence += [RecordRef(rid, as_written=f["record_ids"]) for rid in listed_ids if rid not in known]
+    evidence_as_written = "\n".join(
+        v for v in (f.get("evidence", ""), f"Record IDs: {f['record_ids']}" if f.get("record_ids") else "") if v
+    )
+
     mapping, bad = parse_mapping(f.get("mapping", ""))
     control = ControlDefinition(
-        control_id=oc.control_id,
-        title=oc.title,
+        control_id=raw.control_id,
+        title=raw.title,
         requirement=f.get("requirement", ""),
         trigger=f.get("trigger", ""),
         responsibility=responsibility,
-        evidence=parse_evidence(f.get("evidence", "")),
-        evidence_as_written=f.get("evidence", ""),
+        evidence=evidence,
+        evidence_as_written=evidence_as_written,
         risk=f.get("risk", ""),
         failure_route=f.get("failure_route", ""),
         exception_route=f.get("exception_route", ""),
         mapping=mapping,
         mapping_as_written=f.get("mapping", ""),
-        other_fields=dict(oc.other),
-        location=oc.location,
+        authority=f.get("authority", ""),
+        layout=raw.layout,
+        other_fields=dict(raw.other),
+        location=raw.location,
     )
     for ref in control.evidence:
-        ref.location = oc.location
-        ref.control_ids = [oc.control_id]
+        ref.location = raw.location
+        ref.control_ids = [raw.control_id]
 
     if control.missing_fields:
         findings.append(Finding(
             FindingKind.CONTROL_MISSING_FIELD,
             Severity.ERROR if not control.requirement else Severity.WARNING,
-            f"{oc.control_id} does not state: {', '.join(control.missing_fields)}.",
-            oc.location,
+            f"{raw.control_id} does not state: {', '.join(control.missing_fields)}.",
+            raw.location,
         ))
     if responsibility and responsibility.ambiguous:
         findings.append(Finding(
             FindingKind.RESPONSIBILITY_AMBIGUOUS, Severity.WARNING,
-            f"{oc.control_id}: cannot tell where “{responsibility.as_written}” divides "
+            f"{raw.control_id}: cannot tell where “{responsibility.as_written}” divides "
             f"accountable from executing. Read as accountable “{responsibility.accountable}”, "
             f"executing “{responsibility.executing}” — confirm.",
-            Location(oc.location.section, f"{oc.control_id} › Accountable / Executing"),
+            Location(raw.location.section, f"{raw.control_id} › Responsible role"),
         ))
     if bad:
         findings.append(Finding(
             FindingKind.MAPPING_UNREADABLE, Severity.WARNING,
-            f"{oc.control_id}: part of the mapping could not be read as clauses: {', '.join(bad)}",
-            Location(oc.location.section, f"{oc.control_id} › Mapping"),
+            f"{raw.control_id}: part of the mapping could not be read as clauses: {', '.join(bad)}",
+            Location(raw.location.section, f"{raw.control_id} › Mapping"),
         ))
     return control
 
@@ -581,6 +808,60 @@ _CITE = re.compile(r"^(?P<lead>.+?)\s*\((?P<cite>[^()]+)\)\s*$")
 _CITE_FILLER = re.compile(r"\b(?:implements?|implementing|controls?|and)\b|[,;&]", re.IGNORECASE)
 
 
+_IMPLEMENTS_LINE = re.compile(r"^(?:this section\s+)?implements?\s+(?P<ids>.+?)\.?$", re.IGNORECASE)
+# "This Procedure implements IUHC-001 to IUHC-012." — the first sentence only.
+_DECLARATION = re.compile(
+    r"^(?:\d+(?:\.\d+)*\s+)?(?:this|the)\s+(?:procedure|specification|instrument|document)"
+    r"\s+implements\s+(?P<ids>[^.]+)\.",
+    re.IGNORECASE,
+)
+# "Inherited controls: APPSEC-01 to APPSEC-13"
+_CONTROL_LIST_LABELS = {"inherited controls", "controls implemented", "implemented controls", "controls"}
+
+
+def _implements_line(text: str) -> list[str]:
+    """
+    Control IDs from a line under a section heading that says only what the
+    section implements — "Implements IRG-001, IRG-002 and IRG-023." — or [].
+    A sentence that goes on to say anything else is prose.
+    """
+    m = _IMPLEMENTS_LINE.match(text.strip())
+    return _pure_id_list(m.group("ids")) if m else []
+
+
+def _pure_id_list(text: str) -> list[str]:
+    """IDs from text that lists IDs and nothing else, or []."""
+    listed = expand_control_ranges(text)
+    ids = find_control_ids(listed)
+    leftover = _CITE_FILLER.sub(" ", CONTROL_ID_PATTERN.sub(" ", listed)).strip(" .")
+    return ids if ids and not leftover else []
+
+
+def _declared_in_body(content: DocumentContent) -> list[str]:
+    """
+    Controls a document declares it implements outside its control block, in
+    one of three strict forms. Each must be ONLY a declaration and a list of
+    IDs; a sentence that says anything more is prose and is not read.
+    """
+    ids: list[str] = []
+    for _, p in content.paragraphs():
+        found: list[str] = []
+        m = _DECLARATION.match(p.text)
+        if m:
+            found = _pure_id_list(m.group("ids"))
+        if not found:
+            for part in p.text.split("|"):        # "Working Draft | Layer 4 | Implements DP-001 to DP-046"
+                found = _implements_line(part)
+                if found:
+                    break
+        if not found and ":" in p.text:
+            label, _, value = p.text.partition(":")
+            if norm(label) in _CONTROL_LIST_LABELS:
+                found = _pure_id_list(value)
+        ids.extend(i for i in found if i not in ids)
+    return ids
+
+
 def _cited_ids(text: str) -> list[str]:
     """
     Control IDs a heading cites in its closing parenthesis, or [] when the
@@ -590,7 +871,7 @@ def _cited_ids(text: str) -> list[str]:
     m = _CITE.match(text)
     if not m:
         return []
-    cite = m.group("cite")
+    cite = expand_control_ranges(m.group("cite"))
     ids = find_control_ids(cite)
     leftover = _CITE_FILLER.sub(" ", CONTROL_ID_PATTERN.sub(" ", cite)).strip()
     return ids if ids and not leftover else []
@@ -604,9 +885,15 @@ def _parse_implementations(content: DocumentContent, sections: list[str]) -> lis
         if not isinstance(block, Paragraph):
             continue
         ids = _cited_ids(block.text)
+        lead = _CITE.match(block.text).group("lead") if ids else block.text
+        if not ids and _is_section_heading(block):
+            # Records Governance style: the heading names the section and the
+            # line beneath it says what it implements.
+            nxt = blocks[idx + 1] if idx + 1 < len(blocks) else None
+            if isinstance(nxt, Paragraph):
+                ids = _implements_line(nxt.text)
         if not ids:
             continue
-        lead = _CITE.match(block.text).group("lead")
         numbered = re.match(r"^(\d+(?:\.\d+)*)\.?\s+(.+)$", lead)
         if numbered:
             number, title, level = numbered.group(1), numbered.group(2), _level(numbered.group(1))
@@ -632,6 +919,8 @@ def _parse_implementations(content: DocumentContent, sections: list[str]) -> lis
                 break
             if not level and nxt.is_heading_style:
                 break
+            if _implements_line(text):
+                continue   # the citation line itself, not a clause
             risk = _RISK_STATEMENT.match(text)
             if risk:
                 for cid in find_control_ids(risk.group("ids")) or ids:
@@ -878,14 +1167,28 @@ def _classify(
     steps: list[ImplementationStep],
     control_map: list[ControlMapEntry],
 ) -> DocumentRole:
+    """
+    What the document is, by its layer. Note what this does NOT decide: a
+    Procedure that states controls may be restating its Standard's, or — where
+    a family has no Standard — be the document that defines them. That needs
+    the whole library; see cdi.library.
+    """
+    kind = header.type_code
+    if kind in _SUPPORTING_TYPES:
+        # A form or register supports the controls it lists; it does not
+        # carry them out, even when it restates them.
+        return DocumentRole.SUPPORTING
+    carries_out = bool(
+        steps or header.controls_implemented or header.controls_declared_in_body or control_map
+    )
+    if kind in _PROCEDURE_TYPES and (controls or carries_out):
+        return DocumentRole.IMPLEMENTING
     if controls:
         return DocumentRole.DEFINING
-    if header.type_code in _SUPPORTING_TYPES:
-        # Even when it lists the controls it supports: a form supports a
-        # control, it does not carry it out.
-        return DocumentRole.SUPPORTING
-    if steps or header.controls_implemented or control_map:
-        return DocumentRole.IMPLEMENTING
-    if header.type_code == "POL":
+    if kind == "POL":
+        # A Policy that lists controls AUTHORISES them; it does not carry
+        # them out.
         return DocumentRole.AUTHORITY
+    if carries_out:
+        return DocumentRole.IMPLEMENTING
     return DocumentRole.UNSTRUCTURED
