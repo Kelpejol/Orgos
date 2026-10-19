@@ -481,6 +481,11 @@ async def _definition_accept_cascade(item: dict, user: CurrentUser, rationale: s
         from evidence.service import sync_obligations
         synced = await sync_obligations()
         created.append(f"Evidence obligations: {synced['create']} created, {synced['update']} updated")
+        if synced.get("failures"):
+            # The decision stands; the obligations are retried by the daily run.
+            # Said here, on the item, rather than only in the server log.
+            created.append(f"⚠ {len(synced['failures'])} evidence obligation write(s) failed — "
+                           f"{synced['failures'][0][:300]}")
     except Exception as exc:
         logger.warning(f"Evidence obligation sync after accepting {item['ControlId']} failed: {exc}")
         created.append("Evidence obligations: will be created by the daily evidence run")
@@ -1492,5 +1497,7 @@ async def accept_document_definitions(
         "message": (f"Accepted {len(accepted)} of {len(items)} control(s) from {body.document}"
                     + (f"; {len(blocked)} recorded as Blocked (role not recognised)" if blocked else "")
                     + (f"; {len(failures)} failed and were marked Blocked for retry" if failures else "")
+                    + (f"; ⚠ {len(evidence['failures'])} evidence obligation write(s) failed — "
+                       f"{evidence['failures'][0][:200]}" if evidence.get("failures") else "")
                     + "."),
     }

@@ -56,6 +56,7 @@ If **ReviewStatus** is a Choice column, add **Superseded**.
 | Column | Type |
 |---|---|
 | ObligationKey | Single line of text (indexed) |
+| SourceDocument | Single line of text |
 | RecordId | Single line of text |
 | Custodian | Single line of text |
 | State | Single line of text |
