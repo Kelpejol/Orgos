@@ -174,7 +174,6 @@ _CHOICE_CHECKS = {"CDI-07", "CDI-08"}
 #   CDI-01 doc code            -> register key, extraction naming
 #   CDI-05/07/08               -> named owner roles, evidence
 #   CDI-09 standards refs      -> extractor's iso_clause -> Standards Map
-#   CDI-15 version number      -> the signal that a document is past draft
 # These are ADVISORY (shown as warnings, never blocking) because nothing
 # downstream reads them from the file — the extractor discards Purpose/Scope as
 # non-controls, and owner / classification / revision history live in the
@@ -185,11 +184,14 @@ _CHOICE_CHECKS = {"CDI-07", "CDI-08"}
 # REPORTs misuse; Guidelines are written with should and may. Controls are read
 # by Control ID and labelled fields (cdi/parser.py), not by the word "shall",
 # so nothing downstream depends on it any more.
-_ADVISORY_CHECKS = {"CDI-02", "CDI-03", "CDI-04", "CDI-06", "CDI-10", "CDI-11", "CDI-12"}
-# The effective date is stamped by OrgOS on approval. A document with no
-# version is a draft, so a missing date is only a warning; once a version is
-# present the document is past draft and the date is required.
-_DATE_CHECK = "CDI-14"
+#
+# CDI-14 (effective date) and CDI-15 (version) are advisory: a document in
+# Lifecycle is a draft, and approval sets both on the CDT cover — the version
+# (Draft → 01 → 02…), the effective date (the approval date) and the next
+# review date (a review period later). Demanding them of a draft asked authors
+# to invent a version, which then demanded an effective date a draft cannot have.
+_ADVISORY_CHECKS = {"CDI-02", "CDI-03", "CDI-04", "CDI-06", "CDI-10", "CDI-11", "CDI-12",
+                    "CDI-14", "CDI-15"}
 
 
 # What each check actually requires, in plain words. Surfaced in the fix modal
@@ -223,8 +225,8 @@ _CHECK_RULES: dict[str, str] = {
               "as a person.",
     "CDI-14": "An effective date with a real date value, e.g. 'Effective Date: "
               "March 2026'. OrgOS stamps this for you when the document is approved.",
-    "CDI-15": "A version NUMBER, not a word: v1.0, Version 2, Rev 1.2. A first "
-              "issue is v1.0 — 'Draft' or 'Initial Draft' is not a version.",
+    "CDI-15": "A version on the cover. While the document is in Lifecycle it may "
+              "read 'Draft'; OrgOS numbers it (01, 02…) when it is approved.",
 }
 
 
@@ -726,6 +728,9 @@ def check_15_version_number(text: str) -> dict:
         # ("Version: Draft"). That is a located, exact swap — one click — not a
         # missing line the reviewer has to write out.
         wordy = _WORDY_VERSION_RE.search(text)
+        if wordy and "draft" in wordy.group(2).lower():
+            # A document in Lifecycle IS a draft; approval numbers it.
+            return _pass("CDI-15", "Version number")
         if wordy:
             label, value = wordy.group(1), wordy.group(2)
             found = f"{label}{value}".strip()
@@ -742,8 +747,8 @@ def check_15_version_number(text: str) -> dict:
         return _fail(
             "CDI-15", "Version number",
             "No version number found.",
-            proposed_fix="Add a version number to the cover page or header. Format: v1.0, v1.1, v2.0. Initial draft is always v1.0.",
-            insert={"kind": "line", "position": "top", "text": "Version: 1.0"},
+            proposed_fix="Add 'Version: Draft' to the cover. OrgOS numbers it when the document is approved.",
+            insert={"kind": "line", "position": "top", "text": "Version: Draft"},
             fix_source="Document Creation Standards §4",
         )
     return _pass("CDI-15", "Version number")
@@ -1198,7 +1203,7 @@ async def run_cdi_check(
     Checks CDI-06, 07, 08 use a single Ollama call (qwen2.5:7b, temp=0)
     for semantic accuracy, falling back to enhanced regex if Ollama is down.
 
-    Severity: see _ADVISORY_CHECKS / _DATE_CHECK. Advisory failures come back as
+    Severity: see _ADVISORY_CHECKS. Advisory failures come back as
     WARN — shown to the reviewer, never blocking, never counted in `fail_count`.
 
     Returns a structured report with PASS/FAIL/WARN per check and proposed fixes.
@@ -1301,17 +1306,15 @@ async def run_cdi_check(
                         f"second opinion ({str(verdict.get('where',''))[:80]})"
                     )
 
-    # A version number marks a document as past draft (CDI-15 passing).
-    versioned = any(c["check_id"] == "CDI-15" and c["result"] == "PASS" for c in checks)
     for c in checks:
         if c["result"] != "FAIL":
             continue
-        if c["check_id"] in _ADVISORY_CHECKS:
+        if c["check_id"] in ("CDI-14", "CDI-15"):
+            c["result"] = "WARN"
+            c["finding"] += " (Set by OrgOS on the cover when the document is approved.)"
+        elif c["check_id"] in _ADVISORY_CHECKS:
             c["result"] = "WARN"
             c["finding"] += " (Advisory: nothing downstream reads this from the file.)"
-        elif c["check_id"] == _DATE_CHECK and not versioned:
-            c["result"] = "WARN"
-            c["finding"] += " (No version yet, so treated as a draft — OrgOS sets the date on approval.)"
 
     pass_count = sum(1 for c in checks if c["result"] == "PASS")
     fail_count = sum(1 for c in checks if c["result"] == "FAIL")
@@ -1322,7 +1325,6 @@ async def run_cdi_check(
         "pass_count":   pass_count,
         "fail_count":   fail_count,
         "warn_count":   warn_count,
-        "versioned":    versioned,
         "total_checks": len(checks),
         "checks":       checks,
         "used_ai":      used_ai,

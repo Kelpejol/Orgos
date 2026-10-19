@@ -243,6 +243,15 @@ LISTS: dict[str, dict] = {
             "Status":           (CHOICE, ["Active", "Blocked", "Superseded", "Withdrawn"]),
             "ConfidenceScore":  (NUM,    None),
             "QueueItemId":      (TEXT,   None),
+            # written by the Zone 1 accept cascade (review_queue/router.py)
+            "ConfirmedByEntraId": (TEXT, None),
+            "ConfirmedDate":      (TEXT, None),
+            "DecisionRationale":  (NOTE, None),
+            # control definitions by Control ID (control_register/sync.py)
+            "ControlId":        (TEXT,   None),
+            "DefinitionJson":   (NOTE,   None),
+            "MappingJson":      (NOTE,   None),
+            "BlockedReason":    (NOTE,   None),
         },
     },
 
@@ -287,6 +296,14 @@ LISTS: dict[str, dict] = {
             "CascadeResult": (NOTE, None),
             "StateFrom":     (TEXT, None),
             "StateTo":       (TEXT, None),
+            # written by every review-queue and lifecycle audit entry
+            "Action":             (TEXT, None),
+            "Timestamp":          (TEXT, None),
+            "ReviewerEntraId":    (TEXT, None),
+            "SourceDocumentCode": (TEXT, None),
+            "ControlStatement":   (NOTE, None),
+            "ControlRegisterId":  (TEXT, None),
+            "EvidenceTrackerId":  (TEXT, None),
         },
     },
 

@@ -174,18 +174,21 @@ def _run(*paras):
     return res, {c["check_id"]: c for c in res["checks"]}
 
 
-def test_no_version_is_a_draft_date_only_warns():
+def test_a_draft_is_not_asked_for_a_version_or_an_effective_date():
+    # Approval numbers the version and stamps the dates on the CDT cover.
     res, c = _run("Change Management Procedure", "Body text.")
-    assert c["CDI-14"]["result"] == "WARN"
-    assert c["CDI-15"]["result"] == "FAIL"          # version is NOT relaxed
-    assert res["versioned"] is False
+    assert c["CDI-15"]["result"] == "WARN" and c["CDI-14"]["result"] == "WARN"
 
 
-def test_version_present_makes_missing_date_a_failure():
+def test_stating_a_version_does_not_make_the_effective_date_required():
     res, c = _run("Change Management Procedure", "Version: 1.0", "Body text.")
     assert c["CDI-15"]["result"] == "PASS"
-    assert c["CDI-14"]["result"] == "FAIL"
-    assert res["versioned"] is True
+    assert c["CDI-14"]["result"] == "WARN"
+
+
+def test_a_draft_may_say_draft():
+    from agents.cdi_checker.service import check_15_version_number
+    assert check_15_version_number("Access Policy\nVersion: Draft\nBody.")["result"] == "PASS"
 
 
 def test_advisory_checks_warn_and_dont_count_as_failures():
@@ -200,9 +203,9 @@ def test_advisory_checks_warn_and_dont_count_as_failures():
 # ── CDI-15: a worded version field resolves to a one-click swap ──────────────
 def test_wordy_version_becomes_a_located_swap():
     from agents.cdi_checker.service import check_15_version_number
-    r = check_15_version_number("Access Policy\nVersion: Draft\nBody text.")
+    r = check_15_version_number("Access Policy\nVersion: TBC\nBody text.")
     assert r["result"] == "FAIL" and r["fixable"] == "auto"
-    assert r["find"] == "Version: Draft" and r["replace"] == "Version: 1.0"
+    assert r["find"] == "Version: TBC" and r["replace"] == "Version: 1.0"
 
 
 def test_version_in_prose_is_not_mistaken_for_the_field():
@@ -215,16 +218,17 @@ def test_every_failing_check_states_its_rule():
     res, c = _run("Change Management Procedure", "Body text.")
     flagged = [x for x in res["checks"] if x["result"] in ("FAIL", "WARN")]
     assert flagged and all(x["rule"] for x in flagged)
-    assert "v1.0" in c["CDI-15"]["rule"]
+    assert "Draft" in c["CDI-15"]["rule"]
 
 
 # ── a fix must satisfy the check it claims to fix ───────────────────────────
 def test_version_words_are_refused_before_they_reach_the_document():
     from agents.cdi_checker.service import validate_fix_content
-    for bad in ("Version: Draft", "Version: Initial Draft", "Version: TBC"):
+    for bad in ("Version: TBC", "Version: N/A"):
         ok, reason = validate_fix_content("CDI-15", bad)
-        assert not ok and "CDI-15" in reason and "v1.0" in reason
+        assert not ok and "CDI-15" in reason
     assert validate_fix_content("CDI-15", "Version: 1.0")[0]
+    assert validate_fix_content("CDI-15", "Version: Draft")[0]
 
 
 def test_a_date_that_is_not_a_date_is_refused():
