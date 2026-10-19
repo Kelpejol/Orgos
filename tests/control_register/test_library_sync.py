@@ -255,3 +255,34 @@ async def test_a_document_defined_controls_owner_is_not_reassigned_in_orgos():
             await cr.reassign_control_owner("1", cr.ReassignControlOwner(owner_role="CEO"), user=USER)
     assert exc.value.status_code == 422 and "Role Catalogue" in exc.value.detail
     update.assert_not_called()
+
+
+# ── accepting a document's definitions together ───────────────────────────
+
+async def test_a_documents_new_definitions_are_accepted_together_each_with_its_own_record():
+    actions = plan_sync(library(), [], []).actions
+    changed = plan_sync(library(requirement="Changed."), confirmed_register(library()), []).actions[0]
+    queue = [queued(a, item_id=str(60 + n)) for n, a in enumerate(actions)]
+    queue.append(queued(changed, item_id="70"))
+    writes = {"create": [], "update": []}
+
+    async def create(list_id, name, fields):
+        writes["create"].append(name)
+        return {"id": "300"}
+
+    async def update(list_id, name, item_id, fields):
+        writes["update"].append((name, item_id, fields.get("ReviewStatus")))
+        return {}
+
+    with patch.object(rq, "get_list_items", new=AsyncMock(side_effect=[queue, []])), \
+         patch.object(rq, "create_list_item", side_effect=create), \
+         patch.object(rq, "update_list_item", side_effect=update), \
+         patch("ownership.resolver.get_ownership_index", new=AsyncMock(return_value=_Index())), \
+         patch("evidence.service.sync_obligations", new=AsyncMock(return_value={"create": 2})):
+        result = await rq.accept_document_definitions(rq.AcceptDocumentBody(
+            document="DRG-ISMS-STD-TST", rationale="Matches the approved Standard v1."), user=USER)
+
+    assert result["accepted"] == ["TST-01", "TST-02"]          # the Changed item is left for review
+    assert writes["create"].count("Control Register") == 2 and writes["create"].count("Audit Log") == 2
+    assert sorted(i for n, i, st in writes["update"] if n == "AI Review Queue") == ["60", "61"]
+    assert result["evidence_obligations_created"] == 2

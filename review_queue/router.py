@@ -25,7 +25,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from auth.validator import CurrentUser, get_current_user
+from auth.validator import CurrentUser, get_current_user, require_compliance_lead
 from config import MIN_RATIONALE_CHARS, settings
 from graph.client import (
     create_list_item,
@@ -189,6 +189,7 @@ def _sp_to_item(item: dict) -> dict:
         "SourceDocumentCode2":      f.get("SourceDocumentCode2", ""),
         # Control definitions from the library sync (control_register/sync.py)
         "ControlId":                f.get("ControlId", ""),
+        "ResolutionKey":            f.get("ResolutionKey", ""),
         "ChangeKind":               f.get("ChangeKind", ""),
         "Candidate":                _json_field(f, "CandidateJson"),
         "Diff":                     _json_field(f, "DiffJson") or [],
@@ -400,7 +401,9 @@ async def _zone1_accept_cascade(item: dict, user: CurrentUser, overrides: dict) 
     return " | ".join(created)
 
 
-async def _definition_accept_cascade(item: dict, user: CurrentUser, rationale: str) -> str:
+async def _definition_accept_cascade(item: dict, user: CurrentUser, rationale: str,
+                                     owners=None, register_rows: Optional[list] = None,
+                                     sync_evidence: bool = True) -> str:
     """
     Accept a control definition from the library sync. Upserts the Control
     Register row by Control ID — a changed definition updates the row it
@@ -408,6 +411,9 @@ async def _definition_accept_cascade(item: dict, user: CurrentUser, rationale: s
     obligations come from the control's record links (architecture plan §9).
     Active only if the accountable role is recognised; otherwise Blocked with
     the reason.
+
+    A bulk accept passes `owners` and `register_rows` loaded once, and syncs
+    evidence once at the end (sync_evidence=False).
     """
     from control_register.definitions import decide_status, diff
     from control_register.sync import RETIRED_CONTROL, control_fields
@@ -419,9 +425,9 @@ async def _definition_accept_cascade(item: dict, user: CurrentUser, rationale: s
 
     created: list[str] = []
     try:
-        index = await get_ownership_index()
+        index = owners or await get_ownership_index()
         status, blocked_reason = decide_status(candidate, index.resolve)
-        rows = await get_list_items(_cr_id(), _CR_LIST)
+        rows = register_rows if register_rows is not None else await get_list_items(_cr_id(), _CR_LIST)
         current = next((r for r in rows
                         if (r.get("fields") or {}).get("ControlId") == item["ControlId"]
                         and (r.get("fields") or {}).get("Status") not in RETIRED_CONTROL), None)
@@ -469,6 +475,8 @@ async def _definition_accept_cascade(item: dict, user: CurrentUser, rationale: s
 
     # Evidence obligations for the control's records (one per Record ID). Not
     # part of the decision: the daily evidence run reconciles them anyway.
+    if not sync_evidence:
+        return " | ".join(created)
     try:
         from evidence.service import sync_obligations
         synced = await sync_obligations()
@@ -1339,3 +1347,96 @@ async def decision_impact(
         raise
     except Exception as exc:
         _handle(exc, f"decision impact {item_id}")
+
+
+
+# =============================================================================
+#  Accept a document's control definitions together
+#
+# A first library sync raises every control at once — 347 on the current
+# library. Each is still accepted individually (its own upsert, status and
+# Audit Log record); this only lets one reviewer, with one rationale, accept
+# all of one document's waiting definitions. Changed definitions are left
+# out unless asked for: a change deserves a look at its diff.
+# =============================================================================
+
+class AcceptDocumentBody(BaseModel):
+    document:        str                 # SourceDocumentCode as the queue shows it
+    rationale:       str
+    include_changed: bool = False
+
+
+def _waiting_definitions(items: list[dict], document: str, include_changed: bool) -> list[dict]:
+    return [i for i in items
+            if i.get("ControlId") and not i.get("ResolutionKey")
+            and i.get("ItemType") == "Extraction"
+            and i.get("SourceDocumentCode") == document
+            and (i.get("ReviewStatus") or "") in ("", "Pending Review")
+            and (include_changed or i.get("ChangeKind") != "Changed")]
+
+
+@router.post("/definitions/accept-document")
+async def accept_document_definitions(
+    body: AcceptDocumentBody,
+    user: CurrentUser = Depends(require_compliance_lead),
+) -> dict:
+    rationale = _require_rationale(body.rationale)
+    from graph.bulk import run_writes
+    from ownership.resolver import get_ownership_index
+
+    try:
+        raw = await get_list_items(_q_id(), _Q_LIST)
+        items = _waiting_definitions([_sp_to_item(i) for i in raw], body.document, body.include_changed)
+        if not items:
+            raise HTTPException(status_code=404, detail=(
+                f"No waiting control definitions from {body.document}"
+                + ("" if body.include_changed else " (changed ones are reviewed one by one)") + "."))
+        owners = await get_ownership_index()
+        rows = await get_list_items(_cr_id(), _CR_LIST)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _handle(exc, f"accept definitions from {body.document}")
+
+    accepted: list[str] = []
+    blocked: list[str] = []
+
+    async def accept(item: dict) -> None:
+        try:
+            result = await _definition_accept_cascade(item, user, rationale, owners=owners,
+                                                      register_rows=rows, sync_evidence=False)
+        except CascadeError as ce:
+            await _mark_cascade_failed(item["id"], "1", "Accept", rationale, user, ce)
+            raise
+        await update_list_item(_q_id(), _Q_LIST, item["id"], {
+            "ReviewStatus":      "Accepted",
+            "Decision":          "Accept",
+            "DecisionRationale": f"{rationale} (accepted with all of {body.document})",
+            "ReviewedByEntraId": user.oid,
+            "CascadeResult":     result[:4000],
+        })
+        accepted.append(item["ControlId"])
+        if "Status Blocked" in result:
+            blocked.append(item["ControlId"])
+
+    failures = await run_writes([(i["ControlId"], lambda i=i: accept(i)) for i in items])
+
+    evidence = {}
+    if accepted:
+        try:
+            from evidence.service import sync_obligations
+            evidence = await sync_obligations()
+        except Exception as exc:
+            logger.warning(f"Evidence obligation sync after bulk accept failed: {exc}")
+
+    return {
+        "document": body.document,
+        "accepted": sorted(accepted),
+        "blocked": sorted(blocked),
+        "failed": failures,
+        "evidence_obligations_created": evidence.get("create", 0),
+        "message": (f"Accepted {len(accepted)} of {len(items)} control(s) from {body.document}"
+                    + (f"; {len(blocked)} recorded as Blocked (role not recognised)" if blocked else "")
+                    + (f"; {len(failures)} failed and were marked Blocked for retry" if failures else "")
+                    + "."),
+    }
