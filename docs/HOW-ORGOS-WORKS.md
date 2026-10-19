@@ -2,6 +2,82 @@
 
 *19 Oct 2026. Written in plain words. Everything here was checked against the code, not taken from earlier plans. Where the code falls short of what it should do, this guide says so.*
 
+---
+
+## 0. Your questions, answered directly
+
+### "What is the starting point? Is it still Document Lifecycle?"
+**It should be, but today it isn't.** In a correct system, a document is written, checked, commented on and approved in Document Lifecycle. **Only then** do its controls become official. Today the controls you're reviewing **didn't come through Lifecycle at all.** A separate script (the *library sync*) opened the SharePoint folder and read every document in it, approved or not. Lifecycle and the library sync are two separate roads that don't meet yet (section 1).
+
+### "How do we already have all the controls when the documents haven't passed Lifecycle?"
+Because the library sync **doesn't look at approval.** It reads whatever is in the folder. I checked every file: **all 123 are drafts.** 83 say "Draft" on their own cover, and 40 state no status. So **every control in Extraction Review today comes from a draft.** If you accept them now, the Control Register is built from unapproved text. That isn't automatically wrong, but you should decide it on purpose (decision 1, section 12).
+
+### "Are we sure the reading is right? Could it skip a document or make mistakes?"
+**It's exact when the document follows the pattern, and it can miss things when it doesn't.** Plainly:
+- **Will be read:** every .docx and .pdf in any subfolder of ORGOS CONTROL LIBRARY.
+- **Will be skipped, with a message:** .doc files, password-protected files, broken files.
+- **Will be skipped silently (to be fixed, decision 4):**
+  - files loose in the top folder;
+  - scanned PDFs (no text to read);
+  - a control block with fewer than 3 of its fields;
+  - a control whose labels are misspelled badly enough.
+- **Could be wrong:**
+  - two documents define the same control, and the "stronger" one wins quietly;
+  - a draft and a final copy without codes are both read.
+- **Was dangerous, and is fixed now:** if a file failed to download, its controls looked deleted. The sync now refuses to write in that case.
+
+The full scenario list is in section 7.
+
+### "Does the control pattern have to be a standard we follow when writing documents?"
+**Yes.** OrgOS doesn't "understand" text; it recognises **labels**. A control is a line with its ID (e.g. `ACS-L3-01`) followed by labelled lines: `Requirement:`, `Trigger:`, `Accountable / Executing:`, `Evidence:`, `Risk:`, `Failure route:`, `Exception route:`, `Mapping:`. Your CDI v06 Standard already uses this pattern, so it's not new work. It just has to be followed every time. Section 11 is the 12-rule checklist for authors.
+
+### "What does each field mean — trigger, failure route, exception route…?"
+Imagine the control *"lock the office door"*:
+
+| Field | Plain meaning | Door example |
+|---|---|---|
+| **Requirement** | The rule | The last person out shall lock the front door |
+| **Trigger** | When the rule applies | Every evening, when the last person leaves |
+| **Accountable** | The one person who answers for it | Office Manager |
+| **Executing** | Who actually does it | Whoever leaves last |
+| **Evidence** | The proof it happened | The lock-up sheet, signed (REC-0123) |
+| **Risk** | Why the rule exists; what goes wrong without it | Break-in and stolen laptops |
+| **Failure route** | What to do **when it went wrong** | If found unlocked: check the CCTV, report an incident, the Office Manager follows up |
+| **Exception route** | How to get **permission not to follow it**, formally | A cleaner works late: the Office Manager approves in writing, until a set date |
+| **Mapping** | Which ISO / NDPA clause it satisfies | ISO 27001 A.7.1 (physical security) |
+| **Governing authority** | The bigger document it serves | Physical Security Policy |
+
+Section 5 does the same with the real control ACS-L3-01 from your screenshot.
+
+### "What is in red?"
+- **Red "Risk: …" line on a card:** just the control's Risk field, coloured to stand out. **Not an error.**
+- **Red box at the bottom of an opened card** (*"The defining document does not state: Mapping"*): the document leaves out a required field. You can still accept; the document should be fixed.
+- **"Deficient" badge:** the same thing, a field is missing. It shows as "Fields missing" once the update is deployed.
+- **Red Reject button:** just the button colour.
+
+### "What is the use of CDI checks like the one about 'shall'?"
+The CDI checks run in Lifecycle **before** approval. They make sure a document is properly built: it has a code, a version, a date, responsibilities, standards references and correct wording. Section 3 lists each check.
+
+**The "shall" check:** it blocks a document that writes an obligation with "should", "where possible", "ideally" and so on. It was added because the **old AI extractor** only treated a sentence as a control if it said "shall" or "must".
+
+**It's now too strict and partly unnecessary:**
+- Your own CDI Procedure allows "should" for recommendations and "may" for options, and only *reports* misuse.
+- The new reader finds controls by their ID and labels, not by the word "shall".
+
+**Recommendation:** turn it into a warning (decision 3).
+
+### "Does our CDI need to change? What is unnecessary?"
+
+| Change | Why |
+|---|---|
+| "Shall" check: blocking → warning | Matches your CDI Procedure (V14); the new reader doesn't need it |
+| Lifecycle approval should use the **new reader**, not the old AI extractor | Otherwise every approval creates duplicate controls with no Control ID |
+| CDI-07 / CDI-08 (vague role / vague evidence) | Already switched off. The role and evidence checks now happen on each control (Blocked status, Record IDs) |
+| Approved copies should go **back to the library folder** | Today they're saved somewhere else, so the library sync never sees the approved version |
+| **No change needed** to the control pattern itself | Your v06 documents already follow it |
+
+---
+
 **Contents**
 1. [The big picture: two ways in](#1-the-big-picture-two-ways-in)
 2. [Way in #1: Document Lifecycle](#2-way-in-1--document-lifecycle)
