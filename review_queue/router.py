@@ -467,6 +467,16 @@ async def _definition_accept_cascade(item: dict, user: CurrentUser, rationale: s
         logger.error(f"AUDIT TRAIL GAP — definition accept for {item['ControlId']}: {exc}")
         created.append("⚠ AUDIT LOG NOT WRITTEN — decision not recorded in the audit trail (see server logs)")
 
+    # Evidence obligations for the control's records (one per Record ID). Not
+    # part of the decision: the daily evidence run reconciles them anyway.
+    try:
+        from evidence.service import sync_obligations
+        synced = await sync_obligations()
+        created.append(f"Evidence obligations: {synced['create']} created, {synced['update']} updated")
+    except Exception as exc:
+        logger.warning(f"Evidence obligation sync after accepting {item['ControlId']} failed: {exc}")
+        created.append("Evidence obligations: will be created by the daily evidence run")
+
     return " | ".join(created)
 
 

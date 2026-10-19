@@ -21,6 +21,7 @@ def start_scheduler() -> None:
     from jobs.scheduled_review import check_document_review_dates
     from jobs.sensitisation_deadline import check_sensitisation_deadlines
     from jobs.gap_analysis_job import run_scheduled_gap_analysis
+    from evidence.service import run_daily as run_evidence_daily
 
     # Daily at 08:00 WAT — scan Document Register for documents due for review
     scheduler.add_job(
@@ -40,6 +41,17 @@ def start_scheduler() -> None:
         misfire_grace_time=3600,
     )
 
+    # Daily at 07:30 WAT — reconcile evidence obligations with the controls and
+    # write each one's state (Due soon, Late, Missing, Stale…) so the Power
+    # Automate flows on the Evidence Tracker list notify owners
+    scheduler.add_job(
+        run_evidence_daily,
+        CronTrigger(hour=7, minute=30),
+        id="evidence-obligations-daily",
+        replace_existing=True,
+        misfire_grace_time=3600,
+    )
+
     # Every 3 days — run Gap Analyzer against confirmed register data
     scheduler.add_job(
         run_scheduled_gap_analysis,
@@ -51,7 +63,8 @@ def start_scheduler() -> None:
 
     scheduler.start()
     logger.info(
-        "APScheduler started — jobs: document-review-check (08:00 WAT), "
+        "APScheduler started — jobs: evidence-obligations-daily (07:30 WAT), "
+        "document-review-check (08:00 WAT), "
         "sensitisation-deadline-check (09:00 WAT), gap-analysis-three-day-check (every 3 days)"
     )
 

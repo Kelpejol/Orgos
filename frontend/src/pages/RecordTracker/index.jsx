@@ -25,10 +25,11 @@ const recordApi = {
   list: (params) =>
     apiClient.get("/api/v1/records", { params }).then(r => r.data),
 
-  submit: async (id, file, notes) => {
+  submit: async (id, file, notes, recordDate) => {
     const form = new FormData();
     form.append("file", file);
     if (notes) form.append("submission_notes", notes);
+    if (recordDate) form.append("record_date", recordDate);
 
     const BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
     const resp = await fetch(`${BASE}/api/v1/records/${id}/upload`, {
@@ -45,10 +46,17 @@ const recordApi = {
 
   // A record that lives in another system (Intune, Entra, CPR, GitHub…) is
   // submitted as a link to the artefact's location — no copy uploaded.
-  submitLink: (id, link, notes) =>
+  submitLink: (id, link, notes, recordDate) =>
     apiClient.patch(`/api/v1/records/${id}/submit`, {
       record_link: link,
       submission_notes: notes || undefined,
+      record_date: recordDate || undefined,
+    }).then(r => r.data),
+
+  schedule: (id, days, freshness) =>
+    apiClient.patch(`/api/v1/records/${id}/schedule`, {
+      check_frequency_days: days,
+      freshness_days: freshness || undefined,
     }).then(r => r.data),
 
   verify: (id, accepted, rejectionNote) =>
@@ -88,6 +96,32 @@ const STATUS_STYLES = {
   "Rejected":  { color: "#791F1F", bg: "#FCEBEB", bd: "#F09595" },
 };
 
+// Evidence obligation states (evidence/obligations.py — assessed live server-side)
+const STATE_STYLES = {
+  "Missing":               STATUS_STYLES.Overdue,
+  "Late":                  STATUS_STYLES.Overdue,
+  "Rejected":              STATUS_STYLES.Rejected,
+  "Stale":                 { color: "#712B13", bg: "#FAECE7", bd: "#F0997B" },
+  "Due soon":              STATUS_STYLES["Due Soon"],
+  "Submitted":             STATUS_STYLES.Submitted,
+  "Awaiting first record": STATUS_STYLES.Pending,
+  "Unscheduled":           { color: "#595952", bg: "#F7F6F2", bd: "#D3D1C7" },
+  "Current":               STATUS_STYLES.Accepted,
+  "Withdrawn":             { color: "#8A8A85", bg: "#F1EFE8", bd: "#D3D1C7" },
+};
+const ATTENTION = new Set(["Missing", "Late", "Stale", "Rejected"]);
+
+const FREQUENCY_PRESETS = [["Monthly", 30], ["Quarterly", 91], ["Six-monthly", 182], ["Annually", 365]];
+
+const describeDays = (days) => {
+  const named = FREQUENCY_PRESETS.find(([, d]) => d === days);
+  return named ? named[0] : `Every ${days} days`;
+};
+
+const stateOf = (item) => (item.IsObligation ? item.State : item.Status);
+
+const todayIso = () => new Date().toISOString().slice(0, 10);
+
 // The 16-code Evidence Type taxonomy (DRG-QI-REF-EVTX-01-26) — a separate,
 // formally documented standard, not renamed with the rest of this feature.
 const EVID_TYPE_LABELS = {
@@ -126,24 +160,29 @@ const formatDateOnly = (value) => {
 // =============================================================================
 
 const SubmitPanel = ({ item, onSubmit, onSubmitLink, onClose, isPending }) => {
-  const [mode,  setMode]  = useState("file");   // "file" | "link"
+  // An obligation's record is referenced where it lives; a copy is uploaded
+  // only when OrgOS itself is the record's authoritative home.
+  const canUpload = !item.IsObligation || item.MayUpload;
+  const [mode,  setMode]  = useState(canUpload ? "file" : "link");   // "file" | "link"
+  const [recordDate, setRecordDate] = useState("");
   const [file,  setFile]  = useState(null);
   const [link,  setLink]  = useState("");
   const [notes, setNotes] = useState("");
   const [error, setError] = useState("");
 
   const linkOk = /^https?:\/\/\S+/i.test(link.trim());
-  const ready  = mode === "file" ? !!file : linkOk;
+  const dateOk = !item.IsObligation || (recordDate && recordDate <= todayIso());
+  const ready  = (mode === "file" ? !!file : linkOk) && dateOk;
 
   const handleSubmit = async () => {
     if (mode === "file") {
       if (!file) { setError("Record file is required."); return; }
       setError("");
-      await onSubmit(item.id, file, notes.trim());
+      await onSubmit(item.id, file, notes.trim(), recordDate);
     } else {
       if (!linkOk) { setError("Paste a valid link (http/https) to the artefact."); return; }
       setError("");
-      await onSubmitLink(item.id, link.trim(), notes.trim());
+      await onSubmitLink(item.id, link.trim(), notes.trim(), recordDate);
     }
   };
 
@@ -160,8 +199,15 @@ const SubmitPanel = ({ item, onSubmit, onSubmitLink, onClose, isPending }) => {
         </div>
       )}
 
+      {!canUpload && (
+        <div style={{ fontSize: 11, color: "#0C447C", marginBottom: 10 }}>
+          This record lives in <strong>{item.Location || "its own system"}</strong>. Link to it there;
+          OrgOS doesn't keep a copy.
+        </div>
+      )}
+
       {/* Mode toggle — upload a copy, or link to where the record lives */}
-      <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
+      {canUpload && <div style={{ display: "flex", gap: 6, marginBottom: 10 }}>
         {[
           { k: "file", l: "Upload file" },
           { k: "link", l: "Paste link" },
@@ -175,7 +221,7 @@ const SubmitPanel = ({ item, onSubmit, onSubmitLink, onClose, isPending }) => {
             {m.l}
           </button>
         ))}
-      </div>
+      </div>}
 
       {error && (
         <div style={{ fontSize: 11, color: "#791F1F", marginBottom: 8 }}>{error}</div>
@@ -225,6 +271,25 @@ const SubmitPanel = ({ item, onSubmit, onSubmitLink, onClose, isPending }) => {
           />
           <div style={{ fontSize: 10, color: "#0C447C", marginTop: 4 }}>
             Use this when the record lives in another system — the reviewer follows the link to verify it.
+          </div>
+        </div>
+      )}
+
+      {item.IsObligation && (
+        <div style={{ marginBottom: 8 }}>
+          <label style={{ display: "block", fontSize: 10, fontWeight: 500,
+                          color: "var(--color-text-secondary)", marginBottom: 3,
+                          textTransform: "uppercase", letterSpacing: "0.4px" }}>
+            Date of the record <span style={{ color: "#A32D2D" }}>*</span>
+          </label>
+          <input type="date" value={recordDate} max={todayIso()}
+            onChange={e => setRecordDate(e.target.value)}
+            style={{ fontSize: 12, padding: "7px 10px", borderRadius: 8,
+                     border: `1.5px solid ${dateOk ? "#5DCAA5" : "#C0C0C0"}`,
+                     background: "var(--color-background-primary)", color: "var(--color-text-primary)" }} />
+          <div style={{ fontSize: 10, color: "#0C447C", marginTop: 4 }}>
+            When the record itself was produced (the meeting, the review, the export) — the next one
+            falls due from this date.
           </div>
         </div>
       )}
@@ -344,22 +409,81 @@ const VerifyPanel = ({ item, onVerify, onClose, isPending }) => {
 };
 
 // =============================================================================
+//  Schedule panel (Compliance) — how often an obligation's record is confirmed
+// =============================================================================
+
+const SchedulePanel = ({ item, onSchedule, onClose, isPending }) => {
+  const [days, setDays] = useState(item.CheckFrequencyDays || item.SuggestedFrequencyDays || "");
+  const [fresh, setFresh] = useState(item.FreshnessDays || "");
+  const n = parseInt(days, 10);
+  const ok = n >= 1 && n <= 3650;
+  return (
+    <div style={{ marginTop: 12, padding: "14px", background: "var(--color-background-secondary)",
+                  borderRadius: 10, border: "1px solid var(--color-border-tertiary)" }}
+         onClick={e => e.stopPropagation()}>
+      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>How often is this record confirmed?</div>
+      <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginBottom: 10 }}>
+        Separate from when the control runs ({item.OperatingTrigger || "trigger not stated"}).
+        {item.SuggestedFrequencyBasis && ` Suggested: ${describeDays(item.SuggestedFrequencyDays)} — ${item.SuggestedFrequencyBasis}.`}
+      </div>
+      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
+        {FREQUENCY_PRESETS.map(([label, d]) => (
+          <button key={d} onClick={() => setDays(d)}
+            style={{ padding: "5px 10px", fontSize: 11, borderRadius: 6, cursor: "pointer",
+                     border: n === d ? "1px solid #0C447C" : "1.5px solid #C0C0C0",
+                     background: n === d ? "#D4E8FA" : "var(--color-background-primary)",
+                     color: n === d ? "#0C447C" : "var(--color-text-secondary)" }}>
+            {label}
+          </button>
+        ))}
+        <input type="number" min={1} max={3650} value={days} onChange={e => setDays(e.target.value)}
+          style={{ width: 80, fontSize: 12, padding: "5px 8px", borderRadius: 6, border: "1.5px solid #C0C0C0" }} />
+        <span style={{ fontSize: 11, alignSelf: "center", color: "var(--color-text-tertiary)" }}>days</span>
+      </div>
+      <label style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>
+        Record goes stale after{" "}
+        <input type="number" min={0} max={3650} value={fresh} onChange={e => setFresh(e.target.value)}
+          placeholder="same" style={{ width: 70, fontSize: 12, padding: "4px 6px", borderRadius: 6,
+                                       border: "1.5px solid #C0C0C0" }} /> days (blank = same as the frequency)
+      </label>
+      <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+        <button disabled={!ok || isPending} onClick={() => onSchedule(item.id, n, parseInt(fresh, 10) || 0)}
+          style={{ padding: "8px 16px", fontSize: 12, borderRadius: 8, border: "none", fontWeight: 600,
+                   background: !ok || isPending ? "#E8E8E8" : "#085041",
+                   color: !ok || isPending ? "#999" : "#fff", cursor: ok ? "pointer" : "not-allowed" }}>
+          {isPending ? "Saving…" : "Set schedule"}
+        </button>
+        <button onClick={onClose}
+          style={{ padding: "8px 12px", fontSize: 12, borderRadius: 8, border: "1.5px solid #C0C0C0",
+                   background: "transparent", color: "var(--color-text-secondary)", cursor: "pointer" }}>
+          Cancel
+        </button>
+      </div>
+    </div>
+  );
+};
+
+// =============================================================================
 //  Record card
 // =============================================================================
 
-const RecordCard = ({ item, currentOid, isCompliance, onSubmit, onSubmitLink, onVerify, onReassignOwner, actionItemId }) => {
+const RecordCard = ({ item, currentOid, isCompliance, onSubmit, onSubmitLink, onVerify, onReassignOwner, onSchedule, actionItemId }) => {
+  const [showSchedule, setShowSchedule] = useState(false);
   const [expanded, setExpanded]     = useState(false);
   const [showSubmit, setShowSubmit] = useState(false);
   const [showVerify, setShowVerify] = useState(false);
   const [showReassign, setShowReassign] = useState(false);
   const [newOwner, setNewOwner]     = useState("");
 
-  const ss = STATUS_STYLES[item.Status] || STATUS_STYLES["Pending"];
+  const ob = item.IsObligation;
+  const ss = (ob ? STATE_STYLES[item.State] : STATUS_STYLES[item.Status]) || STATUS_STYLES["Pending"];
   // Ownership resolved server-side: whoever holds the owning role (job
   // title, group, or alias) can act — OwnerEntraId is never populated.
   const canAct      = item.OwnedByMe === true;
   const isOwner      = canAct;
-  const canSubmit   = canAct && ["Pending", "Due Soon", "Overdue", "Rejected"].includes(item.Status);
+  const canSubmit   = canAct && (ob
+    ? !["Submitted", "Withdrawn"].includes(item.State)        // a recurring record: next period's proof
+    : ["Pending", "Due Soon", "Overdue", "Rejected"].includes(item.Status));
   const canVerify   = isCompliance && item.Status === "Submitted";
   const isPending   = actionItemId === item.id;
 
@@ -387,8 +511,14 @@ const RecordCard = ({ item, currentOid, isCompliance, onSubmit, onSubmitLink, on
             <span style={{ fontSize: 10, padding: "1px 7px", borderRadius: 3,
                            fontWeight: 600, background: ss.bg, color: ss.color,
                            border: `0.5px solid ${ss.bd}` }}>
-              {item.Status}
+              {stateOf(item)}
             </span>
+            {ob && (
+              <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 3, fontFamily: "var(--font-mono)",
+                             background: "var(--color-background-info)", color: "var(--color-text-info)" }}>
+                {item.LinkedControlId} · {item.RecordId}
+              </span>
+            )}
             {item.EvidenceType && (
               <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 3,
                              background: "var(--color-background-secondary)",
@@ -430,9 +560,12 @@ const RecordCard = ({ item, currentOid, isCompliance, onSubmit, onSubmitLink, on
                          background: "#FDF3E2", border: "0.5px solid #F0CE94", borderRadius: 20,
                          padding: "1px 6px" }}>UNASSIGNED</span>
             )}
-            {" · "}{item.Frequency || "No frequency"}
+            {" · "}{ob
+              ? (item.CheckFrequencyDays ? describeDays(item.CheckFrequencyDays) : "No schedule")
+              : (item.Frequency || "No frequency")}
+            {ob && item.NextDue && ` · due ${formatDateOnly(item.NextDue)}`}
           </span>
-          {item.LinkedControlId && (
+          {!ob && item.LinkedControlId && (
             <span style={{ color: "var(--color-text-tertiary)" }}>
               CTL-{item.LinkedControlId.slice(-4)}
             </span>
@@ -453,17 +586,36 @@ const RecordCard = ({ item, currentOid, isCompliance, onSubmit, onSubmitLink, on
             </div>
           )}
 
+          {ob && (
+            <>
+              <div style={{ fontSize: 12, color: ss.color, marginBottom: 8 }}>{item.StateDetail}</div>
+              <Field l="Control" v={`${item.LinkedControlId} — defined in ${item.SourceDocument || "its document"}`} />
+              <Field l="Control runs" v={item.OperatingTrigger || "Not stated"} />
+              <Field l="Record checked" v={item.CheckFrequencyDays
+                ? `${describeDays(item.CheckFrequencyDays)}${item.FreshnessDays ? ` · stale after ${item.FreshnessDays} days` : ""}`
+                : "Not scheduled yet"} />
+              <Field l="Where it lives" v={item.Location || "Not in the Records Catalogue"} />
+              {item.Custodian && <Field l="Kept by" v={item.Custodian} />}
+              <Field l="Produced by" v={<OwnerDisplay item={item} />} />
+              {item.LastRecordDate && <Field l="Last accepted record" v={formatDateOnly(item.LastRecordDate)} />}
+              {item.PendingRecordDate && item.State === "Submitted" &&
+                <Field l="Submitted record dated" v={formatDateOnly(item.PendingRecordDate)} />}
+            </>
+          )}
+
           {/* Fields */}
-          {item.EvidenceType && (
+          {!ob && item.EvidenceType && (
             <Field l="Evidence type" v={`${item.EvidenceType} — ${EVID_TYPE_LABELS[item.EvidenceType] || ""}`} />
           )}
-          <Field l="Owner"          v={<OwnerDisplay item={item} />} />
-          <Field l="Source system"  v={item.SourceSystem} />
-          <Field l="Format"         v={item.RecordFormat} />
-          <Field l="Frequency"      v={item.Frequency} />
+          {!ob && <>
+            <Field l="Owner"          v={<OwnerDisplay item={item} />} />
+            <Field l="Source system"  v={item.SourceSystem} />
+            <Field l="Format"         v={item.RecordFormat} />
+            <Field l="Frequency"      v={item.Frequency} />
+            {item.NextDue && <Field l="Next due"       v={formatDateOnly(item.NextDue)} />}
+            {item.LastCollected && <Field l="Last collected" v={formatDateOnly(item.LastCollected)} />}
+          </>}
           {item.ValidationCriteria && <Field l="Acceptance criteria" v={item.ValidationCriteria} />}
-          {item.NextDue && <Field l="Next due"       v={formatDateOnly(item.NextDue)} />}
-          {item.LastCollected && <Field l="Last collected" v={formatDateOnly(item.LastCollected)} />}
           {item.VerifiedBy && <Field l="Verified by"   v={item.VerifiedBy} />}
 
           {/* Record source URL */}
@@ -522,8 +674,22 @@ const RecordCard = ({ item, currentOid, isCompliance, onSubmit, onSubmitLink, on
             />
           )}
 
-          {/* Reassign owner — compliance can set the owner to a real job title */}
-          {isCompliance && !showReassign && (
+          {/* Schedule — how often the record is confirmed (Compliance) */}
+          {ob && isCompliance && item.State !== "Withdrawn" && !showSchedule && (
+            <button onClick={e => { e.stopPropagation(); setShowSchedule(true); }}
+              style={{ marginTop: 8, width: "100%", padding: "8px", fontSize: 12, borderRadius: 8,
+                       border: "1.5px solid var(--color-border-tertiary)", background: "transparent",
+                       color: "var(--color-text-secondary)", cursor: "pointer", fontWeight: 500 }}>
+              {item.CheckFrequencyDays ? "Change schedule" : "Set schedule"}
+            </button>
+          )}
+          {showSchedule && (
+            <SchedulePanel item={item} isPending={isPending} onClose={() => setShowSchedule(false)}
+              onSchedule={async (id, days, fresh) => { await onSchedule(id, days, fresh); setShowSchedule(false); }} />
+          )}
+
+          {/* Reassign owner — older rows only; an obligation's owner comes from its control */}
+          {!ob && isCompliance && !showReassign && (
             <button
               onClick={e => { e.stopPropagation(); setNewOwner(item.OwnerRole || ""); setShowReassign(true); }}
               style={{ marginTop: 8, width: "100%", padding: "8px", fontSize: 12,
@@ -595,22 +761,27 @@ export default function RecordTracker() {
   const ownsIt = (e) => e.OwnedByMe === true;
 
   const views = useMemo(() => {
-    const mine     = all.filter(ownsIt);
-    const overdue  = all.filter(e => e.Status === "Overdue");
-    const submitted = all.filter(e => e.Status === "Submitted");
-    return { mine, overdue, submitted };
+    const live      = all.filter(e => stateOf(e) !== "Withdrawn");
+    const mine      = live.filter(ownsIt);
+    const attention = live.filter(e => e.IsObligation ? ATTENTION.has(e.State) : e.Status === "Overdue");
+    const submitted = live.filter(e => stateOf(e) === "Submitted");
+    const unscheduled = live.filter(e => e.IsObligation && e.State === "Unscheduled");
+    return { live, mine, attention, submitted, unscheduled };
   }, [all]);
 
   const activeItems = useMemo(() => {
-    let list = view === "mine"      ? views.mine
-             : view === "overdue"   ? views.overdue
-             : view === "submitted" ? views.submitted
+    let list = view === "mine"        ? views.mine
+             : view === "attention"   ? views.attention
+             : view === "submitted"   ? views.submitted
+             : view === "unscheduled" ? views.unscheduled
              : all;
 
     if (search.trim()) {
       const q = search.toLowerCase();
       list = list.filter(e =>
         (e.RecordDescription  || "").toLowerCase().includes(q) ||
+        (e.LinkedControlId     || "").toLowerCase().includes(q) ||
+        (e.RecordId            || "").toLowerCase().includes(q) ||
         (e.EvidenceType        || "").toLowerCase().includes(q) ||
         (e.OwnerRole           || "").toLowerCase().includes(q) ||
         (e.SourceSystem        || "").toLowerCase().includes(q)
@@ -619,10 +790,10 @@ export default function RecordTracker() {
     return list;
   }, [view, views, all, search]);
 
-  const handleSubmit = async (id, file, notes) => {
+  const handleSubmit = async (id, file, notes, recordDate) => {
     setActionItemId(id);
     try {
-      await recordApi.submit(id, file, notes);
+      await recordApi.submit(id, file, notes, recordDate);
       qc.invalidateQueries({ queryKey: ["records"] });
     } catch (err) {
       notify({
@@ -635,10 +806,10 @@ export default function RecordTracker() {
     }
   };
 
-  const handleSubmitLink = async (id, link, notes) => {
+  const handleSubmitLink = async (id, link, notes, recordDate) => {
     setActionItemId(id);
     try {
-      await recordApi.submitLink(id, link, notes);
+      await recordApi.submitLink(id, link, notes, recordDate);
       qc.invalidateQueries({ queryKey: ["records"] });
     } catch (err) {
       notify({
@@ -667,6 +838,19 @@ export default function RecordTracker() {
     }
   };
 
+  const handleSchedule = async (id, days, freshness) => {
+    setActionItemId(id);
+    try {
+      await recordApi.schedule(id, days, freshness);
+      qc.invalidateQueries({ queryKey: ["records"] });
+    } catch (err) {
+      notify({ tone: "danger", title: "Schedule not saved",
+               message: err.response?.data?.detail || err.message || "Could not set the schedule." });
+    } finally {
+      setActionItemId(null);
+    }
+  };
+
   const handleReassignOwner = async (id, ownerRole) => {
     setActionItemId(id);
     try {
@@ -686,9 +870,10 @@ export default function RecordTracker() {
 
   const tabViews = [
     { k: "mine",      l: `My records (${views.mine.length})` },
+    { k: "attention", l: `Needs attention (${views.attention.length})` },
     ...(isCompliance ? [
-      { k: "submitted", l: `Submitted (${views.submitted.length})` },
-      { k: "overdue",   l: `Overdue (${views.overdue.length})` },
+      { k: "submitted",   l: `To verify (${views.submitted.length})` },
+      { k: "unscheduled", l: `Unscheduled (${views.unscheduled.length})` },
     ] : []),
     { k: "all", l: `All (${all.length})` },
   ];
@@ -704,8 +889,8 @@ export default function RecordTracker() {
           <div>
             <div style={{ fontSize: 17, fontWeight: 600, marginBottom: 3 }}>Record tracker</div>
             <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>
-              Every record requirement created by the Zone 1 cascade lives here.
-              Collect, submit, and get verified — that is the proof of compliance.
+              One row for each record a control names as its proof. Link the record where it
+              lives, date it, and get it verified — that is the proof of compliance.
             </div>
           </div>
           <div style={{ padding: "3px 10px", background: "#E1F5EE", borderRadius: 6,
@@ -758,6 +943,7 @@ export default function RecordTracker() {
               onSubmitLink={handleSubmitLink}
               onVerify={handleVerify}
               onReassignOwner={handleReassignOwner}
+              onSchedule={handleSchedule}
               actionItemId={actionItemId}
             />
           ))}

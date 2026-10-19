@@ -83,6 +83,7 @@ async def _load_records() -> list[dict]:
             "status":      i.get("fields", {}).get("Status", "Pending"),
             "owner_oid":   i.get("fields", {}).get("OwnerEntraId", ""),
             "type":        i.get("fields", {}).get("EvidenceType", ""),
+            "fields":      i.get("fields", {}),
         }
         for i in items
     ]
@@ -396,8 +397,9 @@ async def run_gap_analysis(triggered_by: str = "system") -> dict:
     from ownership.resolver import get_ownership_index
     ownership = await get_ownership_index()
 
-    from agents.gap_analyzer.control_gaps import find_control_gaps
-    gaps = _find_gaps(controls, records, ownership) + find_control_gaps(controls)
+    from agents.gap_analyzer.control_gaps import find_control_gaps, find_evidence_gaps
+    gaps = (_find_gaps(controls, records, ownership) + find_control_gaps(controls)
+            + find_evidence_gaps([r["fields"] for r in records]))
     closed = await _close_resolved_control_gaps({g["gap_key"] for g in gaps})
     logger.info(f"Gap finding complete: {len(gaps)} gaps found before deduplication")
 

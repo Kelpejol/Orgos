@@ -180,3 +180,59 @@ def find_control_gaps(controls: list[dict]) -> list[dict]:
                 [c["control_id"] for c in unidentified],
             ))
     return gaps
+
+
+
+# =============================================================================
+#  Evidence obligations (evidence/obligations.py)
+# =============================================================================
+
+def find_evidence_gaps(obligations: list[dict], today=None) -> list[dict]:
+    """
+    `obligations`: Evidence Tracker field dicts that carry an ObligationKey.
+    One gap per control whose records are missing, late, stale or rejected;
+    one per defining document whose obligations have no schedule yet.
+    """
+    from evidence.obligations import assess
+
+    attention: dict[str, list[tuple[dict, object]]] = defaultdict(list)
+    unscheduled: dict[str, list[dict]] = defaultdict(list)
+    for f in obligations:
+        if not f.get("ObligationKey"):
+            continue
+        a = assess(f, today)
+        if a.state in ("Missing", "Late", "Stale", "Rejected"):
+            attention[f.get("LinkedControlId", "")].append((f, a))
+        elif a.state == "Unscheduled":
+            unscheduled[f.get("SourceDocument", "")].append(f)
+
+    gaps = []
+    for cid, items in sorted(attention.items()):
+        worst = "Major" if any(a.state in ("Missing", "Late") for _, a in items) else "Minor"
+        lines = "; ".join(f"{f.get('RecordId')} {f.get('EvidenceDescription', '')}: {a.state} — {a.detail}"
+                          for f, a in items)
+        gaps.append(_gap(
+            f"EVID:{cid}", "Evidence gap", worst, cid, f"Evidence for {cid}",
+            f"{cid}'s evidence needs attention — {lines}",
+            "Without current records the control cannot be shown to operate; an auditor sampling "
+            "this period will find no proof.",
+            "No document change: the owner produces or links the record where it lives and "
+            "Compliance verifies it in the Evidence Tracker.",
+            sorted({f.get("OwnerRole", "") for f, _ in items if f.get("OwnerRole")}) or ["Control owner"],
+            "Every listed record shows Current or Due soon in the Evidence Tracker.",
+            [cid],
+        ))
+    for doc, items in sorted(unscheduled.items()):
+        controls = sorted({f.get("LinkedControlId", "") for f in items})
+        gaps.append(_gap(
+            f"SCHED:{doc}", "Evidence gap", "Minor", doc, f"Evidence schedule not set for {doc}",
+            f"{len(items)} evidence obligation(s) for controls in {doc} have no check frequency, so "
+            f"nothing is ever due: {', '.join(controls[:12])}{' and more' if len(controls) > 12 else ''}.",
+            "Evidence with no schedule is never chased; gaps surface only at audit.",
+            "In the Evidence Tracker, set how often each record must be confirmed (accept the "
+            "suggestion where the trigger names a cadence).",
+            ["Compliance Executive (QMS & NDPA)"],
+            "Every listed obligation has a check frequency.",
+            controls,
+        ))
+    return gaps
