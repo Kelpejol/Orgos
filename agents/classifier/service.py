@@ -182,6 +182,7 @@ async def _fetch_queue_items() -> list[dict]:
             "ISOClause":        i.get("fields", {}).get("ISOClause", ""),
             "ItemType":         i.get("fields", {}).get("ItemType", ""),
             "ReviewStatus":     i.get("fields", {}).get("ReviewStatus", ""),
+            "ControlId":        i.get("fields", {}).get("ControlId", ""),
         }
         for i in items
         if i.get("fields", {}).get("ItemType") == "Extraction"
@@ -206,6 +207,7 @@ async def _fetch_control_register() -> list[dict]:
             "ControlStatement": i.get("fields", {}).get("ControlStatement", ""),
             "SourceDocument":   i.get("fields", {}).get("SourceDocument", ""),
             "ISOClause":        i.get("fields", {}).get("ISOClause", ""),
+            "ControlId":        i.get("fields", {}).get("ControlId", ""),
         }
         for i in items
         if i.get("fields", {}).get("ControlStatement")
@@ -249,6 +251,7 @@ async def detect_near_duplicates(
             "id":        i["id"],
             "statement": i["ControlStatement"],
             "source":    i["SourceDocumentCode"],
+            "control_id": i.get("ControlId", ""),
             "origin":    "queue",
         }
         for i in queue_items if i.get("ControlStatement")
@@ -257,6 +260,7 @@ async def detect_near_duplicates(
             "id":        c["id"],
             "statement": c["ControlStatement"],
             "source":    c["SourceDocument"],
+            "control_id": c.get("ControlId", ""),
             "origin":    "register",
         }
         for c in confirmed_controls if c.get("ControlStatement")
@@ -269,6 +273,16 @@ async def detect_near_duplicates(
     )
     logger.info(f"Near-duplicate detection: {len(findings)} pairs found")
     return findings
+
+
+def _same_control(a: Optional[str], b: Optional[str]) -> bool:
+    """
+    Two statements carrying one Control ID are one control — a definition and
+    its pending change, or a procedure's restatement. Comparing their text
+    would report a control as its own duplicate; the library sync diffs them
+    exactly instead. Similar text under DIFFERENT IDs is still compared.
+    """
+    return bool(a) and a == b
 
 
 def _scan_near_duplicate_pairs(all_controls: list[dict], similarity_threshold: float) -> list[dict]:
@@ -286,6 +300,8 @@ def _scan_near_duplicate_pairs(all_controls: list[dict], similarity_threshold: f
         la = len(na)
         for j in range(i + 1, len(all_controls)):
             ctrl_b = all_controls[j]
+            if _same_control(ctrl_a.get("control_id"), ctrl_b.get("control_id")):
+                continue
             nb = norms[j]
             lb = len(nb)
             if la and lb and min(la, lb) / max(la, lb) < 0.5:
@@ -354,6 +370,8 @@ def _scan_conflict_pairs(controls: list[dict], similarity_threshold: float) -> l
         for j in range(i + 1, len(controls)):
             b = controls[j]
             if a.get("SourceDocumentCode") == b.get("SourceDocumentCode"):
+                continue
+            if _same_control(a.get("ControlId"), b.get("ControlId")):
                 continue
             nb = norms[j]
             lb = len(nb)

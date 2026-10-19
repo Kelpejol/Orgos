@@ -57,9 +57,19 @@ async def _load_controls() -> list[dict]:
             "owner_oid":  i.get("fields", {}).get("OwnerEntraId", ""),
             "status":     i.get("fields", {}).get("Status", "Active"),
             "source_doc": i.get("fields", {}).get("SourceDocument", ""),
+            "control_id": i.get("fields", {}).get("ControlId", ""),
+            "blocked_reason": i.get("fields", {}).get("BlockedReason", ""),
+            "definition": _definition(i.get("fields", {})),
         }
         for i in items
     ]
+
+
+def _definition(fields: dict):
+    try:
+        return json.loads(fields.get("DefinitionJson") or "null")
+    except (TypeError, ValueError):
+        return None
 
 
 async def _load_records() -> list[dict]:
@@ -155,7 +165,8 @@ def _find_gaps(
         # Ownership gap — the control's OwnerRole doesn't resolve to anyone.
         # Ownership is a ROLE (job title / group / alias), never OwnerEntraId
         # (which the accept cascade leaves empty), so resolve the role.
-        for ctrl in clause_controls:
+        legacy = [c for c in clause_controls if not c.get("control_id")]
+        for ctrl in legacy:
             owner_role = ctrl.get("owner_role") or ""
             unowned = (
                 not ownership.has_owner(owner_role) if ownership is not None
@@ -187,7 +198,7 @@ def _find_gaps(
 
         # Evidence gap — controls exist but no evidence requirement is defined
         if "record" in requires:
-            for ctrl in clause_controls:
+            for ctrl in legacy:
                 if ctrl["id"] not in controls_with_records:
                     gaps.append({
                         "standard":    standard,
@@ -352,7 +363,8 @@ async def run_gap_analysis(triggered_by: str = "system") -> dict:
     from ownership.resolver import get_ownership_index
     ownership = await get_ownership_index()
 
-    gaps = _find_gaps(controls, records, ownership)
+    from agents.gap_analyzer.control_gaps import find_control_gaps
+    gaps = _find_gaps(controls, records, ownership) + find_control_gaps(controls)
     logger.info(f"Gap finding complete: {len(gaps)} gaps found before deduplication")
 
     if not gaps:
@@ -394,7 +406,8 @@ async def run_gap_analysis(triggered_by: str = "system") -> dict:
                 f"AI analysing gap: {gap['standard']} {gap['clause']} "
                 f"({gap['gap_category']})..."
             )
-            ai = await _ai_analyse_and_remediate(gap)
+            # Control-framework gaps carry their own stated remediation.
+            ai = gap.get("stated") or await _ai_analyse_and_remediate(gap)
 
             days   = SEVERITY_DAYS.get(gap["severity"], 90)
             target = (date.today() + timedelta(days=days)).isoformat()

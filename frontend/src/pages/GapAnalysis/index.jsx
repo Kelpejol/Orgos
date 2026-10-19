@@ -57,6 +57,7 @@ const CAT_LABELS = {
   "Ownership gap":          "Controls exist but the responsible role is unassigned",
   "Standards misalignment": "Controls exist but mapped to incorrect clauses",
   "Obligation gap":         "Regulatory requirement not tracked in Compliance Calendar",
+  "Implementation gap":     "Control is defined but no procedure carries it out",
 };
 
 // =============================================================================
@@ -725,7 +726,7 @@ export default function GapAnalysis() {
         <div style={{ width: 1, background: "#D0D0D0", alignSelf: "stretch" }} />
 
         {/* Standard */}
-        {["All", "ISO 27001", "ISO 9001", "NDPA"].map(s => (
+        {["All", "ISO 27001", "ISO 9001", "ISO 22301", "NDPA", "CDI"].map(s => (
           <button key={s} onClick={() => setStandardFilter(s)}
             style={{ padding: "5px 10px", fontSize: 11, borderRadius: 6, cursor: "pointer",
                      fontWeight: standardFilter === s ? 600 : 400,

@@ -318,6 +318,45 @@ def _definition_conflicts(index: LibraryIndex) -> dict[str, dict]:
     return out
 
 
+def _library_findings(index: LibraryIndex) -> dict[str, dict]:
+    """
+    What the documents get wrong between them, as Zone 2 items whose fix is a
+    document revision ("Remove from policy" raises it in Document Lifecycle):
+      • a procedure cites a control no document defines (retired, or a wrong ID)
+      • a procedure copies a control but has edited the wording
+      • two files carry one document code (usually an old copy left in place)
+    """
+    import re
+    from cdi.model import FindingKind
+
+    out: dict[str, dict] = {}
+    for lf in index.findings():
+        f = lf.finding
+        if f.kind is FindingKind.IMPLEMENTS_UNDEFINED:
+            key, kind = f"CITES-UNDEFINED:{lf.document}:{f.location.item}", "CITES_UNDEFINED_CONTROL"
+            title = f"{lf.document} cites {f.location.item}, which no document defines"
+        elif f.kind is FindingKind.RESTATEMENT_DIFFERS:
+            m = re.search(r"copies (\S+) from", f.message)
+            cid = m.group(1) if m else f.location.item
+            key, kind = f"COPY-DIFFERS:{lf.document}:{cid}", "RESTATEMENT_DIFFERS"
+            title = f"{lf.document} has edited its copy of {cid}"
+        elif f.kind is FindingKind.DUPLICATE_DOCUMENT_CODE:
+            key, kind = f"DUPLICATE-CODE:{f.location.item}", "DUPLICATE_DOCUMENT_CODE"
+            title = f"{f.location.item} appears in more than one file"
+            if key in out:
+                continue                      # one item per code, not per file
+        else:
+            continue
+        out[key] = {
+            "Title": title[:255],
+            "OrphanClassification": kind,
+            "ResponsibilityStatement": f.message,
+            "OrphanReason": f.message,
+            "SourceDocumentCode": lf.document[:255],
+        }
+    return out
+
+
 def plan_resolutions(index: LibraryIndex, queue: list[dict],
                      catalogue: Optional[dict] = None) -> list[SyncAction]:
     """
@@ -325,6 +364,7 @@ def plan_resolutions(index: LibraryIndex, queue: list[dict],
     → RecordEntry; None skips record checks (the Catalogue is not loaded).
     """
     problems = _definition_conflicts(index)
+    problems.update(_library_findings(index))
     if catalogue is not None:
         problems.update(_record_problems(index, catalogue))
 
@@ -343,7 +383,8 @@ def plan_resolutions(index: LibraryIndex, queue: list[dict],
             "ReviewStatus": "Pending Review",
         }))
 
-    checked = {"DEFINED-TWICE"} | ({"RECORD"} if catalogue is not None else set())
+    checked = ({"DEFINED-TWICE", "CITES-UNDEFINED", "COPY-DIFFERS", "DUPLICATE-CODE"}
+               | ({"RECORD"} if catalogue is not None else set()))
     for key, item in latest.items():
         status = ((item.get("fields") or {}).get("ReviewStatus") or "").strip()
         if key.split(":", 1)[0] in checked and key not in problems and status in PENDING:

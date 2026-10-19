@@ -77,3 +77,12 @@ def test_a_control_defined_twice_is_raised_and_kept_apart_from_its_definition_it
     assert [(a.kind, a.control_id) for a in plan_sync(resolved, [], queue).actions] == [
         ("create_item", "TST-01")]
     assert [a.kind for a in plan_resolutions(resolved, queue, {"REC-0001": GOVERNED})] == ["close_item"]
+
+
+def test_a_procedure_citing_a_control_nobody_defines_is_raised_for_revision():
+    from tests.cdi.builders import implementing_procedure
+    index = LibraryIndex([parse_document(implementing_procedure().bytes(), "pro.docx")])
+    keys = sorted(a.fields["ResolutionKey"] for a in plan_resolutions(index, [], None))
+    assert keys == ["CITES-UNDEFINED:DRG-ISMS-PRO-TST:TST-01", "CITES-UNDEFINED:DRG-ISMS-PRO-TST:TST-02"]
+    assert {a.fields["OrphanClassification"] for a in plan_resolutions(index, [], None)} == {
+        "CITES_UNDEFINED_CONTROL"}
