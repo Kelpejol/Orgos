@@ -1120,6 +1120,57 @@ def _impact_shell(zone: str, decision: str) -> dict:
     }
 
 
+async def _definition_impact(item: dict, decision: str, impact: dict) -> dict:
+    """What accepting a control definition from the library sync will do."""
+    from control_register.definitions import decide_status
+    from control_register.sync import RETIRED_CONTROL
+    from ownership.resolver import get_ownership_index
+
+    cid = item["ControlId"]
+    if decision == "Edit and Accept":
+        impact["blocked"] = True
+        impact["blocked_reason"] = (f"{cid}'s wording comes from {item.get('SourceDocumentCode') or 'its document'}; "
+                                    "change it there through Document Lifecycle, not here.")
+        return impact
+    candidate = item.get("Candidate") or {}
+    if candidate.get("control_id") != cid:
+        impact["blocked"] = True
+        impact["blocked_reason"] = "The queue item's definition is unreadable; re-run the library sync."
+        return impact
+
+    status, reason = decide_status(candidate, (await get_ownership_index()).resolve)
+    rows = await get_list_items(_cr_id(), _CR_LIST)
+    exists = any((r.get("fields") or {}).get("ControlId") == cid
+                 and (r.get("fields") or {}).get("Status") not in RETIRED_CONTROL for r in rows)
+    changed = ", ".join(d["label"] for d in (item.get("Diff") or [])) or "no field changes"
+    impact[("updates" if exists else "creates")].append({
+        "register": "Control Register",
+        "detail": (f"{cid} {'updated (' + changed + ')' if exists else 'created'} — status {status}"
+                   + (f": {reason}" if reason else "")),
+    })
+    records = sorted({e["record_id"] for e in candidate.get("evidence") or [] if e.get("record_id")})
+    if records:
+        impact["creates"].append({
+            "register": "Evidence Tracker",
+            "detail": f"An evidence obligation for each record not already tracked: {', '.join(records)}. "
+                      "Each starts Unscheduled until Compliance sets how often it is checked.",
+        })
+    else:
+        impact["warnings"].append(f"{cid} names no record by Record ID, so no evidence obligation is created.")
+    impact["creates"].append({"register": "Audit Log",
+                              "detail": "Decision record — reviewer, rationale and what changed."})
+    impact["updates"].append({"register": "AI Review Queue", "detail": "Item → Accepted."})
+    if not candidate.get("mapping"):
+        impact["warnings"].append("The document states no standards mapping for this control, so it won't "
+                                  "appear against a clause on the Standards Map.")
+    if status == "Blocked":
+        impact["warnings"].append("Recorded as Blocked until the role is recognised; it clears itself on the "
+                                  "next library sync once the Role Catalogue has it.")
+    impact["summary"] = (f"Accepting {'updates' if exists else 'creates'} {cid} in the Control Register "
+                         "as its defining document states it.")
+    return impact
+
+
 async def _zone1_impact(item: dict, decision: str, impact: dict) -> dict:
     status_map = {
         "Accept":                "Accepted",
@@ -1130,6 +1181,9 @@ async def _zone1_impact(item: dict, decision: str, impact: dict) -> dict:
         "Route to Owner":        "Routed to Owner",
     }
     new_status = status_map.get(decision, "Accepted")
+
+    if item.get("ControlId") and decision in ("Accept", "Edit and Accept"):
+        return await _definition_impact(item, decision, impact)
 
     if decision in ("Accept", "Edit and Accept"):
         control_stmt = item.get("ControlStatement", "")

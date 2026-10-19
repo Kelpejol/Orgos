@@ -353,8 +353,21 @@ def _library_findings(index: LibraryIndex) -> dict[str, dict]:
             "ResponsibilityStatement": f.message,
             "OrphanReason": f.message,
             "SourceDocumentCode": lf.document[:255],
+            # so the Document Lifecycle task raised from it carries the right type
+            "DocumentType": _document_type(lf.document),
         }
     return out
+
+
+_TYPE_NAMES = {"POL": "Policy", "STD": "Standard", "PRO": "Procedure", "SOP": "SOP",
+               "SPEC": "Specification", "GDL": "Guidelines", "MAN": "Manual", "FRM": "Form"}
+
+
+def _document_type(code: str) -> str:
+    """'DRG-IT-PRO-SRS' → 'Procedure'; '' when the code doesn't say."""
+    import re
+    m = re.match(r"^DRG-[A-Z0-9]+-([A-Z]+)-", code or "")
+    return _TYPE_NAMES.get(m.group(1), "") if m else ""
 
 
 def plan_resolutions(index: LibraryIndex, queue: list[dict],

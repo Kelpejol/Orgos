@@ -64,6 +64,58 @@ const ConflictDecisions = [
   { key: "Mark False Positive",        label: "Mark false positive",       desc: "Not actually a conflict — AI misread the documents" },
 ];
 
+// Findings the library sync raises about the documents themselves
+// (control_register/sync.py). Each fix is a document revision, raised in
+// Document Lifecycle by the decision's cascade; the sync closes the item
+// itself once the documents no longer show the problem.
+const reviseDecision = (label, desc) =>
+  ({ key: "Remove from policy", label, desc, primary: true });
+const COMMON = [
+  { key: "Mark False Positive",   label: "Mark false positive", desc: "The finding is wrong — the documents are fine" },
+  { key: "Request Second Review", label: "Request 2nd review",  desc: "Escalate to another compliance team member" },
+];
+const LIBRARY_FINDINGS = {
+  RESTATEMENT_DIFFERS: {
+    label: "Copy differs from its Standard",
+    heading: "A procedure has reworded a control it copies from its Standard",
+    consequence: "Until resolved, people following the procedure work to different wording from the Standard. The Standard prevails.",
+    decisions: [
+      reviseDecision("Revise the procedure", "Raise a Document Lifecycle task to bring the copy into line with the Standard"),
+      { key: "Intentional", label: "Accept the difference", desc: "The procedure deliberately paraphrases; the meaning is unchanged" },
+      ...COMMON,
+    ],
+  },
+  CITES_UNDEFINED_CONTROL: {
+    label: "Cites an undefined control",
+    heading: "A procedure carries out a control that no document defines",
+    consequence: "Until resolved, the procedure points at a requirement that doesn't exist — usually a retired control or a wrong ID.",
+    decisions: [
+      reviseDecision("Revise the procedure", "Raise a Document Lifecycle task to correct or remove the citation"),
+      { key: "Add to existing policy", label: "Define it in its Standard", desc: "The control should exist — raise a task to add it to its defining document" },
+      ...COMMON,
+    ],
+  },
+  RECORD_NOT_IN_CATALOGUE: {
+    label: "Record not in the Catalogue",
+    heading: "A document cites a Record ID the Records Catalogue doesn't hold",
+    consequence: "Until resolved, evidence for it can't be found or tracked. Closes itself once Records Governance admits the record.",
+    decisions: [reviseDecision("Correct the citation", "Raise a Document Lifecycle task to fix the Record ID in the document"), ...COMMON],
+  },
+  WITHDRAWN_RECORD_CITED: {
+    label: "Cites a withdrawn record",
+    heading: "A document cites a withdrawn duplicate Record ID",
+    consequence: "Until resolved, evidence points at a record that is not governed. Cite the governed record instead.",
+    decisions: [reviseDecision("Correct the citation", "Raise a Document Lifecycle task to cite the governed record"), ...COMMON],
+  },
+  DUPLICATE_DOCUMENT_CODE: {
+    label: "Two files, one code",
+    heading: "Two files in the library carry the same document code",
+    consequence: "Until resolved, OrgOS can't be sure which file is current; usually one is an old copy.",
+    decisions: [reviseDecision("Withdraw or recode the extra file", "Raise a Document Lifecycle task for the copy that isn't current"),
+                { key: "Intentional", label: "Both are correct", desc: "The files are deliberately separate" }, ...COMMON],
+  },
+};
+
 const DOC_CODE_DECISIONS = new Set([
   "Add to existing policy",
   "Add to existing JD",
@@ -360,14 +412,19 @@ const DecisionPanel = ({ item, decisions, onDecide, isPending }) => {
 const OrphanCard = ({ item, isCompliance, onDecide, isPending }) => {
   const [expanded, setExpanded] = useState(false);
   const isDecided = item.ReviewStatus && item.ReviewStatus !== "Pending Review";
-  const direction = item.OrphanDirection || "JD_to_Doc";
-  const isConflict = direction === "Conflict" || item.OrphanClassification === "CONTROL_CONFLICT";
-  const isJDtoDoc = direction === "JD_to_Doc";
+  const finding = LIBRARY_FINDINGS[item.OrphanClassification];
+  const direction = item.OrphanDirection || (finding ? "Library" : "JD_to_Doc");
+  const isConflict = direction === "Conflict"
+    || ["CONTROL_CONFLICT", "CONTROL_DEFINED_TWICE"].includes(item.OrphanClassification);
+  const isJDtoDoc = !finding && !isConflict && direction === "JD_to_Doc";
 
-  const borderColor = isConflict ? "#FAC775" : isJDtoDoc ? "#F09595" : "#85B7EB";
-  const accentColor = isConflict ? "#633806" : isJDtoDoc ? "#791F1F" : "#0C447C";
-  const dirLabel    = isConflict ? "Document conflict" : isJDtoDoc ? "JD → No policy" : "Policy → Not in JD";
-  const decisions   = isConflict ? ConflictDecisions : isJDtoDoc ? JDToDocDecisions : DocToJDDecisions;
+  const borderColor = isConflict || finding ? "#FAC775" : isJDtoDoc ? "#F09595" : "#85B7EB";
+  const accentColor = isConflict || finding ? "#633806" : isJDtoDoc ? "#791F1F" : "#0C447C";
+  const dirLabel    = finding ? finding.label
+                    : isConflict ? (item.OrphanClassification === "CONTROL_DEFINED_TWICE" ? "Defined twice" : "Document conflict")
+                    : isJDtoDoc ? "JD → No policy" : "Policy → Not in JD";
+  const decisions   = finding ? finding.decisions
+                    : isConflict ? ConflictDecisions : isJDtoDoc ? JDToDocDecisions : DocToJDDecisions;
 
   return (
     <div style={{
@@ -391,7 +448,7 @@ const OrphanCard = ({ item, isCompliance, onDecide, isPending }) => {
                       alignItems: "center", marginBottom: 6, flexWrap: "wrap", gap: 4 }}>
           <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
             <span style={{ fontSize: 10, padding: "1px 7px", borderRadius: 3,
-                           fontWeight: 600, background: isConflict ? "#FAEEDA" : isJDtoDoc ? "#FCEBEB" : "#E6F1FB",
+                           fontWeight: 600, background: isConflict || finding ? "#FAEEDA" : isJDtoDoc ? "#FCEBEB" : "#E6F1FB",
                            color: accentColor, border: `0.5px solid ${borderColor}` }}>
               {dirLabel}
             </span>
@@ -406,9 +463,11 @@ const OrphanCard = ({ item, isCompliance, onDecide, isPending }) => {
           {item.ResponsibilityStatement || item.ControlStatement || item.Title}
         </div>
 
-        <div style={{ fontSize: 11, color: "#A32D2D", lineHeight: 1.4, marginBottom: 4 }}>
-          {item.OrphanReason || "No explanation provided"}
-        </div>
+        {item.OrphanReason && item.OrphanReason !== item.ResponsibilityStatement && (
+          <div style={{ fontSize: 11, color: "#A32D2D", lineHeight: 1.4, marginBottom: 4 }}>
+            {item.OrphanReason}
+          </div>
+        )}
 
         <div style={{ fontSize: 10, color: "var(--color-text-tertiary)" }}>
           {item.SourceDocumentCode}{item.SourceClause ? ` · ${item.SourceClause}` : ""}
@@ -425,14 +484,18 @@ const OrphanCard = ({ item, isCompliance, onDecide, isPending }) => {
             border: `0.5px solid ${borderColor}`,
           }}>
             <div style={{ fontSize: 11, fontWeight: 600, color: accentColor, marginBottom: 4 }}>
-              {isJDtoDoc
+              {finding
+                ? finding.heading
+                : isJDtoDoc
                 ? "JD responsibility has no governing policy"
                 : isConflict
                   ? "Two documents appear to define conflicting requirements"
                   : "Control references a role whose JD lacks this responsibility"}
             </div>
             <div style={{ fontSize: 11, color: accentColor, opacity: 0.85, lineHeight: 1.5 }}>
-              {isJDtoDoc
+              {finding
+                ? finding.consequence
+                : isJDtoDoc
                 ? "Until resolved: no control governs this activity, no record is collected, and this responsibility is untracked in the compliance chain."
                 : isConflict
                   ? "Until resolved: reviewers cannot rely on one clear governing requirement. Select the governing document, merge the requirements, escalate, or mark the conflict false positive."
@@ -441,9 +504,10 @@ const OrphanCard = ({ item, isCompliance, onDecide, isPending }) => {
           </div>
 
           {/* Details */}
-          <Field l="Direction"      v={direction} />
-          <Field l="Classification" v={item.OrphanClassification} />
-          {item.OrphanReason && <Field l={isConflict ? "Classifier / AI guidance" : "Reason"} v={item.OrphanReason} />}
+          {!finding && <Field l="Direction" v={direction} />}
+          {!finding && <Field l="Classification" v={item.OrphanClassification} />}
+          {item.OrphanReason && item.OrphanReason !== item.ResponsibilityStatement &&
+            <Field l={isConflict ? "Classifier / AI guidance" : "Reason"} v={item.OrphanReason} />}
 
           {/* Already decided */}
           {isDecided ? (

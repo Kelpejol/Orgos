@@ -18,6 +18,7 @@ import JobTitleInput from "../../components/shared/JobTitleInput.jsx";
 import { useAlert } from "../../components/shared/AlertModal.jsx";
 import { CascadeImpactModal } from "../../components/shared/CascadeImpactModal.jsx";
 import apiClient from "../../api/grcApi.js";
+import { DefinitionPanel, DocumentBatches, isDefinition } from "../../components/shared/ControlDefinitionReview.jsx";
 
 const EVIDENCE_TYPES = [
   ["", "Select evidence type"],
@@ -100,9 +101,14 @@ const zone1Api = {
     apiClient.get("/api/v1/queue/items", { params: { item_type: "Extraction" } })
       .then(r => r.data),
 
-  acceptControl: (itemId, body) =>
-    apiClient.post(`/api/v1/queue/items/${itemId}/accept-control`, body)
-      .then(r => r.data),
+  // The Zone 1 accept cascade: PATCH /decide (review_queue/router.py). For a
+  // control definition it upserts by Control ID and creates evidence obligations.
+  acceptControl: (itemId, { rationale, ...overrides }) =>
+    apiClient.patch(`/api/v1/queue/items/${itemId}/decide`, {
+      decision: Object.keys(overrides).length ? "Edit and Accept" : "Accept",
+      rationale,
+      ...overrides,
+    }).then(r => r.data),
 
   reject: (itemId, rationale, rejectType = "Reject") =>
     apiClient.post(`/api/v1/queue/items/${itemId}/reject`,
@@ -150,6 +156,21 @@ const ConfidenceDot = ({ score }) => {
 // =============================================================================
 
 const ChainPreview = ({ item }) => {
+  if (isDefinition(item)) {
+    const records = (item.Candidate?.evidence || []).filter(e => e.record_id).map(e => e.record_id);
+    return (
+      <div style={{ padding: "10px 12px", background: "#E6F1FB", borderRadius: 8, marginBottom: 12,
+                    border: "0.5px solid #85B7EB", fontSize: 11, color: "#0C447C", lineHeight: 1.6 }}>
+        <div style={{ fontWeight: 600, marginBottom: 4 }}>If accepted:</div>
+        <div>→ Control Register — {item.ChangeKind === "Changed" ? `${item.ControlId} is updated` : `${item.ControlId} is created`},
+          exactly as its document states it. Active if its accountable role is recognised; otherwise Blocked with the reason.</div>
+        <div>→ Evidence Tracker — {records.length
+          ? `an obligation for ${records.join(", ")}`
+          : "no obligation: the control names no record by Record ID"}</div>
+        <div>→ Audit log — your identity, timestamp and rationale</div>
+      </div>
+    );
+  }
   const hasEvidence = item.EvidenceType && item.EvidenceDescription;
   return (
     <div style={{
@@ -310,15 +331,22 @@ const DecisionPanel = ({ item, onDecide, onRequestSecondReview, isPending }) => 
 
   return (
     <div style={{ marginTop: 12 }}>
+      {isDefinition(item) && (
+        <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginBottom: 10 }}>
+          This wording comes from {item.SourceDocumentCode || "its defining document"}. To change it,
+          reject and raise the change through Document Lifecycle.
+        </div>
+      )}
+
       {/* Edit toggle */}
-      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 10 }}>
+      {!isDefinition(item) && <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 10 }}>
         <input type="checkbox" id={`edit-${item.id}`}
           checked={editMode} onChange={e => setEditMode(e.target.checked)} />
         <label htmlFor={`edit-${item.id}`}
           style={{ fontSize: 11, color: "var(--color-text-secondary)", cursor: "pointer" }}>
           Edit before accepting
         </label>
-      </div>
+      </div>}
 
       {/* Edit fields */}
       {editMode && (
@@ -456,7 +484,7 @@ const DecisionPanel = ({ item, onDecide, onRequestSecondReview, isPending }) => 
           {activeAction === "accept" ? "Creating records..." : editMode ? "Edit & Accept →" : "Accept →"}
         </button>
 
-        {!editMode && (
+        {!editMode && !isDefinition(item) && (
           <button
             onClick={() => setEditMode(true)}
             disabled={isPending}
@@ -678,6 +706,7 @@ const ExtractionCard = ({ item, isCompliance, onDecide, onRequestSecondReview, i
     && item.ReviewStatus !== "Pending Review"
     && !isCascadeFailed;
   const pct = Math.round((item.ConfidenceScore || 0) * 100);
+  const definition = isDefinition(item);
 
   return (
     <div style={{
@@ -702,10 +731,18 @@ const ExtractionCard = ({ item, isCompliance, onDecide, onRequestSecondReview, i
         <div style={{ display: "flex", justifyContent: "space-between",
                       alignItems: "center", marginBottom: 6, flexWrap: "wrap", gap: 4 }}>
           <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+            {definition && (
+              <span style={{ fontSize: 10, padding: "1px 7px", borderRadius: 3, fontWeight: 600,
+                             fontFamily: "var(--font-mono)", background: "#E6F1FB", color: "#0C447C",
+                             border: "0.5px solid #85B7EB" }}>
+                {item.ControlId}
+              </span>
+            )}
+            {definition && item.ChangeKind && <StatusBadge label={item.ChangeKind} />}
             {item.DocumentType    && <StatusBadge label={item.DocumentType} />}
             {item.ControlType     && <StatusBadge label={item.ControlType} />}
             {item.CompletenessFlag === "DEFICIENT" && <StatusBadge label="Deficient" />}
-            {pct < 60 && (
+            {!definition && pct < 60 && (
               <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3,
                              background: "#FCEBEB", color: "#791F1F",
                              border: "0.5px solid #F09595", fontWeight: 600 }}>
@@ -720,6 +757,11 @@ const ExtractionCard = ({ item, isCompliance, onDecide, onRequestSecondReview, i
         </div>
 
         {/* Control statement */}
+        {definition && item.Candidate?.title && (
+          <div style={{ fontSize: 12, fontWeight: 600, color: "var(--color-text-secondary)", marginBottom: 3 }}>
+            {item.Candidate.title}
+          </div>
+        )}
         <div style={{ fontSize: 13, fontWeight: 600, lineHeight: 1.4, marginBottom: 6 }}>
           {item.ControlStatement || item.Title || "Untitled item"}
         </div>
@@ -734,9 +776,16 @@ const ExtractionCard = ({ item, isCompliance, onDecide, onRequestSecondReview, i
                 ? item.RiskStatement.slice(0, 400) + "..." : item.RiskStatement}
             </div>
           )}
-          <div style={{ minWidth: 160 }}>
-            <ConfidenceDot score={item.ConfidenceScore} />
-          </div>
+          {definition ? (
+            <span style={{ fontSize: 10, color: "var(--color-text-tertiary)", whiteSpace: "nowrap" }}
+                  title="Read from its defining document, not inferred — so there is no confidence score">
+              From document
+            </span>
+          ) : (
+            <div style={{ minWidth: 160 }}>
+              <ConfidenceDot score={item.ConfidenceScore} />
+            </div>
+          )}
         </div>
 
         {/* Source */}
@@ -803,6 +852,8 @@ const ExtractionCard = ({ item, isCompliance, onDecide, onRequestSecondReview, i
 
           {/* Full details below decisions */}
           <div style={{ borderTop: "0.5px solid var(--color-border-tertiary)", paddingTop: 12, marginTop: 4 }}>
+            {definition && <DefinitionPanel item={item} />}
+            {!definition && <>
             {item.ISOClause        && <Field l="ISO clause"     v={item.ISOClause} />}
             {item.ProposedOwnerRole && <Field l="Proposed owner" v={item.ProposedOwnerRole} />}
             {item.SourceType       && <Field l="Source type"    v={item.SourceType} />}
@@ -813,12 +864,13 @@ const ExtractionCard = ({ item, isCompliance, onDecide, onRequestSecondReview, i
               </div>
             )}
             <EvidencePanel item={item} />
+            </>}
 
             {/* Document viewer */}
             {item.SourceDocumentUrl && (
               <DocumentViewer url={item.SourceDocumentUrl} docCode={item.SourceDocumentCode} />
             )}
-            {!item.SourceDocumentUrl && item.SourceDocumentCode && (
+            {!definition && !item.SourceDocumentUrl && item.SourceDocumentCode && (
               <div style={{ marginTop: 10, padding: "7px 10px",
                             background: "var(--color-background-secondary)",
                             borderRadius: 7, fontSize: 11, color: "var(--color-text-tertiary)",
@@ -878,6 +930,7 @@ export default function ExtractionReview() {
     if (search.trim()) {
       const q = search.toLowerCase();
       list = list.filter(i =>
+        (i.ControlId || "").toLowerCase().includes(q) ||
         (i.ControlStatement || "").toLowerCase().includes(q) ||
         (i.SourceDocumentCode || "").toLowerCase().includes(q) ||
         (i.ProposedOwnerRole || "").toLowerCase().includes(q) ||
@@ -956,8 +1009,8 @@ export default function ExtractionReview() {
               Extraction review
             </div>
             <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>
-              Zone 1 — Controls and evidence extracted from policies and contracts.
-              Accept creates permanent Control Register and Record Tracker entries.
+              Zone 1 — Controls read from their defining documents, and anything the extractor
+              found. Accepting enters a control in the Control Register with its evidence obligations.
             </div>
           </div>
           <div style={{ padding: "3px 10px", background: "#E6F1FB", borderRadius: 6,
@@ -1013,6 +1066,8 @@ export default function ExtractionReview() {
           onBlur={e => (e.target.style.borderColor = "#C0C0C0")}
         />
       </div>
+
+      {isCompliance && <DocumentBatches items={items} />}
 
       {/* Items */}
       {filtered.length === 0 ? (

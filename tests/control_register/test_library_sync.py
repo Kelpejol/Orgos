@@ -286,3 +286,16 @@ async def test_a_documents_new_definitions_are_accepted_together_each_with_its_o
     assert writes["create"].count("Control Register") == 2 and writes["create"].count("Audit Log") == 2
     assert sorted(i for n, i, st in writes["update"] if n == "AI Review Queue") == ["60", "61"]
     assert result["evidence_obligations_created"] == 2
+
+
+async def test_the_accept_preview_says_what_a_definition_accept_really_does():
+    [action, _] = plan_sync(library(), [], []).actions
+    item = rq._sp_to_item(queued(action))
+    with patch.object(rq, "get_list_items", new=AsyncMock(return_value=[])), \
+         patch("ownership.resolver.get_ownership_index", new=AsyncMock(return_value=_Index())):
+        impact = await rq._zone1_impact(item, "Accept", rq._impact_shell("1", "Accept"))
+        edit = await rq._zone1_impact(item, "Edit and Accept", rq._impact_shell("1", "Edit and Accept"))
+    registers = [c["register"] for c in impact["creates"]]
+    assert registers == ["Control Register", "Evidence Tracker", "Audit Log"]
+    assert "REC-0001" in impact["creates"][1]["detail"] and "status Active" in impact["creates"][0]["detail"]
+    assert edit["blocked"] is True
