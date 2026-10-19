@@ -95,15 +95,18 @@ Every script is a **dry run** unless given `--apply`. Run it without first and r
 |---|---|---|
 | 1 | `python scripts/import_records_catalogue.py` | "create 729" |
 | 1a | `… --apply` | 729 records written |
-| 2 | `python scripts/sync_control_library.py` | ~347 new control items; 7 Zone 2 items (DP-002 cited by 3 procedures; 4 IT procedures edited their copy of the IT Standard) |
-| 2a | `… --apply` | items appear in the AI Review Queue |
+| 2 | `python scripts/retire_draft_library_items.py` | the 355 controls + 7 findings raised earlier from the library folder's drafts |
+| 2a | `… --apply` | retired as Superseded, with a note saying why |
+| 3 | `crontab -l` | the SharePoint intake lines (06:00 and 20:00). If they're missing, run `scripts/setup_intake_cron.sh`. Intake opens a Lifecycle entry for each file in the library |
 
-Then, in OrgOS:
+Then documents go through **Document Lifecycle** (Review → Sensitisation → Approval). **Each approval** reads the approved library with the new reader:
 
-1. **AI Review Queue → Extraction:** accept the control definitions. Each accept creates or updates one Control Register row and its evidence obligations. A re-run of step 2 afterwards should report nothing new.
-2. **AI Review Queue → Orphan:** decide the 7 findings ("Remove from policy" sends a revision to Document Lifecycle).
-3. **Evidence Tracker → Unscheduled:** set how often each record is confirmed. 62 have a suggested frequency from their control's trigger.
-4. **Gap Analysis:** run it once. Expect ~86 control-framework gaps under Standard **CDI**, each grouped per document or per control; they close themselves once fixed.
+1. **Extraction Review:** the approved document's controls appear by Control ID. Accepting one creates or updates its Control Register row and evidence obligations.
+2. **Assignment & Ownership:** problems against other *approved* documents ("Remove from policy" sends a revision to Document Lifecycle). A procedure approved before its Standard shows "cites an undefined control" until the Standard is approved; that's expected.
+3. **Evidence Tracker → Unscheduled:** set how often each record is confirmed.
+4. **Gap Analysis:** runs every 3 days, or run it once by hand.
+
+If an approval's Lifecycle note says the read failed, retry with `python scripts/sync_control_library.py --apply`. That's the same read, done by hand.
 
 From then on, a daily job (07:30) keeps evidence obligations in step with the controls and updates their state.
 
@@ -117,7 +120,7 @@ Add one flow on the **Evidence Tracker** list: when **State** changes to *Missin
 
 ## 6. Tidy up existing data
 
-- **8 old AI Review Queue items** from the previous extractor are still pending. Reject them with a note ("superseded by library sync"); the library sync replaces them.
+- **8 old AI Review Queue items** from the previous extractor are still pending. Reject them with a note ("superseded: controls now enter through approval").
 - **16 existing Gap Analysis items** stay as they are.
 
 ---

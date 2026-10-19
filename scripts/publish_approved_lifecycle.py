@@ -3,7 +3,7 @@
 #
 # Finds existing Document Lifecycle items with ApprovalStatus=Approved, creates
 # missing Document Register entries, links the lifecycle item to the register,
-# and optionally runs extraction into AI Review Queue.
+# then reads the approved library for controls (by Control ID).
 #
 # Usage:
 #   myenv/bin/python scripts/publish_approved_lifecycle.py --dry-run
@@ -11,7 +11,6 @@
 #   myenv/bin/python scripts/publish_approved_lifecycle.py --limit 10
 #   myenv/bin/python scripts/publish_approved_lifecycle.py --code DRG-ISMS-POL-ACP-01-26
 #   myenv/bin/python scripts/publish_approved_lifecycle.py --no-extract
-#   myenv/bin/python scripts/publish_approved_lifecycle.py --force-extract
 # =============================================================================
 
 import argparse
@@ -26,7 +25,6 @@ from urllib.parse import unquote, urlparse
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from agents.cdi_checker.service import is_valid_doc_code
-from agents.extractor.service import run_extraction_from_file
 from config import configure_logging, settings
 from graph.client import (
     create_list_item,
@@ -49,18 +47,7 @@ def field_text(fields: dict, key: str) -> str:
     return str(fields.get(key) or "").strip()
 
 
-def filename_from_sharepoint_url(url: str, content_type: str = "") -> str:
-    # One implementation, shared with the approval path: Graph's viewer links
-    # (".../Doc.aspx?...&file=Name.docx") carry the real name in a query parameter.
-    from lifecycle.router import _filename_from_sharepoint_url
-    return _filename_from_sharepoint_url(url, content_type)
 
-
-def extractor_type_for_lifecycle(document_type: str) -> Optional[str]:
-    normalized = (document_type or "").strip().lower()
-    if normalized in {"policy", "procedure", "sop", "guidelines"}:
-        return "Policy"
-    return None
 
 
 def build_register_fields(lifecycle_fields: dict) -> dict:
@@ -101,18 +88,6 @@ async def existing_register_by_code() -> dict[str, str]:
     return result
 
 
-async def existing_queue_counts_by_code() -> dict[str, int]:
-    if not settings.is_list_configured(settings.ai_review_queue_list_id):
-        return {}
-    items = await get_list_items(settings.ai_review_queue_list_id, AI_QUEUE_LIST)
-    counts: dict[str, int] = {}
-    for item in items:
-        fields = item.get("fields", {})
-        code = field_text(fields, "SourceDocumentCode").upper()
-        if code:
-            counts[code] = counts.get(code, 0) + 1
-    return counts
-
 
 async def write_optional_register_trace(register_item_id: str, lifecycle_fields: dict) -> None:
     optional_fields = {
@@ -132,50 +107,12 @@ async def write_optional_register_trace(register_item_id: str, lifecycle_fields:
         logger.warning(f"Optional Document Register trace fields were not written: {exc}")
 
 
-async def extract_to_review_queue(lifecycle_fields: dict) -> dict:
-    doc_code = field_text(lifecycle_fields, "DocumentCode")
-    file_url = field_text(lifecycle_fields, "SharePointFileUrl")
-    if not doc_code or not file_url:
-        return {
-            "started": False,
-            "written_to_sharepoint": False,
-            "reason": "Missing DocumentCode or SharePointFileUrl.",
-        }
-
-    extractor_type = extractor_type_for_lifecycle(field_text(lifecycle_fields, "DocumentType"))
-    if not extractor_type:
-        return {
-            "started": False,
-            "written_to_sharepoint": False,
-            "reason": f"Document type '{field_text(lifecycle_fields, 'DocumentType')}' is not an extraction target.",
-        }
-
-    file_bytes, content_type = await download_file_from_sharepoint(file_url)
-    filename = filename_from_sharepoint_url(file_url, content_type)
-    result = await run_extraction_from_file(
-        file_bytes=file_bytes,
-        filename=filename,
-        doc_code=doc_code,
-        write_to_sharepoint=True,
-        folder_path=field_text(lifecycle_fields, "Department"),
-        web_url=file_url,
-        document_type_override=extractor_type,
-    )
-    return {
-        "started": True,
-        "document_type": result.document_type,
-        "total_extracted": result.total_extracted,
-        "written_to_sharepoint": result.written_to_sharepoint,
-        "skipped_reason": result.skipped_reason,
-    }
-
 
 async def run_publish(
     dry_run: bool,
     limit: Optional[int],
     code_filter: Optional[str],
     no_extract: bool,
-    force_extract: bool,
 ) -> None:
     if not settings.is_list_configured(settings.document_lifecycle_list_id):
         raise RuntimeError("DOCUMENT_LIFECYCLE_LIST_ID is not configured.")
@@ -186,7 +123,6 @@ async def run_publish(
     try:
         lifecycle_items = await get_list_items(settings.document_lifecycle_list_id, LIFECYCLE_LIST)
         register_by_code = await existing_register_by_code()
-        queue_counts = await existing_queue_counts_by_code() if not no_extract else {}
 
         approved = []
         for item in lifecycle_items:
@@ -216,11 +152,10 @@ async def run_publish(
             print(f"CODE FILTER: {code_filter}")
         if limit:
             print(f"LIMIT: {limit}")
-        print(f"EXTRACTION: {'OFF' if no_extract else 'ON'}")
-        print(f"FORCE EXTRACTION: {'YES' if force_extract else 'NO'}")
+        print(f"CONTROLS FROM APPROVED LIBRARY: {'OFF' if no_extract else 'ON'}")
         print("=" * 72 + "\n")
 
-        created = linked = extracted = skipped = failed = 0
+        created = linked = skipped = failed = 0
 
         for item in approved:
             lifecycle_id = str(item.get("id", ""))
@@ -282,48 +217,20 @@ async def run_publish(
                         failed += 1
                         continue
 
-            if no_extract:
-                continue
-
-            existing_queue_count = queue_counts.get(code_key, 0)
-            if existing_queue_count and not force_extract:
-                print(f"  -> Extraction skipped: {existing_queue_count} queue item(s) already exist")
-                skipped += 1
-                continue
-
-            if dry_run:
-                print("  -> Would run extraction into AI Review Queue")
-                continue
-
-            try:
-                result = await extract_to_review_queue(fields)
-                print(f"  -> Extraction result: {result}")
-                if result.get("total_extracted") is not None and register_id:
-                    try:
-                        await update_list_item(
-                            settings.document_register_list_id,
-                            REGISTER_LIST,
-                            register_id,
-                            {"LinkedControlsCount": result.get("total_extracted", 0)},
-                        )
-                    except Exception as exc:
-                        logger.warning(f"Could not update LinkedControlsCount for {doc_code}: {exc}")
-                if result.get("written_to_sharepoint"):
-                    extracted += 1
-                    queue_counts[code_key] = queue_counts.get(code_key, 0) + int(result.get("total_extracted", 0) or 0)
-            except Exception as exc:
-                print(f"  -> FAILED extraction: {str(exc)[:100]}")
-                logger.exception(f"Extraction failed for lifecycle {lifecycle_id}")
-                failed += 1
-
         print("\n" + "=" * 72)
         print("PUBLISH COMPLETE")
         print(f"  Register entries created: {created}")
         print(f"  Existing register links fixed: {linked}")
-        print(f"  Documents extracted: {extracted}")
         print(f"  Skipped: {skipped}")
         print(f"  Failed: {failed}")
         print("=" * 72 + "\n")
+
+        # Controls come from the approved library as a whole, read by Control ID
+        # (control_register/approved_library.py) — the same thing approval does.
+        if not no_extract and not dry_run:
+            from control_register.approved_library import sync_approved_library
+            print("Reading the approved library for controls…")
+            print(await sync_approved_library())
     finally:
         await shutdown()
 
@@ -340,8 +247,6 @@ if __name__ == "__main__":
                         help="Only process one DocumentCode")
     parser.add_argument("--no-extract", action="store_true",
                         help="Only create/link Document Register entries; do not write AI Review Queue items")
-    parser.add_argument("--force-extract", action="store_true",
-                        help="Run extraction even if AI Review Queue already has items for the document code")
     args = parser.parse_args()
 
     asyncio.run(run_publish(
@@ -349,5 +254,4 @@ if __name__ == "__main__":
         limit=args.limit,
         code_filter=args.code,
         no_extract=args.no_extract,
-        force_extract=args.force_extract,
     ))

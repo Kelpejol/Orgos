@@ -2,21 +2,23 @@
 
 *19 Oct 2026. Written in plain words. Everything here was checked against the code, not taken from earlier plans. Where the code falls short of what it should do, this guide says so.*
 
+> **Update, later on 19 Oct:** there is now **one way in: Document Lifecycle.** When a document is approved, OrgOS reads it with the new reader, by Control ID, and compares it only with other approved documents. The old AI extractor no longer runs on approval, and the library folder's drafts are no longer read for controls. The "shall" check (CDI-06) is now a warning. Sections 0, 1, 2, 4 and 12 describe the new behaviour.
+
 ---
 
 ## 0. Your questions, answered directly
 
 ### "What is the starting point? Is it still Document Lifecycle?"
-**It should be, but today it isn't.** In a correct system, a document is written, checked, commented on and approved in Document Lifecycle. **Only then** do its controls become official. Today the controls you're reviewing **didn't come through Lifecycle at all.** A separate script (the *library sync*) opened the SharePoint folder and read every document in it, approved or not. Lifecycle and the library sync are two separate roads that don't meet yet (section 1).
+**Yes, and now it's the only one.** A document is written, checked (CDI), commented on (sensitisation) and approved in Document Lifecycle. **At approval** OrgOS reads its controls with the new reader and sends them to Extraction Review. Nothing else puts controls in. Drafts sitting in the library folder reach Lifecycle through the **SharePoint intake**, which creates a Lifecycle entry for each new file (section 2).
 
 ### "How do we already have all the controls when the documents haven't passed Lifecycle?"
-Because the library sync **doesn't look at approval.** It reads whatever is in the folder. I checked every file: **all 123 are drafts.** 83 say "Draft" on their own cover, and 40 state no status. So **every control in Extraction Review today comes from a draft.** If you accept them now, the Control Register is built from unapproved text. That isn't automatically wrong, but you should decide it on purpose (decision 1, section 12).
+Because the earlier library sync **didn't look at approval**; it read whatever was in the folder. I checked every file: **all 123 are drafts.** 83 say "Draft" on their own cover, and 40 state no status. So the 355 controls and 7 findings now in the queue all came from drafts. **That's no longer how it works.** Run `scripts/retire_draft_library_items.py` to retire those items (it's a dry run first). Each document's controls come back when it's approved.
 
 ### "Are we sure the reading is right? Could it skip a document or make mistakes?"
 **It's exact when the document follows the pattern, and it can miss things when it doesn't.** Plainly:
 - **Will be read:** every .docx and .pdf in any subfolder of ORGOS CONTROL LIBRARY.
 - **Will be skipped, with a message:** .doc files, password-protected files, broken files.
-- **Will be skipped silently (to be fixed, decision 4):**
+- **Will be skipped silently (for the document-standards engine, section 12):**
   - files loose in the top folder;
   - scanned PDFs (no text to read);
   - a control block with fewer than 3 of its fields;
@@ -30,6 +32,13 @@ The full scenario list is in section 7.
 
 ### "Does the control pattern have to be a standard we follow when writing documents?"
 **Yes.** OrgOS doesn't "understand" text; it recognises **labels**. A control is a line with its ID (e.g. `ACS-L3-01`) followed by labelled lines: `Requirement:`, `Trigger:`, `Accountable / Executing:`, `Evidence:`, `Risk:`, `Failure route:`, `Exception route:`, `Mapping:`. Your CDI v06 Standard already uses this pattern, so it's not new work. It just has to be followed every time. Section 11 is the 12-rule checklist for authors.
+
+### "Is the Responsibilities section where the controls, or the Accountable role, are checked?"
+**No, they're two different things:**
+- **The Responsibilities section** (CDI-05) is a **document-level** list near the front: *who has which duties under this document* (Document Owner, Information Security Officer, …). CDI-05 only checks that the section exists.
+- **The Accountable / Executing line** sits **inside each control**. It says who answers for, and who carries out, *that one control*. It's what decides whether a control is **Active** or **Blocked** (section 10).
+
+The reader also uses the Responsibilities (Roles) table: its role names help it work out where "Accountable / Executing" splits into two roles, and later they'll seed the Role Catalogue.
 
 ### "What does each field mean — trigger, failure route, exception route…?"
 Imagine the control *"lock the office door"*:
@@ -64,14 +73,14 @@ The CDI checks run in Lifecycle **before** approval. They make sure a document i
 - Your own CDI Procedure allows "should" for recommendations and "may" for options, and only *reports* misuse.
 - The new reader finds controls by their ID and labels, not by the word "shall".
 
-**Recommendation:** turn it into a warning (decision 3).
+**Done:** it's now a warning. It still shows the wording so the author can fix it, but it no longer blocks.
 
 ### "Does our CDI need to change? What is unnecessary?"
 
 | Change | Why |
 |---|---|
-| "Shall" check: blocking → warning | Matches your CDI Procedure (V14); the new reader doesn't need it |
-| Lifecycle approval should use the **new reader**, not the old AI extractor | Otherwise every approval creates duplicate controls with no Control ID |
+| "Shall" check: blocking → warning — **done** | Matches your CDI Procedure (V14); the new reader doesn't need it |
+| Lifecycle approval uses the **new reader**, not the old AI extractor — **done** | No more duplicate controls without a Control ID |
 | CDI-07 / CDI-08 (vague role / vague evidence) | Already switched off. The role and evidence checks now happen on each control (Blocked status, Record IDs) |
 | Approved copies should go **back to the library folder** | Today they're saved somewhere else, so the library sync never sees the approved version |
 | **No change needed** to the control pattern itself | Your v06 documents already follow it |
@@ -79,10 +88,10 @@ The CDI checks run in Lifecycle **before** approval. They make sure a document i
 ---
 
 **Contents**
-1. [The big picture: two ways in](#1-the-big-picture-two-ways-in)
-2. [Way in #1: Document Lifecycle](#2-way-in-1--document-lifecycle)
+1. [The big picture: one way in](#1-the-big-picture-one-way-in)
+2. [Document Lifecycle: the way in](#2-document-lifecycle-the-way-in)
 3. [The CDI checks, one by one](#3-the-cdi-checks-one-by-one)
-4. [Way in #2: the library sync](#4-way-in-2--the-library-sync)
+4. [The reader at approval](#4-the-reader-at-approval-what-used-to-be-the-library-sync)
 5. [The control pattern: what every field means](#5-the-control-pattern--what-every-field-means)
 6. [How OrgOS finds controls in a document, and when it can miss one](#6-how-orgos-finds-controls-in-a-document--and-when-it-can-miss-one)
 7. [What could go wrong when reading the library](#7-what-could-go-wrong-when-reading-the-library)
@@ -90,45 +99,42 @@ The CDI checks run in Lifecycle **before** approval. They make sure a document i
 9. [After you accept: registers, evidence, gaps](#9-after-you-accept--registers-evidence-gaps)
 10. [Roles and the organogram](#10-roles-and-the-organogram)
 11. [Rules for writing documents so OrgOS reads them correctly](#11-rules-for-writing-documents-so-orgos-reads-them-correctly)
-12. [What was fixed today, and the decisions that are yours](#12-what-was-fixed-today--and-the-decisions-that-are-yours)
+12. [What was fixed today, and what's next](#12-what-was-fixed-today-and-whats-next)
 13. [Words](#13-words)
 
 ---
 
-## 1. The big picture: two ways in
-
-OrgOS has **two separate ways** a document's controls can get in. That's the most important thing to understand, because **they aren't joined up yet.**
+## 1. The big picture: one way in
 
 ```
- WAY 1 — Document Lifecycle                  WAY 2 — Library sync
- (one document at a time, with people)       (the whole library at once, a script)
-
- Owner uploads a document                    ORGOS LIBRARY › ORGOS CONTROL LIBRARY
-        │                                     (SharePoint, all subfolders)
-        ▼                                            │
- REVIEW ── CDI checks (format & wording)             ▼
-        │                                     Read every .docx / .pdf
-        ▼                                     Find the control blocks (no AI)
- SENSITISATION ── stakeholders comment               │
-        │                                            ▼
-        ▼                                     New / changed controls ──▶ Extraction Review
- APPROVAL ── approver signs                   Problems between documents ──▶ Assignment & Ownership
-        │
-        ▼
- Published copy + Document Register entry
-        │
-        ▼
- OLD AI extractor reads it ──▶ Extraction Review (no Control IDs)
+ ORGOS CONTROL LIBRARY (SharePoint)          Owner creates a document / revision,
+ a new or changed file                       Gap remediation, Scheduled review, …
+        │  SharePoint intake                                   │
+        └──────────────────────┬───────────────────────────────┘
+                               ▼
+                  REVIEW ── CDI checks (format & wording)
+                               ▼
+                  SENSITISATION ── stakeholders comment
+                               ▼
+                  APPROVAL ── approver signs
+                               ▼
+           Published copy + Document Register entry (Active)
+                               ▼
+     NEW READER — the approved library (every Active document) is read:
+       • this document's new / changed controls ──▶ Extraction Review (by Control ID)
+       • problems against other APPROVED documents ──▶ Assignment & Ownership
+       • Blocked controls re-checked against the Role Catalogue
+                               ▼
+     You accept ──▶ Control Register · Evidence Tracker · Audit Log ──▶ Gap Analysis · Standards Map
 ```
 
-- **Way 1** checks that a document is properly written and approved. At the end it still uses the **old AI extractor**, which guesses controls from the text.
-- **Way 2** is what you're using now. It reads the controls exactly as written, by Control ID, with no guessing. But **it doesn't check whether a document is approved.**
-
-**So, to your question "how do we already have all the controls when the documents haven't passed Document Lifecycle?":** they came in through Way 2, which reads the library as it is today. **All 123 documents in the library are drafts.** 83 say "Draft" in their own status field, and 40 don't state a status. So every control in your queue comes from a draft. Section 12 explains what to decide about that.
+- **Drafts never reach the registers.** A file in the library folder is only a document under review, until Lifecycle approves it.
+- **Comparisons use approved documents only.** "Copy differs from its Standard" means *the approved Standard*. "Cites an undefined control" means *no approved document* defines it. While a Standard is still in Lifecycle, a procedure that cites its controls will show *cites an undefined control*. That's correct, and the item closes itself when the Standard is approved.
+- **The old AI extractor is no longer used at approval.** If an approved document doesn't follow the control pattern, OrgOS adds a note to its Lifecycle item saying no controls were found, rather than guessing.
 
 ---
 
-## 2. Way in #1: Document Lifecycle
+## 2. Document Lifecycle: the way in
 
 A document goes through three stages: **Review → Sensitisation → Approval.**
 
@@ -138,7 +144,7 @@ A document goes through three stages: **Review → Sensitisation → Approval.**
 - **Gap Analysis**: a gap needs a new or changed document ("Gap Remediation").
 - A **review-queue decision**, e.g. "Revise the procedure" in Assignment & Ownership.
 - The **daily 08:00 job**: a document's review date is within 30 days ("Scheduled Review").
-- The **SharePoint intake script**: picks up new files in the library. It's designed to run twice a day, but isn't scheduled on the server yet.
+- The **SharePoint intake script** (`scripts/intake_sharepoint_to_lifecycle.py`): picks up new files in ORGOS CONTROL LIBRARY, runs the CDI checks, and opens a Lifecycle entry for each. **This is how the library's drafts reach Lifecycle.** It's designed to run at 06:00 and 20:00 via `scripts/setup_intake_cron.sh`. Check whether it's installed on the server with `crontab -l`. If nothing about intake is listed, it isn't scheduled.
 
 ### Stage 1: Review (the owner)
 - The owner uploads the document. **The CDI checks run automatically** (section 3).
@@ -158,13 +164,12 @@ A document goes through three stages: **Review → Sensitisation → Approval.**
   1. Updates the cover: version goes up (Draft → 01 → 02…), effective date = today, next review = one year later, and a revision-history line is added.
   2. Saves a **published copy** to the OrgOS site under *Lifecycle Documents*.
   3. Creates or updates the **Document Register** entry (R01, R02…).
-  4. Runs the **old AI extractor** on the approved document, which puts items in Extraction Review.
+  4. **Reads the approved library with the new reader** (section 1). This document's new and changed controls go to Extraction Review, and problems against other approved documents go to Assignment & Ownership. If anything goes wrong (e.g. a published copy can't be downloaded), **nothing is written** and a note on the Lifecycle item says how to retry: `python scripts/sync_control_library.py --apply`.
 - **Reject** needs a reason (20+ characters). The document goes back to Review.
 - The owner can recall it, and Compliance can reverse an approval.
 
-### Two gaps between Lifecycle and the library
-- **The published copy doesn't go back to the library.** It goes to *Lifecycle Documents* on the OrgOS site. The library sync never reads that folder.
-- **Approval uses the old extractor, not the new reader.** So approving a Standard gives you a second set of controls in the queue, without Control IDs, that duplicates the library sync's set. See decision 2 in section 12.
+### What's still open
+- **The published copy doesn't go back to the library folder.** It's saved under *Lifecycle Documents* on the OrgOS site, and that's the copy the reader uses. The folder keeps the draft. Whether approved copies should replace the folder file is for the document-standards discussion.
 
 ---
 
@@ -179,7 +184,7 @@ CDI is the house standard for how a document is written ("Control of Documented 
 | CDI-03 Purpose | A purpose section | No | |
 | CDI-04 Scope | A scope section | No | |
 | CDI-05 Responsibilities | A roles / responsibilities section | **Yes** | Without it nobody owns the controls |
-| **CDI-06 Wording** | Obligations written with "shall" / "must", not "should", "where possible", "ideally", etc. | **Yes** | See below |
+| **CDI-06 Wording** | Obligations written with "shall" / "must", not "should", "where possible", "ideally", etc. | No (warning since 19 Oct) | See below |
 | CDI-07 / 08 | Vague role / vague evidence | Switched off | |
 | CDI-09 Standards | Mentions ISO 27001 / 9001 / NDPA, or a clause like A.5.15 | **Yes** | Feeds the Standards Map |
 | CDI-10 Related documents | Section present | No | |
@@ -191,7 +196,7 @@ CDI is the house standard for how a document is written ("Control of Documented 
 For the wording and section checks, an AI looks first. A second AI opinion can turn a fail into a pass, never the other way. If the AI is down, simple word-matching is used instead.
 
 ### The "shall" rule (CDI-06), and why it needs changing
-**What it does:** it flags any obligation written with "should", "ideally", "where possible", "as appropriate" and so on, and asks for "shall" or "must". It **blocks** the document.
+**What it does:** it flags any obligation written with "should", "ideally", "where possible", "as appropriate" and so on, and asks for "shall" or "must". It used to **block** the document; it's now a warning.
 
 **Why it exists:** the old AI extractor only recognised a sentence as a control if it said *shall / must / is required to / will*. A "should" sentence was invisible to it.
 
@@ -199,29 +204,33 @@ For the wording and section checks, an AI looks first. A second AI opinion can t
 
 **And it's no longer needed for its original reason.** The new reader (section 6) finds controls by their **Control ID and labelled fields**, not by the word "shall".
 
-**Recommendation:** make CDI-06 a warning, as V14 says. Flag "should" only where the sentence sits inside a control's Requirement. See decision 3 in section 12.
+**Done:** CDI-06 is now a warning, as V14 says. Checking normative words properly, inside each control's Requirement, belongs to the document-standards engine (section 12).
 
 **Note on "shall log → logs"** in your Assignment & Ownership screenshot: that isn't the CDI-06 check. It's the *"copy differs"* comparison (section 8), which flags any change in wording when a procedure copies a control.
 
 ---
 
-## 4. Way in #2: the library sync
+## 4. The reader at approval (what used to be the "library sync")
 
-**What it reads**
-- **Where:** SharePoint site *everybody* › library **ORGOS LIBRARY** › folder **ORGOS CONTROL LIBRARY** › **every subfolder**, at any depth.
-- **Which files:** `.docx` and `.pdf`. `.doc` files are listed but can't be read; they show as *unreadable* ("save it as .docx"). Excel and everything else is ignored.
-- **What it skips:** **nothing.** That includes drafts and old copies. A filename like "Draft" or "old" isn't treated specially, because nearly every file in the library is called Draft.
-- **How it's run:** by hand, `python scripts/sync_control_library.py`. It's a dry run that prints a summary; add `--apply` to write. **It isn't scheduled**, so nothing changes until someone runs it.
+**What it reads:** every document the **Document Register** holds as current, from its **published copy**:
+- **Active:** approved and in force.
+- **Under Review:** a revision is in Lifecycle, and the approved version still governs.
+- Withdrawn and Superseded documents, and anything not yet approved, are not read.
 
-**What it does**
-1. Reads each document: its code, type (Standard, Procedure, Policy, …), and the controls it defines or carries out.
+**When:** automatically, every time Lifecycle approves a document. By hand: `python scripts/sync_control_library.py` (a dry run that prints a summary; `--apply` to write). Use it to retry after a failed approval note, or after the Role Catalogue changes, so Blocked controls are re-checked.
+
+**What it does:**
+1. Reads each approved document: its code, type (Standard, Procedure, Policy, …), and the controls it defines or carries out.
 2. Works out **which document defines each control**. A Standard beats a Procedure, which beats a Policy. If two equally ranked documents both define it, the one that states more fields wins. If they tie exactly, the control is **not synced** and a *Defined twice* item is raised.
 3. Compares each control with the Control Register:
    - **unchanged:** nothing happens;
    - **new:** a review item;
    - **changed:** a review item showing what changed.
-4. Checks the documents against each other and against the Records Catalogue, and raises Zone 2 items (section 8).
+4. Checks approved documents against each other and against the Records Catalogue, and raises Zone 2 items (section 8).
 5. Closes Zone 2 items whose problem has gone, and re-checks every Blocked control's role.
+6. **If any approved document can't be downloaded, nothing is written.** A missing document would make its controls look deleted.
+
+**To survey the library folder itself**, drafts included, without writing anything, use `python scripts/cdi_library_census.py`. It prints every document, how it was read, and every problem found. That's useful before approving documents.
 
 ---
 
@@ -277,7 +286,7 @@ It also handles PDFs (as long as they contain real text) and accepts Word tracke
 | **Scanned PDF** (a picture, no text) | Nothing read, and no warning in the sync |
 | A PDF table row that can't be lined up | That row is dropped |
 
-The reader *does* record each of these as a finding. But **the sync doesn't show them to anyone yet.** Only the separate census script prints them. Decision 4 in section 12 proposes showing them.
+The reader *does* record each of these as a finding. But **the sync doesn't show them to anyone yet.** Only the separate census script prints them. Showing them to authors is the job of the document-standards engine (section 12).
 
 **How good is it today?** Across the real library, the reader understands about **98% of the control layouts** in use (it was 60% before the reader was rewritten). The remaining 2% are documents with no control structure.
 
@@ -288,9 +297,9 @@ The reader *does* record each of these as a finding. But **the sync doesn't show
 | Scenario | What happens | Handled? |
 |---|---|---|
 | A file **fails to download** during the run | Previously its controls looked deleted, so pending items could be closed by mistake and false "cites an undefined control" items raised. **Now the run refuses to write and asks you to re-run.** | ✅ Fixed today |
-| A **draft** sits next to the final version | Both are read. If both have the same code, a *Two files, one code* item is raised. **If neither has a code, nothing notices.** | ⚠ See decision 1 |
-| Every document is a **draft** (true today) | Controls are read and can be accepted as if final | ⚠ See decision 1 |
-| A file sits **loose in the top folder** of ORGOS CONTROL LIBRARY | **Never read.** Only subfolders are read | ⚠ Keep files in subfolders, or we change it |
+| A **draft** sits next to the final version | Drafts aren't read for controls any more; only the approved, published copy is | ✅ Fixed |
+| Every document is a **draft** (true today) | No controls until documents are approved in Lifecycle | ✅ By design now |
+| A file sits **loose in the top folder** of ORGOS CONTROL LIBRARY | Intake and census only look in subfolders | ⚠ Keep files in subfolders, or we change it |
 | A document is **moved** between subfolders | No effect, which is fine | ✅ |
 | A document is **deleted**, or a control is **removed** from it | The register keeps the control. The script prints "no longer defined" but **nothing is withdrawn**, deliberately, so a deletion can't silently remove a control. Procedures still citing it get flagged | ⚠ Retiring should be a Lifecycle decision; not built yet |
 | **Two Standards define the same ID** | The one with more fields wins quietly. Only an exact tie raises *Defined twice* | ⚠ Should always raise it |
@@ -387,12 +396,12 @@ These items **close themselves** on the next sync once the documents are fixed.
 8. **Retired IDs are never reused**, and documents that cite them are updated.
 9. **Save as .docx**, not .doc. PDFs must contain real text, not a scan.
 10. **Keep files in a subfolder** of ORGOS CONTROL LIBRARY, never loose at the top.
-11. **Drafts and old copies should live outside the library**, or follow whatever rule you choose in decision 1.
+11. **Drafts can stay in the library folder.** They reach Lifecycle through intake, and only approved copies are read for controls. Old, replaced copies should still be removed.
 12. Use **shall / must** for obligations, **should** only for recommendations, and **may** for options, as CDI §7.5 says.
 
 ---
 
-## 12. What was fixed today, and the decisions that are yours
+## 12. What was fixed today, and what's next
 
 ### Fixed today
 - **Extraction Review's Accept button was broken.** It called a server endpoint that had been removed.
@@ -402,19 +411,25 @@ These items **close themselves** on the next sync once the documents are fixed.
 - **Approving a document set its next review date to the sensitisation deadline**, so the daily review job immediately opened a review for it. Now it's set a year after the effective date.
 - **Approving a scheduled review created a second Document Register entry** instead of updating the existing one. Fixed.
 
-### Decisions needed
-**1. Drafts.** Every document in the library is a draft. Options:
-- **(a) Leave it as now.** Drafts are read and can be accepted. *Fast, but the register is built on unapproved text.*
-- **(b) Read drafts, but label them** ("from a draft, not yet approved") and accept them as **provisional**. They become final when the document is approved in Lifecycle. ← **recommended**: Bobby gets the control view now, and the approval rule is still respected.
-- **(c) Read approved documents only.** *Strict, but today that means zero controls until all 123 go through Lifecycle.*
+### Done after your decisions
+- **One way in.** Approval reads the approved library with the new reader. The old AI extractor no longer runs on approval or in the approval backfill script (`publish_approved_lifecycle.py`), and `reextract_by_code.py` is removed.
+- **CDI-06 is a warning.**
+- **Cleanup script for the draft-derived queue items:** `python scripts/retire_draft_library_items.py`, a dry run that lists them. Add `--apply` to retire them as Superseded with an explanatory note. Decided items and the old extractor's items are left alone.
 
-**2. Join the two ways in.** When Lifecycle approves a document with the control pattern, run the **new reader** on it (by Control ID), not the old AI extractor. Keep the old extractor only for old-style prose documents. Also publish the approved copy back to the library, so the sync and Lifecycle look at the same file. ← **recommended**; without it, every approval creates duplicate queue items with no Control ID.
+### For the document-standards discussion (later)
+A **document-standards engine**, separate from CDI, that checks a document **fits the control pattern** before approval, so nothing is missed silently:
+- controls with too few fields, misspelled labels, the same ID twice;
+- scanned PDFs, .doc files, files loose in the top folder;
+- missing code, two Standards defining one ID;
+- Record IDs that don't exist;
+- normative words (shall / should / may) used correctly inside each Requirement;
+- the controlled document templates (CDT).
 
-**3. CDI-06 ("shall" rule).** Make it a warning, in line with CDI Procedure V14, and allow "should" and "may" for recommendations and options. ← **recommended**
+The reader already detects most of these per document (`scripts/cdi_library_census.py` prints them). The engine would show them to the author in Lifecycle Review and could block approval on the serious ones.
 
-**4. Silent misses.** Show the reader's own findings: dropped controls, misspelled labels, scanned PDFs, files at the top of the folder, two Standards defining one ID. They would appear as Zone 2 items or as a report at the end of each sync. ← **recommended**
-
-**5. Schedule the sync** (e.g. nightly) once decisions 1 and 2 are settled. Today it only runs by hand.
+Also for then:
+- **The other old-extractor tools.** The Extractor page, "extract" in the SharePoint browser and `bulk_extract.py` still use the old AI extractor. They also handle contracts, job descriptions, regulations and audit reports, which aren't CDI control documents, so whether they stay is part of that discussion.
+- **Whether approved copies should replace the folder file.**
 
 ---
 
@@ -430,5 +445,5 @@ These items **close themselves** on the next sync once the documents are fixed.
 | **Evidence obligation** | "Record Y must exist for control X, checked every N days" |
 | **Active / Blocked** | Has a recognised owner / doesn't yet (the reason is shown) |
 | **Zone 1 / Zone 2** | Extraction Review (controls) / Assignment & Ownership (problems between documents) |
-| **Library sync** | The script that reads the whole ORGOS CONTROL LIBRARY |
-| **Old extractor** | The earlier AI that guesses controls from text; still used at Lifecycle approval |
+| **Approved library** | Every document the Document Register holds as Active or Under Review, read from its published copy |
+| **Old extractor** | The earlier AI that guesses controls from text; no longer used at approval |

@@ -172,16 +172,20 @@ _CHOICE_CHECKS = {"CDI-07", "CDI-08"}
 # hard FAIL (it blocks Review -> Sensitisation) when something downstream reads
 # what it checks:
 #   CDI-01 doc code            -> register key, extraction naming
-#   CDI-05/06/07/08            -> control wording, named owner roles, evidence
-#                                 (the extractor builds control/owner/evidence
-#                                 triplets from exactly this text)
+#   CDI-05/07/08               -> named owner roles, evidence
 #   CDI-09 standards refs      -> extractor's iso_clause -> Standards Map
 #   CDI-15 version number      -> the signal that a document is past draft
 # These are ADVISORY (shown as warnings, never blocking) because nothing
 # downstream reads them from the file — the extractor discards Purpose/Scope as
 # non-controls, and owner / classification / revision history live in the
 # register and the CDT cover, which OrgOS maintains itself:
-_ADVISORY_CHECKS = {"CDI-02", "CDI-03", "CDI-04", "CDI-10", "CDI-11", "CDI-12"}
+#
+# CDI-06 (normative wording) is advisory too. The CDI Procedure (§7.5, V14)
+# gives SHOULD and MAY their own meanings — recommended, optional — and only
+# REPORTs misuse; Guidelines are written with should and may. Controls are read
+# by Control ID and labelled fields (cdi/parser.py), not by the word "shall",
+# so nothing downstream depends on it any more.
+_ADVISORY_CHECKS = {"CDI-02", "CDI-03", "CDI-04", "CDI-06", "CDI-10", "CDI-11", "CDI-12"}
 # The effective date is stamped by OrgOS on approval. A document with no
 # version is a draft, so a missing date is only a warning; once a version is
 # present the document is past draft and the date is required.

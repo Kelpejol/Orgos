@@ -22,7 +22,6 @@ from fastapi.responses import Response
 from pydantic import BaseModel
 
 from agents.cdi_checker.service import is_valid_doc_code, run_cdi_check
-from agents.extractor.service import run_extraction_from_file
 from agents.llm_client import llm_generate
 from auth.validator import ROLE_ADMIN, ROLE_COMPLIANCE, CurrentUser, get_current_user
 from config import settings
@@ -131,89 +130,16 @@ def _filename_from_sharepoint_url(url: str, content_type: str = "") -> str:
     return f"{stem or 'document'}.docx"
 
 
-# Which register document types carry controls, and which extractor schema
-# reads them. EVERY value of grc.schemas.DocumentType is listed, so adding a
-# type there without deciding this is a test failure rather than a document
-# that silently never extracts — which is how Standards, Manuals, Guidelines
-# (singular) and Combined documents reached the Register and stopped.
-#
-# A Standard is Layer 3 and among the most control-dense documents Dragnet
-# writes; it was skipped purely because the set below said "guidelines" and
-# not "standard".
-_EXTRACTOR_TYPE_BY_DOCUMENT_TYPE: dict[str, Optional[str]] = {
-    # Controlled documents — the policy control extractor reads them.
-    "policy":     "Policy",
-    "standard":   "Policy",
-    "procedure":  "Policy",
-    "sop":        "Policy",
-    "manual":     "Policy",
-    "guideline":  "Policy",
-    "guidelines": "Policy",   # legacy plural spelling, kept distinct in the enum
-    "combined":   "Policy",   # combined policy-and-procedure documents
-    # An SLA states obligations against a counterparty, which is what the
-    # contract extractor is for (counterparty, clause, expiry).
-    "sla":        "Contract",
-    # Records, not control sources.
-    "form":       None,
-}
-
-
-def _extractor_type_for_lifecycle(document_type: str) -> Optional[str]:
-    """
-    The extractor schema for a register document type, or None when the type
-    is not a control source. Unknown types extract as a controlled document:
-    missing controls is the costly failure, a few spurious queue items is not.
-    """
-    normalized = (document_type or "").strip().lower()
-    if not normalized:
-        return None
-    if normalized in _EXTRACTOR_TYPE_BY_DOCUMENT_TYPE:
-        return _EXTRACTOR_TYPE_BY_DOCUMENT_TYPE[normalized]
-    logger.info(
-        f"Document type '{document_type}' is not in the extractor map — "
-        f"extracting it as a controlled document."
-    )
-    return "Policy"
-
 
 async def _extract_approved_document_to_review_queue(doc: dict) -> dict:
-    """Run the approved document into the AI Review Queue extraction pipeline."""
-    file_url = doc.get("SharePointFileUrl")
-    doc_code = doc.get("DocumentCode")
-    if not file_url or not doc_code:
-        return {
-            "started": False,
-            "written_to_sharepoint": False,
-            "reason": "Missing SharePointFileUrl or DocumentCode.",
-        }
-
-    extractor_type = _extractor_type_for_lifecycle(doc.get("DocumentType", ""))
-    if not extractor_type:
-        return {
-            "started": False,
-            "written_to_sharepoint": False,
-            "reason": f"Document type '{doc.get('DocumentType', '')}' is not an extraction target.",
-        }
-
-    file_bytes, content_type = await download_file_from_sharepoint(file_url)
-    filename = _filename_from_sharepoint_url(file_url, content_type)
-    result = await run_extraction_from_file(
-        file_bytes=file_bytes,
-        filename=filename,
-        doc_code=doc_code,
-        write_to_sharepoint=True,
-        folder_path=doc.get("Department", ""),
-        web_url=file_url,
-        document_type_override=extractor_type,
-    )
-
-    return {
-        "started": True,
-        "document_type": result.document_type,
-        "total_extracted": result.total_extracted,
-        "written_to_sharepoint": result.written_to_sharepoint,
-        "skipped_reason": result.skipped_reason,
-    }
+    """
+    Bring the registers in line with the approved library now that `doc` is
+    part of it (control_register/approved_library.py). Its controls are read
+    by Control ID from the CDI control pattern — no AI, no guessing — and
+    compared with approved documents only.
+    """
+    from control_register.approved_library import sync_approved_library
+    return await sync_approved_library(focus_code=str(doc.get("DocumentCode") or ""))
 
 
 async def _resolve_display_name(entra_oid: str, fallback: str = "") -> str:
@@ -1017,23 +943,18 @@ async def approval_impact(
                 ),
             })
 
-        if _extractor_type_for_lifecycle(doc.get("DocumentType", "")):
-            impact["updates"].append({
-                "register": "AI Review Queue",
-                "detail": (
-                    "The approved document is re-extracted — new/changed controls will appear "
-                    "in Extraction Review (Zone 1) for human confirmation."
-                ),
-            })
-            impact["flags"].append({
-                "register": "Document Register",
-                "detail": "LinkedControlsCount refreshes with the extraction result.",
-            })
-        else:
-            impact["warnings"].append(
-                f"Document type '{doc.get('DocumentType', '')}' is not an extraction target — "
-                "no controls will be extracted."
-            )
+        impact["updates"].append({
+            "register": "AI Review Queue",
+            "detail": (
+                "The document joins the approved library. Controls it states in the CDI control "
+                "pattern are read by Control ID: new and changed ones appear in Extraction Review; "
+                "problems against other approved documents appear in Assignment & Ownership."
+            ),
+        })
+        impact["flags"].append({
+            "register": "Document Register",
+            "detail": "LinkedControlsCount is set to the number of controls the document defines.",
+        })
 
         impact["updates"].append({
             "register": "Document Lifecycle",
@@ -1061,26 +982,30 @@ async def approval_impact(
 
 def _extraction_outcome_note(ex: dict) -> str:
     """
-    A short human-readable flag when extraction did NOT populate the review
-    queue — so a document that finalises with no controls is visible (not
-    silent) on the lifecycle item, and can be retried. Returns "" when controls
-    were written (the happy path needs no flag).
+    A short flag on the lifecycle item when approval did not bring the
+    document's controls into review — so it is never silent and can be
+    retried. "" when it did (the happy path needs no flag).
     """
-    if not ex or ex.get("written_to_sharepoint"):
-        return ""
     today = date.today().isoformat()
+    if not ex:
+        return ""
     if ex.get("error"):
-        return (f"[{today}] ⚠ Control extraction did not run (error: {ex['error']}). "
-                f"Re-run extraction once the source file and LLM are available.")
-    reason = ex.get("reason") or ex.get("skipped_reason")
-    if reason:
-        return f"[{today}] ⚠ Control extraction skipped: {reason}"
-    total = ex.get("total_extracted")
-    if not total:
-        return (f"[{today}] ⚠ Control extraction found 0 controls in this document — "
-                f"nothing added to the review queue. Verify the source and re-run if needed.")
-    return (f"[{today}] ⚠ Control extraction found {total} item(s) but none were complete "
-            f"enough to queue.")
+        return (f"[{today}] ⚠ Controls were not read from the approved library (error: {ex['error']}). "
+                "Re-run: python scripts/sync_control_library.py --apply")
+    if ex.get("reason"):
+        return f"[{today}] ⚠ {ex['reason']} Re-run: python scripts/sync_control_library.py --apply"
+    if ex.get("failures"):
+        return (f"[{today}] ⚠ {len(ex['failures'])} register write(s) failed. "
+                "Re-run: python scripts/sync_control_library.py --apply")
+    if ex.get("focus_missing"):
+        return f"[{today}] ⚠ {ex['focus_missing']}"
+    focus = ex.get("focus") or {}
+    if focus and not focus.get("defines") and not focus.get("carries_out"):
+        return (f"[{today}] ℹ No controls found in this document's CDI control pattern "
+                "(Control ID heading with Requirement / Trigger / Accountable / Evidence … fields), "
+                "so nothing was raised for review. If it should define or carry out controls, "
+                "revise it to the pattern.")
+    return ""
 
 
 # Strong references to in-flight background tasks — see the create_task call
@@ -1103,14 +1028,15 @@ async def _background_extract_and_flag(
     """
     try:
         result = await _extract_approved_document_to_review_queue(doc)
-        logger.info(f"Approved lifecycle {item_id} extraction result: {result}")
-        if register_item_id and result.get("total_extracted") is not None:
+        logger.info(f"Approved lifecycle {item_id}: approved-library sync {result}")
+        defines = (result.get("focus") or {}).get("defines")
+        if register_item_id and defines is not None:
             try:
                 await update_list_item(
                     settings.document_register_list_id,
                     "Document Register",
                     register_item_id,
-                    {"LinkedControlsCount": result.get("total_extracted", 0)},
+                    {"LinkedControlsCount": defines},
                 )
             except Exception as exc:
                 logger.warning(f"Could not update Document Register extraction count: {exc}")
