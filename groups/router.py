@@ -19,6 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 from auth.validator import CurrentUser, get_current_user, require_compliance_lead
+from control_register.status import recheck_soon
 from graph.exceptions import GraphAPIError, GraphNotFoundError
 from groups import service
 from groups.service import GroupsListNotProvisioned
@@ -96,7 +97,7 @@ async def create_group(
     user: CurrentUser = Depends(require_compliance_lead),
 ) -> dict:
     try:
-        return await service.create_group(
+        result = await service.create_group(
             name=body.name,
             description=body.description or "",
             category=body.category or "",
@@ -105,6 +106,8 @@ async def create_group(
             creator_name=user.name or "",
             aliases=body.aliases,
         )
+        recheck_soon()
+        return result
     except Exception as exc:
         _handle(exc, "create group")
 
@@ -116,7 +119,9 @@ async def update_group(
     user: CurrentUser = Depends(require_compliance_lead),
 ) -> dict:
     try:
-        return await service.update_group(group_id, body.description, body.category, body.name, body.aliases)
+        result = await service.update_group(group_id, body.description, body.category, body.name, body.aliases)
+        recheck_soon()
+        return result
     except Exception as exc:
         _handle(exc, f"update group {group_id}")
 
@@ -128,7 +133,9 @@ async def add_members(
     user: CurrentUser = Depends(require_compliance_lead),
 ) -> dict:
     try:
-        return await service.add_members(group_id, [m.model_dump() for m in body.members])
+        result = await service.add_members(group_id, [m.model_dump() for m in body.members])
+        recheck_soon()
+        return result
     except Exception as exc:
         _handle(exc, f"add members to {group_id}")
 
@@ -140,7 +147,9 @@ async def remove_member(
     user: CurrentUser = Depends(require_compliance_lead),
 ) -> dict:
     try:
-        return await service.remove_member(group_id, oid)
+        result = await service.remove_member(group_id, oid)
+        recheck_soon()
+        return result
     except Exception as exc:
         _handle(exc, f"remove member {oid} from {group_id}")
 
@@ -152,5 +161,6 @@ async def delete_group(
 ) -> None:
     try:
         await service.soft_delete_group(group_id)
+        recheck_soon()
     except Exception as exc:
         _handle(exc, f"delete group {group_id}")

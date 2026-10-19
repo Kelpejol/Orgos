@@ -115,6 +115,13 @@ async def run_daily() -> None:
             logger.debug("Evidence obligations: %s not configured — skipping", name)
             return
     try:
+        # Roles may have changed since yesterday (Org Roles re-checks at once;
+        # this is the safety net).
+        from control_register.status import recheck_control_statuses
+        await recheck_control_statuses()
+    except Exception:
+        logger.exception("Evidence daily run: re-checking control statuses failed")
+    try:
         synced = await sync_obligations()
         states = await refresh_states()
         logger.info("Evidence daily run: obligations %s; states %s", synced, states)

@@ -748,7 +748,7 @@ const RecordCard = ({ item, currentOid, isCompliance, onSubmit, onSubmitLink, on
 // =============================================================================
 
 export default function RecordTracker() {
-  const [view, setView]     = useState("mine");
+  const [view, setView]     = useState("all");
   const [search, setSearch] = useState("");
   const [actionItemId, setActionItemId] = useState(null);
 
