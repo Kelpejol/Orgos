@@ -1170,6 +1170,10 @@ async def _finalize_document_approval(
         )
 
     revision_of = str(doc.get("RevisionOf") or "").strip()
+    if not revision_of and doc.get("Trigger") == "Scheduled Review":
+        # A scheduled review revises the register entry it was opened for;
+        # without this, approving it created a second register entry.
+        revision_of = str(doc.get("LinkedDocumentRegisterItem") or "").strip()
     new_version = "R01"
 
     # ── CDT (v06): advance the cover facts + revision history, and attempt to
@@ -1248,8 +1252,10 @@ async def _finalize_document_approval(
             dr_update["Title"] = doc["Title"]
         if doc.get("StandardsMapping"):
             dr_update["ApplicableStandards"] = doc["StandardsMapping"]
-        if doc.get("SensitisationDeadline"):
-            dr_update["NextReviewDate"] = doc["SensitisationDeadline"]
+        # Due a review period after it takes effect — not the sensitisation
+        # deadline, which is already past and made the daily review job open
+        # a "Scheduled Review" for a document approved that morning.
+        dr_update["NextReviewDate"] = (effective_date + timedelta(days=REVIEW_PERIOD_DAYS)).isoformat()
 
         try:
             await update_list_item(
@@ -1286,8 +1292,10 @@ async def _finalize_document_approval(
             "CDTCoverFacts":       cdt_cover.to_json(),
             "RevisionHistory":     RevisionHistoryEntry.list_to_json(cdt_history),
         }
-        if doc.get("SensitisationDeadline"):
-            dr_fields["NextReviewDate"] = doc["SensitisationDeadline"]
+        # Due a review period after it takes effect — not the sensitisation
+        # deadline, which is already past and made the daily review job open
+        # a "Scheduled Review" for a document approved that morning.
+        dr_fields["NextReviewDate"] = (effective_date + timedelta(days=REVIEW_PERIOD_DAYS)).isoformat()
 
         try:
             register_item = await create_list_item(

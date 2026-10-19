@@ -137,6 +137,7 @@ async def check_document_review_dates() -> None:
             linked = f.get("LinkedDocumentRegisterItem", f.get("id", item.get("id", "")))
             if linked:
                 lc_fields["LinkedDocumentRegisterItem"] = str(linked)
+                lc_fields["RevisionOf"] = str(linked)   # approval updates it in place
 
         try:
             if settings.is_list_configured(settings.document_lifecycle_list_id):

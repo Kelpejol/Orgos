@@ -53,6 +53,17 @@ async def run(local: str | None, folder: str | None, apply: bool) -> int:
     docs = [e.doc for e in entries if e.doc]
     unread = [e for e in entries if not e.doc]
     index = LibraryIndex(docs)
+    for e in unread:
+        print(f"  UNREADABLE {e.path}: {e.error}")
+    # A file that failed to download is a gap in the library, not a document
+    # that left it: its controls would look undefined, pending items from it
+    # would be closed as resolved, and procedures citing it would be flagged.
+    # Writing from an incomplete read is refused.
+    missed = [e for e in unread if e.error.startswith("download failed")]
+    if missed and apply:
+        print(f"\nNot written: {len(missed)} file(s) failed to download, so the library read is "
+              "incomplete. Re-run when SharePoint is reachable.")
+        return 1
     print(f"Library: {len(docs)} documents read, {len(unread)} unreadable; "
           f"{len(index.defined_ids)} controls defined, {len(index.contested_ids)} contested.")
 
