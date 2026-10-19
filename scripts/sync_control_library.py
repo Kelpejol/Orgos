@@ -38,9 +38,12 @@ async def _catalogue():
     from records_catalogue import service
 
     try:
-        return await service.load()
+        entries = await service.load()
     except SharePointListNotConfiguredError:
         return None
+    # An empty list means the Catalogue hasn't been imported yet, not that
+    # every record is missing — checking against it would flag them all.
+    return entries or None
 
 
 async def run(local: str | None, folder: str | None, apply: bool) -> int:
@@ -75,7 +78,8 @@ async def run(local: str | None, folder: str | None, apply: bool) -> int:
         if plan.no_longer_defined:
             print(f"  confirmed but no longer defined by any document: {', '.join(plan.no_longer_defined)}")
         if catalogue is None:
-            print("  Records Catalogue not loaded — REC citations not checked")
+            print("  Records Catalogue empty or not configured — REC citations not checked "
+                  "(import it first: scripts/import_records_catalogue.py --apply)")
         print(f"  references that don't resolve → Zone 2: raise "
               f"{sum(a.kind == 'create_item' for a in resolutions)}, "
               f"close {sum(a.kind == 'close_item' for a in resolutions)} now resolved")

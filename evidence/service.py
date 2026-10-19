@@ -52,7 +52,7 @@ async def _catalogue() -> Optional[dict]:
     from records_catalogue import service as catalogue
 
     try:
-        return await catalogue.load()
+        return (await catalogue.load()) or None      # empty = not imported yet
     except SharePointListNotConfiguredError:
         return None
 
