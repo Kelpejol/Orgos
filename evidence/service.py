@@ -63,18 +63,17 @@ async def sync_obligations() -> dict:
     existing = await get_list_items(_list_id(), LIST_NAME)
     actions = plan_obligations(controls, existing, await _catalogue())
 
-    counts = {"create": 0, "update": 0, "retire": 0}
-    failures = []
-    for a in actions:
-        try:
-            if a.kind == "create":
-                await create_list_item(_list_id(), LIST_NAME, a.fields)
-            else:
-                await update_list_item(_list_id(), LIST_NAME, a.item_id, a.fields)
-            counts[a.kind] += 1
-        except Exception as exc:
-            logger.error("Evidence obligation %s %s failed: %s", a.kind, a.key, exc)
-            failures.append(f"{a.kind} {a.key}: {exc}")
+    from graph.bulk import run_writes
+
+    def write(a):
+        if a.kind == "create":
+            return create_list_item(_list_id(), LIST_NAME, a.fields)
+        return update_list_item(_list_id(), LIST_NAME, a.item_id, a.fields)
+
+    failures = await run_writes([(f"{a.kind} {a.key}", lambda a=a: write(a)) for a in actions])
+    failed = {f.split(":", 1)[0] for f in failures}
+    counts = {k: sum(a.kind == k and f"{a.kind} {a.key}" not in failed for a in actions)
+              for k in ("create", "update", "retire")}
     logger.info("Evidence obligations synced: %s, %d failure(s)", counts, len(failures))
     return {**counts, "failures": failures}
 

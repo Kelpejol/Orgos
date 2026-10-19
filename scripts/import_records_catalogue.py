@@ -56,9 +56,16 @@ async def run(path: str, apply: bool) -> int:
         if not apply:
             print("\nDry run — nothing written. Re-run with --apply to write.")
             return 0
-        await service.apply_import(plan)
-        print(f"\nWritten: {len(plan.create)} created, {len(plan.update)} updated.")
-        return 0
+        from graph.bulk import print_progress
+        print(f"\nWriting {len(plan.create) + len(plan.update)} item(s)…", flush=True)
+        failures = await service.apply_import(plan, progress=print_progress("written"))
+        print(f"\nWritten: {len(plan.create) + len(plan.update) - len(failures)} of "
+              f"{len(plan.create) + len(plan.update)}.")
+        for line in failures[:20]:
+            print(f"  FAILED {line}")
+        if failures:
+            print("Re-run the same command to retry: records already written are skipped.")
+        return 1 if failures else 0
     finally:
         await shutdown()
 

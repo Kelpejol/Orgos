@@ -90,10 +90,14 @@ async def run(local: str | None, folder: str | None, apply: bool) -> int:
         if not apply:
             print("\nDry run — nothing written. Re-run with --apply to write.")
             return 0
-        failures = await apply_sync(plan)
+        from graph.bulk import print_progress
+        print(f"\nWriting {len(plan.actions)} change(s)…", flush=True)
+        failures = await apply_sync(plan, progress=print_progress("written"))
         print(f"\nWritten: {len(plan.actions) - len(failures)} change(s).")
-        for line in failures:
+        for line in failures[:20]:
             print(f"  FAILED {line}")
+        if failures:
+            print("Re-run the same command to retry: what was written is not raised twice.")
         return 1 if failures else 0
     finally:
         await shutdown()

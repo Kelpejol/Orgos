@@ -220,34 +220,34 @@ def refresh_fields(candidate: dict) -> dict:
     }
 
 
-async def apply_sync(plan: SyncPlan) -> list[str]:
-    """Perform the plan. Returns one line per write that failed (others go ahead)."""
+async def apply_sync(plan: SyncPlan, progress=None) -> list[str]:
+    """Perform the plan, a few writes at a time. Returns one line per failed write."""
     from config import settings
+    from graph.bulk import run_writes
     from graph.client import create_list_item, update_list_item
 
     q, cr = settings.ai_review_queue_list_id, settings.control_register_list_id
-    failures = []
-    for a in plan.actions:
-        try:
-            if a.kind == "create_item":
-                await create_list_item(q, "AI Review Queue", queue_fields(a))
-            elif a.kind == "update_item":
-                await update_list_item(q, "AI Review Queue", a.queue_item_id, queue_fields(a))
-            elif a.kind == "close_item":
-                await update_list_item(q, "AI Review Queue", a.queue_item_id, {
-                    "ReviewStatus": "Superseded",
-                    "CascadeResult": a.fields.get("CascadeResult") or (
-                        "Closed by library sync: the defining document now "
-                        "matches the confirmed definition."),
-                })
-            elif a.kind == "refresh_status":
-                await update_list_item(cr, "Control Register", a.control_item_id, a.fields)
-            elif a.kind == "refresh_control":
-                await update_list_item(cr, "Control Register", a.control_item_id,
-                                       refresh_fields(a.candidate))
-        except Exception as exc:
-            logger.error("Library sync %s %s failed: %s", a.kind, a.control_id, exc)
-            failures.append(f"{a.kind} {a.control_id}: {exc}")
+
+    def write(a: SyncAction):
+        if a.kind == "create_item":
+            return create_list_item(q, "AI Review Queue", queue_fields(a))
+        if a.kind == "update_item":
+            return update_list_item(q, "AI Review Queue", a.queue_item_id, queue_fields(a))
+        if a.kind == "close_item":
+            return update_list_item(q, "AI Review Queue", a.queue_item_id, {
+                "ReviewStatus": "Superseded",
+                "CascadeResult": a.fields.get("CascadeResult") or (
+                    "Closed by library sync: the defining document now "
+                    "matches the confirmed definition."),
+            })
+        if a.kind == "refresh_status":
+            return update_list_item(cr, "Control Register", a.control_item_id, a.fields)
+        return update_list_item(cr, "Control Register", a.control_item_id, refresh_fields(a.candidate))
+
+    failures = await run_writes([(f"{a.kind} {a.control_id}", lambda a=a: write(a))
+                                 for a in plan.actions], progress=progress)
+    for line in failures:
+        logger.error("Library sync write failed: %s", line)
     return failures
 
 

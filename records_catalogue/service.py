@@ -140,9 +140,14 @@ def plan_import(existing_items: list[dict], workbook: list[RecordEntry]) -> Impo
     return plan
 
 
-async def apply_import(plan: ImportPlan) -> None:
-    for entry in plan.create:
-        await create_list_item(_list_id(), LIST_NAME, to_fields(entry))
-    for item_id, entry in plan.update:
-        await update_list_item(_list_id(), LIST_NAME, item_id, to_fields(entry))
+async def apply_import(plan: ImportPlan, progress=None) -> list[str]:
+    """Write the plan, a few items at a time. Returns failures; the rest go ahead."""
+    from graph.bulk import run_writes
+
+    writes = [(e.record_id, lambda e=e: create_list_item(_list_id(), LIST_NAME, to_fields(e)))
+              for e in plan.create]
+    writes += [(e.record_id, lambda i=i, e=e: update_list_item(_list_id(), LIST_NAME, i, to_fields(e)))
+               for i, e in plan.update]
+    failures = await run_writes(writes, progress=progress)
     invalidate()
+    return failures
