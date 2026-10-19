@@ -8,7 +8,6 @@
 
 import { useState, useMemo } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { Field } from "./Forms.jsx";
 import { useAlert } from "./AlertModal.jsx";
 import apiClient from "../../api/grcApi.js";
 
@@ -62,6 +61,15 @@ const DiffRow = ({ d }) => (
   </div>
 );
 
+// Label column on the left, long text reads left-to-right beside it.
+const DefRow = ({ l, v }) => (
+  <div style={{ display: "grid", gridTemplateColumns: "150px 1fr", gap: 12, padding: "5px 0",
+                borderBottom: "0.5px solid var(--color-border-tertiary)", fontSize: 12 }}>
+    <span style={{ color: "var(--color-text-secondary)" }}>{l}</span>
+    <span style={{ lineHeight: 1.5 }}>{v}</span>
+  </div>
+);
+
 export const DefinitionPanel = ({ item }) => {
   const c = item.Candidate || {};
   const where = c.defined_in || {};
@@ -87,10 +95,10 @@ export const DefinitionPanel = ({ item }) => {
         {changed ? "Full definition after the change" : "Definition as stated"}
       </div>
       {DEFINITION_FIELDS.map(([key, label]) =>
-        c[key] ? <Field key={key} l={label} v={c[key]} /> : null
+        c[key] ? <DefRow key={key} l={label} v={c[key]} /> : null
       )}
       {(c.evidence || []).some((e) => e.record_id) && (
-        <Field l="Records" v={c.evidence.filter((e) => e.record_id)
+        <DefRow l="Records" v={c.evidence.filter((e) => e.record_id)
           .map((e) => `${e.record_id}${e.name ? ` ${e.name}` : ""}`).join("; ")} />
       )}
       {c.responsibility_ambiguous && (

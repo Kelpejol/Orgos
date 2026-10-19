@@ -741,7 +741,11 @@ const ExtractionCard = ({ item, isCompliance, onDecide, onRequestSecondReview, i
             {definition && item.ChangeKind && <StatusBadge label={item.ChangeKind} />}
             {item.DocumentType    && <StatusBadge label={item.DocumentType} />}
             {item.ControlType     && <StatusBadge label={item.ControlType} />}
-            {item.CompletenessFlag === "DEFICIENT" && <StatusBadge label="Deficient" />}
+            {item.CompletenessFlag === "DEFICIENT" && (definition
+              ? <span title="The document leaves some CDI fields unstated — see the note when opened"
+                      style={{ fontSize: 10, padding: "1px 7px", borderRadius: 3, background: "#FAEEDA",
+                               color: "#633806", border: "0.5px solid #FAC775" }}>Fields missing</span>
+              : <StatusBadge label="Deficient" />)}
             {!definition && pct < 60 && (
               <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3,
                              background: "#FCEBEB", color: "#791F1F",
