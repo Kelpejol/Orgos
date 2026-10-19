@@ -178,3 +178,12 @@ def test_the_gaid_is_cited_by_article_and_schedule():
 
 def test_two_iso_standards_named_together_are_both_kept():
     assert keys("ISO/IEC 27017 and 27018") == (["ISO 27017", "ISO 27018"], [])
+
+
+def test_a_semicolon_divides_accountable_from_executing():
+    from cdi.fields import split_responsibility
+    r = split_responsibility("Information Security Officer; IT and application owners.")
+    assert (r.accountable, r.executing, r.ambiguous) == (
+        "Information Security Officer", "IT and application owners", False)
+    r = split_responsibility("Accountable: Managing Director / CEO; Executing: Chief Compliance Officer")
+    assert (r.accountable, r.executing) == ("Managing Director / CEO", "Chief Compliance Officer")

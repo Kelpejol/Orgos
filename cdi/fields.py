@@ -258,9 +258,24 @@ def _split_outside_parens(text: str) -> list[str]:
     return [p.strip() for p in parts if p.strip()]
 
 
+_ROLE_LABEL = re.compile(r"^\s*(?:accountable|executing)\s*(?:role)?\s*:\s*", re.IGNORECASE)
+
+
+def _split_outside_parens_on(text: str, sep: str) -> list[str]:
+    parts, depth, start = [], 0, 0
+    for i, ch in enumerate(text):
+        depth += ch == "("
+        depth -= ch == ")"
+        if ch == sep and depth == 0:
+            parts.append(text[start:i])
+            start = i + 1
+    parts.append(text[start:])
+    return [p.strip() for p in parts if p.strip()]
+
+
 def split_responsibility(text: str, known_roles: Iterable[str] = ()) -> Responsibility:
     """
-    Split "Accountable / Executing: A / B" into its two roles.
+    Split "Accountable / Executing: A / B" (or "A; B") into its two roles.
 
     The difficulty is that role names contain " / " too — "Managing Director /
     CEO", "Finance / Admin Manager" — so a slash is not always the divider.
@@ -274,6 +289,15 @@ def split_responsibility(text: str, known_roles: Iterable[str] = ()) -> Responsi
     as_written = (text or "").strip()
     value = as_written.rstrip(".").strip()
     known = {norm(r) for r in known_roles if r}
+
+    # "Accountable; Executing" — the most common form in the library. A role
+    # name never contains a semicolon, so it is an explicit divider.
+    halves = _split_outside_parens_on(value, ";")
+    if len(halves) >= 2:
+        accountable = _ROLE_LABEL.sub("", halves[0]).strip()
+        executing = _ROLE_LABEL.sub("", "; ".join(halves[1:])).strip()
+        if accountable and executing:
+            return Responsibility(accountable, executing, as_written)
 
     parts = _split_outside_parens(value)
     if len(parts) <= 1 or norm(value) in known:

@@ -255,6 +255,7 @@ async def walk_folder(
                 "extension": ext,
                 "size": item.get("size", 0),
                 "web_url": item.get("webUrl", ""),
+                "modified": item.get("lastModifiedDateTime", ""),
             })
     return files
 

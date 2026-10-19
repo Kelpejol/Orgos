@@ -15,6 +15,14 @@
 # defines, an edited copy, an unknown Record ID — goes to Assignment &
 # Ownership. Every comparison is against approved documents only.
 #
+# The library folder still decides WHO defines each control — approved
+# documents decide WHAT the definition says. Procedures restate their
+# Standard's controls in short form; approved before the Standard, a
+# procedure's short copy would otherwise be taken as the definition. A control
+# whose defining document is still in Lifecycle waits for it: nothing is
+# raised from the copy, and a procedure citing it is not flagged as citing an
+# undefined control. A control no document defines anywhere still is.
+#
 # One run at a time per process, so two approvals finishing together cannot
 # queue the same control twice.
 # =============================================================================
@@ -41,6 +49,8 @@ _READABLE = (".docx", ".pdf")
 # row, so a stale parse is never reused; an unchanged library is read once.
 _parsed: dict[tuple[str, str], ParsedDocument] = {}
 _lock = asyncio.Lock()
+# library-folder file id → (lastModified, parse or None if unreadable)
+_folder_parsed: dict[str, tuple[str, Optional[ParsedDocument]]] = {}
 
 
 @dataclass
@@ -103,6 +113,72 @@ async def load_approved_library(concurrency: int = 4) -> ApprovedLibrary:
     return lib
 
 
+async def load_library_folder(concurrency: int = 4) -> tuple[list[ParsedDocument], list[str]]:
+    """Every readable document in the library folder, drafts included — used
+    only to tell who defines each control. Returns (documents, download failures)."""
+    from cdi.parser import parse_document
+    from scripts.intake_sharepoint_to_lifecycle import (
+        configured_intake_roots, download_file, resolve_compliance_drive, walk_folder)
+
+    _, drive_id = await resolve_compliance_drive()
+    files = []
+    for root in await configured_intake_roots(drive_id, None):
+        files.extend(await walk_folder(drive_id, root["name"], root["id"]))
+    docs: list[ParsedDocument] = []
+    missed: list[str] = []
+    gate = asyncio.Semaphore(concurrency)
+
+    async def read(f: dict) -> None:
+        modified = f.get("modified") or ""
+        cached = _folder_parsed.get(f["id"])
+        if cached and cached[0] == modified and modified:
+            if cached[1]:
+                docs.append(cached[1])
+            return
+        async with gate:
+            try:
+                data, _ = await download_file(drive_id, f["id"])
+            except Exception as exc:
+                missed.append(f"{f['folder_path']}/{f['name']}: {exc}")
+                return
+        try:
+            doc = parse_document(data, f["name"])
+        except Exception:
+            doc = None                      # unreadable files define nothing
+        _folder_parsed[f["id"]] = (modified, doc)
+        if doc:
+            docs.append(doc)
+
+    await asyncio.gather(*(read(f) for f in files))
+    return docs, missed
+
+
+def _same_document(a: ParsedDocument, b: ParsedDocument) -> bool:
+    if a.header.code and b.header.code:
+        return _base_code(a.header.code) == _base_code(b.header.code)
+    return a.filename.lower() == b.filename.lower()
+
+
+def awaiting_definition(approved: LibraryIndex,
+                        folder_docs: list[ParsedDocument]) -> tuple[dict[str, str], set[str]]:
+    """
+    (Control ID → its defining document, for controls the approved documents
+    state but whose defining document is not approved yet; every Control ID
+    any document states). The folder copy of an approved document is replaced
+    by its published copy.
+    """
+    others = [d for d in folder_docs
+              if not any(_same_document(d, a) for a in approved.documents)]
+    full = LibraryIndex(approved.documents + others)
+    approved_ids = {id(d) for d in approved.documents}
+    out = {}
+    for cid in approved.defined_ids:
+        definer = full.definition(cid)
+        if definer and id(definer[0]) not in approved_ids:
+            out[cid] = document_label(definer[0])
+    return out, set(full.stated_by)
+
+
 async def _catalogue():
     from graph.exceptions import SharePointListNotConfiguredError
     from records_catalogue import service
@@ -116,11 +192,15 @@ async def _catalogue():
     return entries or None
 
 
-def _summary_for(doc: Optional[ParsedDocument], plan) -> dict:
+def _summary_for(doc: Optional[ParsedDocument], plan, awaiting: dict) -> dict:
     """What the run means for one document — for its lifecycle item."""
     if doc is None:
         return {}
     own = {c.control_id for c in doc.controls}
+    waits = {}
+    for cid in sorted(own | set(doc.implemented_ids)):
+        if cid in awaiting:
+            waits.setdefault(awaiting[cid], []).append(cid)
     raised = [a for a in plan.actions
               if a.kind in ("create_item", "update_item") and a.control_id in own]
     return {
@@ -129,6 +209,7 @@ def _summary_for(doc: Optional[ParsedDocument], plan) -> dict:
         "defines": len(doc.controls),
         "carries_out": len(doc.implemented_ids),
         "raised_for_review": len(raised),
+        "awaiting": waits,          # defining document → control IDs waiting for its approval
     }
 
 
@@ -164,10 +245,29 @@ async def sync_approved_library(focus_code: str = "", apply: bool = True,
         register = await get_list_items(settings.control_register_list_id, "Control Register")
         queue = await get_list_items(settings.ai_review_queue_list_id, "AI Review Queue")
         owners = await get_ownership_index()
+        folder_docs, folder_missed = await load_library_folder()
+        if folder_missed:
+            result["missed"] = folder_missed
+            result["reason"] = (f"{len(folder_missed)} library file(s) could not be downloaded, so OrgOS "
+                                "cannot tell which document defines each control. Nothing was written.")
+            return result
+        awaiting, defined_anywhere = awaiting_definition(index, folder_docs)
+
         plan = plan_sync(index, register, queue, owners.resolve)
+        plan.actions = [a for a in plan.actions
+                        if a.control_id not in awaiting or a.kind == "refresh_status"]
         new_or_changed = plan.count("create_item") + plan.count("update_item")
         catalogue = await _catalogue()
-        resolutions = plan_resolutions(index, queue, catalogue)
+        resolutions = [
+            a for a in plan_resolutions(index, queue, catalogue)
+            if not (a.kind == "create_item" and (
+                # defined in a document still in Lifecycle: it will be, not an error
+                (a.control_id.startswith("CITES-UNDEFINED:")
+                 and a.control_id.rsplit(":", 1)[1] in defined_anywhere)
+                # compared against a procedure's copy, not the real definition
+                or (a.control_id.startswith("COPY-DIFFERS:")
+                    and a.control_id.rsplit(":", 1)[1] in awaiting)))
+        ]
         plan.actions += resolutions
 
         result.update({
@@ -180,7 +280,8 @@ async def sync_approved_library(focus_code: str = "", apply: bool = True,
             "findings_closed": sum(a.kind == "close_item" for a in resolutions),
             "no_longer_defined": plan.no_longer_defined,
             "catalogue_checked": catalogue is not None,
-            "focus": _summary_for(focus, plan),
+            "awaiting_definition": awaiting,
+            "focus": _summary_for(focus, plan, awaiting),
             "actions": len(plan.actions),
         })
         if focus_code and focus is None:

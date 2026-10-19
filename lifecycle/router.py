@@ -1000,6 +1000,11 @@ def _extraction_outcome_note(ex: dict) -> str:
     if ex.get("focus_missing"):
         return f"[{today}] ⚠ {ex['focus_missing']}"
     focus = ex.get("focus") or {}
+    waits = focus.get("awaiting") or {}
+    if waits:
+        listed = "; ".join(f"{', '.join(ids)} — defined in {doc}" for doc, ids in waits.items())
+        return (f"[{today}] ℹ Some controls this document restates or carries out wait for their "
+                f"defining document to be approved, and enter review then: {listed}.")
     if focus and not focus.get("defines") and not focus.get("carries_out"):
         return (f"[{today}] ℹ No controls found in this document's CDI control pattern "
                 "(Control ID heading with Requirement / Trigger / Accountable / Evidence … fields), "
