@@ -333,6 +333,39 @@ async def _log_gap_analysis_run(summary: dict, triggered_by: str = "system") -> 
         logger.warning(f"Could not write Gap Analyzer run to Audit Log: {exc}")
 
 
+async def _close_resolved_control_gaps(current_keys: set[str]) -> int:
+    """
+    Close open CDI control-framework gaps whose problem is gone. Their checks
+    are exact (a role now recognised, a procedure now citing the control), so
+    OrgOS can confirm the fix itself. Clause gaps stay for a person to close.
+    """
+    from agents.gap_analyzer.control_gaps import STANDARD
+    from graph.client import update_list_item
+
+    if not settings.is_list_configured(settings.gap_analysis_list_id):
+        return 0
+    try:
+        items = await get_list_items(settings.gap_analysis_list_id, "Gap Analysis")
+    except Exception as exc:
+        logger.warning(f"Could not load gaps to close resolved ones: {exc}")
+        return 0
+    closed = 0
+    for item in items:
+        f = item.get("fields", {})
+        if (f.get("Standard") == STANDARD and f.get("Status", "Open") in ("Open", "In progress")
+                and f.get("GapKey") and f["GapKey"] not in current_keys):
+            try:
+                await update_list_item(settings.gap_analysis_list_id, "Gap Analysis", str(item["id"]), {
+                    "Status": "Closed",
+                    "ResolutionNotes": f"Closed by gap analysis on {date.today().isoformat()}: "
+                                   "the condition no longer holds.",
+                })
+                closed += 1
+            except Exception as exc:
+                logger.error(f"Could not close resolved gap {item['id']}: {exc}")
+    return closed
+
+
 async def run_gap_analysis(triggered_by: str = "system") -> dict:
     """
     Run the full Gap Analyzer pipeline.
@@ -365,6 +398,7 @@ async def run_gap_analysis(triggered_by: str = "system") -> dict:
 
     from agents.gap_analyzer.control_gaps import find_control_gaps
     gaps = _find_gaps(controls, records, ownership) + find_control_gaps(controls)
+    closed = await _close_resolved_control_gaps({g["gap_key"] for g in gaps})
     logger.info(f"Gap finding complete: {len(gaps)} gaps found before deduplication")
 
     if not gaps:
@@ -373,6 +407,7 @@ async def run_gap_analysis(triggered_by: str = "system") -> dict:
             "gaps_found":   0,
             "gaps_written": 0,
             "gaps_skipped": 0,
+            "gaps_closed":  closed,
             "message":      "No gaps found. Register data covers all required clauses.",
         }
         await _log_gap_analysis_run(summary, triggered_by=triggered_by)
@@ -390,6 +425,7 @@ async def run_gap_analysis(triggered_by: str = "system") -> dict:
             "gaps_found":   len(gaps),
             "gaps_written": 0,
             "gaps_skipped": skipped,
+            "gaps_closed":  closed,
             "message": (
                 f"Gap analysis complete. {len(gaps)} gaps found, "
                 f"all already tracked as open. No new gaps written."
@@ -448,6 +484,7 @@ async def run_gap_analysis(triggered_by: str = "system") -> dict:
         "gaps_found":   len(gaps),
         "gaps_written": written,
         "gaps_skipped": skipped,
+        "gaps_closed":  closed,
         "severity":     severity_counts,
         "message": (
             f"Gap analysis complete. {len(new_gaps)} new gaps written "

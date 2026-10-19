@@ -114,3 +114,20 @@ def test_a_changed_definition_is_not_reported_as_a_conflict_with_itself():
          "SourceDocumentCode": "B", "ProposedOwnerRole": "CISO"}
     assert _scan_conflict_pairs([a, b], 0.72) == []
     assert len(_scan_conflict_pairs([a, {**b, "ControlId": ""}], 0.72)) == 1
+
+
+async def test_an_open_control_gap_closes_once_its_condition_is_gone_and_clause_gaps_stay():
+    from unittest.mock import AsyncMock, patch
+    import agents.gap_analyzer.service as svc
+    items = [
+        {"id": "1", "fields": {"Standard": "CDI", "GapKey": "CDI|TST-01|Implementation gap", "Status": "Open"}},
+        {"id": "2", "fields": {"Standard": "CDI", "GapKey": "CDI|TST-02|Implementation gap", "Status": "Open"}},
+        {"id": "3", "fields": {"Standard": "ISO 27001", "GapKey": "ISO 27001|A.5.1|Missing artefact", "Status": "Open"}},
+    ]
+    with patch.object(type(svc.settings), "is_list_configured", return_value=True), \
+         patch.object(svc, "get_list_items", new=AsyncMock(return_value=items)), \
+         patch("graph.client.update_list_item", new=AsyncMock()) as update:
+        closed = await svc._close_resolved_control_gaps({"CDI|TST-02|Implementation gap"})
+    assert closed == 1
+    [call] = update.call_args_list
+    assert call.args[2] == "1" and call.args[3]["Status"] == "Closed"
