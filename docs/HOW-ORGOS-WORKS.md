@@ -89,6 +89,8 @@ The CDI checks run in Lifecycle **before** approval. They make sure a document i
 
 **Contents**
 1. [The big picture: one way in](#1-the-big-picture-one-way-in)
+   - [1a. Document types: who does what](#1a-document-types-who-does-what)
+   - [1b. "Defined in" and "Carried out in"](#1b-defined-in-and-carried-out-in)
 2. [Document Lifecycle: the way in](#2-document-lifecycle-the-way-in)
 3. [The CDI checks, one by one](#3-the-cdi-checks-one-by-one)
 4. [The reader at approval](#4-the-reader-at-approval-what-used-to-be-the-library-sync)
@@ -134,6 +136,48 @@ The CDI checks run in Lifecycle **before** approval. They make sure a document i
 
 ---
 
+## 1a. Document types: who does what
+
+Each document type has a different job, so OrgOS does something different when each is approved. Using the Identity documents as the example:
+
+| Type | Its job | Identity example | What OrgOS does on approval |
+|---|---|---|---|
+| **Policy** | **Why**, and who has authority. Management's intent. No controls. | Access Control Policy (DRG-ISMS-POL-ACCESS) | Nothing goes to review. Controls point back to it as their **"Governing authority"** |
+| **Standard** | **What** must be done: the controls. Each has an ID and its fields (requirement, trigger, roles, evidence, risk, failure and exception routes, mapping) | Identity Lifecycle and Enterprise Access Standard (DRG-ISMS-STD-IDL) defines ACS-L3-01 to 06 | **Its controls go to Extraction Review.** This is the only place a control is *defined* |
+| **Procedure** | **How**, step by step: who does what, in what order | Joiner, Mover and Leaver Access Procedure (DRG-ISMS-PRO-JMLA) | Nothing new to review. OrgOS **links** its steps to the controls they carry out |
+| **Specification** | **How, for a system**: technical settings, automation rules | Identity Automation Specification (DRG-ISMS-SPEC-IDAUTO) | Same as a Procedure: linked, not counted |
+| **Forms / registers** | **The records**: the forms you fill in, the logs you keep | Access Forms and Registers Set (DRG-ISMS-SPEC-AFRS) | Linked to the controls it supports |
+
+**Where a family has no Standard**, its **Procedure** does the defining. The Context and Interested Parties Procedure is an example. Then that Procedure's controls go to review instead.
+
+**In one line:** Standards **create** controls, Procedures **carry them out**, and Policies **authorise** them. OrgOS reviews the first, links the second, and points back to the third.
+
+The order you approve in matters:
+- **Approve the Standard first, then its procedures.**
+- If a procedure is approved first, the controls it carries out **wait**. Its Lifecycle item gets a note naming the Standard they're waiting for (e.g. *"ACS-L3-08 waits for DRG-ISMS-STD-AUTH"*), and they come in when that Standard is approved.
+
+---
+
+## 1b. "Defined in" and "Carried out in"
+
+Take **ACS-L3-01**: *"keep a complete identity and account inventory"*.
+
+- **Defined in DRG-ISMS-STD-IDL.** The Standard states the rule in full: requirement, trigger, roles, evidence, risk, failure and exception routes. It's written **once**, there.
+- **Carried out in DRG-ISMS-PRO-JMLA §5.3 Leaver.** That section of the procedure is the *how*: when someone leaves, this is how the inventory is kept right. To make the link clear, the procedure repeats the control's ID and a **short copy** of its wording.
+
+**Why approving the procedure raised nothing in Extraction Review:**
+- If OrgOS counted the procedure's short copy as a control, the register would hold ACS-L3-01 **twice**, once from the Standard and once from the procedure.
+- Bobby's instruction forbids exactly that: *"procedures … must not be counted as additional controls simply because they repeat a requirement."*
+
+**What approving the procedure did instead:**
+1. **Linked it.** ACS-L3-01 now shows **"Carried out in: DRG-ISMS-PRO-JMLA §5.3 Leaver"**. If someone asks *how* that control is followed, that's where to read. A control that no procedure carries out shows up as a gap.
+2. **Compared its wording with the Standard.** Had the procedure changed the wording, you'd get **"Copy differs from its Standard"** in Assignment & Ownership. It didn't, so nothing was raised.
+3. **Found the controls whose Standard isn't approved yet.** JMLA also carries out ACS-L3-08, which belongs to DRG-ISMS-STD-AUTH. That control waits, with a note on the procedure's Lifecycle item.
+
+**The Document Register's "controls defined" count** is the number of controls a document is the definition of. That's 6 for the Identity Standard and 0 for the procedure. Before 20 Oct it wrongly counted the procedure's short copies ("5 extracted candidates").
+
+---
+
 ## 2. Document Lifecycle: the way in
 
 A document goes through three stages: **Review → Sensitisation → Approval.**
@@ -148,6 +192,10 @@ A document goes through three stages: **Review → Sensitisation → Approval.**
 
 ### Stage 1: Review (the owner)
 - The owner uploads the document. **The CDI checks run automatically** (section 3).
+- **Or edits it in the browser: "Edit in Word ↗"** opens the document in Word for the web, and it saves as you type.
+  - Editing always happens on **this item's own working copy**. For a revision, OrgOS first copies the approved published file and edits the copy, so **the approved version is never changed**. A draft from the library folder is copied the same way.
+  - When you've finished, click **"Done editing — re-check"** to run the CDI checks on the saved file.
+  - Available in Review only, to the owner or Compliance. Only Word (.docx) files can be edited this way; for a PDF, upload a .docx.
 - OrgOS can propose fixes. Some apply automatically, e.g. the wrong document-code format or a missing version.
 - The owner can attach a **CDT cover**, the standard front page with code, version, effective date, approvals and revision history.
 - **To move on:** a file is uploaded, the CDI result isn't *Failed*, and stakeholders are chosen.
@@ -167,6 +215,30 @@ A document goes through three stages: **Review → Sensitisation → Approval.**
   4. **Reads the approved library with the new reader** (section 1). This document's new and changed controls go to Extraction Review, and problems against other approved documents go to Assignment & Ownership. If anything goes wrong (e.g. a published copy can't be downloaded), **nothing is written** and a note on the Lifecycle item says how to retry: `python scripts/sync_control_library.py --apply`.
 - **Reject** needs a reason (20+ characters). The document goes back to Review.
 - The owner can recall it, and Compliance can reverse an approval.
+
+### Versions: why "R01", and why there are two numbers
+Today OrgOS keeps **two** version numbers:
+
+| Where | Format | When it changes |
+|---|---|---|
+| **Document Register** ("Rev" column) | **R01, R02, R03…** "R" stands for **Revision**, a convention from the earlier DINT design | Every approval of a revision adds one: R01 → R02 |
+| **The CDT cover** (in the file, if it has the cover) | **01, 02, 03…** "Draft" before the first issue | Every approval: Draft → 01 → 02 |
+
+So when you revise the Identity Standard, the Register goes **R01 → R02**. That's simply because a revision was approved. The entry is updated in place, never duplicated.
+
+**Your CDI Procedure says this should be different:**
+- *"Version: the single identifier of an issued document, incremented on issue. Replaces the former Revision and Issue fields."* So there should be **one** number, **no "R"**.
+- *Drafts carry the status Draft and have no version number* (§12.1). OrgOS now follows this: a draft is no longer asked for a version.
+- *Correcting typos, broken cross-references or formatting is not a material change and **does not increment the version**. It is logged* (§14.3).
+- *A review that finds no substantial change **keeps the version**, updates the review dates, and logs "annual review, no change"* (§14.5).
+- *Every issued version carries a change summary stating **what changed and why*** (§14.2).
+
+**What OrgOS does differently today:**
+- It keeps two numbers, one with an "R".
+- It raises the version on **every** approval, including a typo fix or an unchanged annual review.
+- So removing the version and date you typed into the Identity Standard will become **R02**, although by CDI it's a logged correction with no new version.
+
+**For the document-standards discussion:** one Version field (01, 02…), shared by the Register and the cover. When approving, the approver chooses *new version* (material change, with a change summary) or *no new version* (correction or unchanged review, logged).
 
 ### What's still open
 - **The published copy doesn't go back to the library folder.** It's saved under *Lifecycle Documents* on the OrgOS site, and that's the copy the reader uses. The folder keeps the draft. Whether approved copies should replace the folder file is for the document-standards discussion.

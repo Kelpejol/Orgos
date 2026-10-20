@@ -33,6 +33,7 @@ from graph.client import (
     ensure_drive_folder,
     get_list_item,
     get_list_items,
+    sharepoint_item_metadata,
     resolve_compliance_drive,
     resolve_sp_user_lookup_id,
     resolve_user,
@@ -2269,25 +2270,8 @@ async def reassign_doc(
         _handle_error(exc, f"reassign document {item_id}")
 
 
-@router.post("/documents/{item_id}/upload")
-async def upload_doc_file(
-    item_id: str,
-    file: UploadFile = File(...),
-    user: CurrentUser = Depends(get_current_user),
-) -> dict:
-    """
-    Upload a revised document to SharePoint, link it to the lifecycle item,
-    set Revised=True, then automatically run the CDI Checker.
-    """
-    file_bytes = await file.read()
-    filename   = file.filename or f"document_{item_id}.docx"
-
-    try:
-        file_url = await _upload_to_sharepoint(item_id, filename, file_bytes)
-    except Exception as exc:
-        logger.exception(f"SharePoint upload failed for lifecycle {item_id}")
-        raise HTTPException(status_code=503, detail=f"SharePoint upload failed: {exc}")
-
+async def _cdi_check_file(item_id: str, file_bytes: bytes, filename: str) -> tuple[str, str]:
+    """Run the CDI Checker on a lifecycle item's file → (CDIStatus, CDIFailures)."""
     cdi_status   = "Pending"
     cdi_failures = ""
     try:
@@ -2321,6 +2305,30 @@ async def upload_doc_file(
         cdi_status   = "Error"
         cdi_failures = ""
 
+    return cdi_status, cdi_failures
+
+
+@router.post("/documents/{item_id}/upload")
+async def upload_doc_file(
+    item_id: str,
+    file: UploadFile = File(...),
+    user: CurrentUser = Depends(get_current_user),
+) -> dict:
+    """
+    Upload a revised document to SharePoint, link it to the lifecycle item,
+    set Revised=True, then automatically run the CDI Checker.
+    """
+    file_bytes = await file.read()
+    filename   = file.filename or f"document_{item_id}.docx"
+
+    try:
+        file_url = await _upload_to_sharepoint(item_id, filename, file_bytes)
+    except Exception as exc:
+        logger.exception(f"SharePoint upload failed for lifecycle {item_id}")
+        raise HTTPException(status_code=503, detail=f"SharePoint upload failed: {exc}")
+
+    cdi_status, cdi_failures = await _cdi_check_file(item_id, file_bytes, filename)
+
     fields: dict = {
         "SharePointFileUrl": file_url,
         "Revised":           True,
@@ -2334,6 +2342,90 @@ async def upload_doc_file(
         return await _sp_to_doc(updated)
     except Exception as exc:
         _handle_error(exc, f"update lifecycle item after upload {item_id}")
+
+
+def _office_edit_url(web_url: str) -> str:
+    """Open a SharePoint .docx in Word for the web, in edit mode."""
+    from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+
+    parts = urlsplit(web_url)
+    query = dict(parse_qsl(parts.query))
+    if "doc.aspx" in parts.path.lower():
+        query["action"] = "edit"
+    else:
+        query["web"] = "1"
+    return urlunsplit(parts._replace(query=urlencode(query)))
+
+
+def _is_working_copy(meta: dict, item_id: str) -> bool:
+    """True when the file already lives in this item's own Lifecycle folder."""
+    path = unquote((meta.get("parentReference") or {}).get("path", "")).rstrip("/")
+    return path.endswith(f"/Lifecycle Documents/{item_id}")
+
+
+async def _editable_item(item_id: str, user: CurrentUser) -> dict:
+    fields = (await get_list_item(_get_list_id(), _LIST_NAME, item_id)).get("fields", {}) or {}
+    if fields.get("Stage") != "Review" or fields.get("ApprovalStatus") == "Approved":
+        raise HTTPException(status_code=409,
+                            detail="A document is edited in the Review stage only.")
+    is_compliance = ROLE_COMPLIANCE in user.roles or ROLE_ADMIN in user.roles
+    if fields.get("OwnerEntraId") != user.oid and not is_compliance:
+        raise HTTPException(status_code=403,
+                            detail="Only the document owner or Compliance can edit it.")
+    if not fields.get("SharePointFileUrl"):
+        raise HTTPException(status_code=422, detail="There is no file yet — upload one first.")
+    return fields
+
+
+@router.post("/documents/{item_id}/edit")
+async def open_for_editing(item_id: str, user: CurrentUser = Depends(get_current_user)) -> dict:
+    """
+    A link that opens the document in Word for the web, for editing in place.
+
+    Editing always happens on this item's own working copy. A revision starts
+    from the approved published file and an intake item from the library
+    draft — neither is edited: the first time, the file is copied into
+    Lifecycle Documents/{item_id}/ and the item points at the copy. Word saves
+    as you type; "Re-check after editing" then re-runs the CDI checks.
+    """
+    fields = await _editable_item(item_id, user)
+    try:
+        meta = await sharepoint_item_metadata(fields["SharePointFileUrl"])
+        name = meta.get("name") or f"{fields.get('DocumentCode') or item_id}.docx"
+        if not name.lower().endswith(".docx"):
+            raise HTTPException(status_code=422, detail=(
+                f"'{name}' is not a Word document, so it can't be edited in the browser. "
+                "Upload a .docx version."))
+        if _is_working_copy(meta, item_id):
+            working = meta.get("webUrl") or fields["SharePointFileUrl"]
+        else:
+            data, _ = await download_file_from_sharepoint(fields["SharePointFileUrl"])
+            working = await _upload_to_sharepoint(item_id, name, data)
+            await update_list_item(_get_list_id(), _LIST_NAME, item_id, {"SharePointFileUrl": working})
+            await _audit_lifecycle_action({**fields, "id": item_id}, user, "Working copy created",
+                                          f"{name} copied for editing; the original is unchanged.")
+        return {"edit_url": _office_edit_url(working), "working_copy_url": working}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _handle_error(exc, f"open lifecycle {item_id} for editing")
+
+
+@router.post("/documents/{item_id}/recheck")
+async def recheck_after_editing(item_id: str, user: CurrentUser = Depends(get_current_user)) -> dict:
+    """Re-run the CDI checks on the saved file after editing it in Word."""
+    fields = await _editable_item(item_id, user)
+    try:
+        meta = await sharepoint_item_metadata(fields["SharePointFileUrl"])
+        data, _ = await download_file_from_sharepoint(fields["SharePointFileUrl"])
+        status_, failures = await _cdi_check_file(item_id, data, meta.get("name") or "document.docx")
+        await update_list_item(_get_list_id(), _LIST_NAME, item_id, {
+            "Revised": True, "CDIStatus": status_, "CDIFailures": failures})
+        return await _sp_to_doc(await get_list_item(_get_list_id(), _LIST_NAME, item_id))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _handle_error(exc, f"re-check lifecycle {item_id}")
 
 
 @router.get("/documents/{item_id}/download")

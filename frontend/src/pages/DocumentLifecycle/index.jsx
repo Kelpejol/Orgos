@@ -68,6 +68,13 @@ const lifecycleApi = {
     return resp.json();
   },
 
+  // Word for the web, on this item's own working copy (never the approved file)
+  openForEditing: (id) =>
+    apiClient.post(`/api/v1/lifecycle/documents/${id}/edit`).then(r => r.data),
+
+  recheck: (id) =>
+    apiClient.post(`/api/v1/lifecycle/documents/${id}/recheck`).then(r => r.data),
+
   downloadUrl: (id) => {
     const BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
     return `${BASE}/api/v1/lifecycle/documents/${id}/download`;
@@ -1189,6 +1196,8 @@ const LifecycleCard = ({
   const [uploading,       setUploading]       = useState(false);
   const [uploadError,     setUploadError]     = useState("");
   const [uploadCdiResult, setUploadCdiResult] = useState(null);
+  const [editing,         setEditing]         = useState(false);   // opened in Word, not yet re-checked
+  const [editBusy,        setEditBusy]        = useState("");      // "" | "opening" | "checking"
   const [downloading,     setDownloading]     = useState(false);
   const [downloadError,   setDownloadError]   = useState("");
   const cdiFix = useAiSuggestion(
@@ -1284,6 +1293,53 @@ const LifecycleCard = ({
     }
   };
  
+  // ── Edit in Word for the web — then re-check (CDI runs on the saved file) ──
+  const showCdiResult = (updated) => {
+    if (!updated?.CDIStatus) return;
+    let failCount = 0, errorDetail = "";
+    if (updated.CDIFailures) {
+      try {
+        const parsed = JSON.parse(updated.CDIFailures);
+        failCount = parsed.length;
+        if (updated.CDIStatus === "Error" && parsed[0]?.detail) errorDetail = parsed[0].detail;
+      } catch { failCount = 1; }
+    }
+    setUploadCdiResult({ status: updated.CDIStatus, failCount, errorDetail });
+  };
+
+  const handleEditInWord = async () => {
+    // Open the tab now, while the click still counts, so it isn't blocked as a pop-up.
+    const tab = window.open("", "_blank");
+    setEditBusy("opening");
+    setUploadError("");
+    try {
+      const { edit_url } = await lifecycleApi.openForEditing(doc.id);
+      if (tab) tab.location.href = edit_url; else window.open(edit_url, "_blank");
+      setEditing(true);
+      qc.invalidateQueries({ queryKey: ["lifecycle"] });
+    } catch (err) {
+      if (tab) tab.close();
+      setUploadError(err.response?.data?.detail || err.message || "Could not open the document for editing");
+    } finally {
+      setEditBusy("");
+    }
+  };
+
+  const handleRecheck = async () => {
+    setEditBusy("checking");
+    setUploadError("");
+    setUploadCdiResult(null);
+    try {
+      showCdiResult(await lifecycleApi.recheck(doc.id));
+      setEditing(false);
+      qc.invalidateQueries({ queryKey: ["lifecycle"] });
+    } catch (err) {
+      setUploadError(err.response?.data?.detail || err.message || "Re-check failed");
+    } finally {
+      setEditBusy("");
+    }
+  };
+
   // ── Download — always through the backend endpoint, never a direct
   // window.open on the raw SharePoint URL: once a document is on the CDT
   // template, the endpoint merges the current cover facts in before
@@ -1782,6 +1838,32 @@ const LifecycleCard = ({
                               fontSize: 10, color: "var(--color-text-tertiary)" }}>
                   — no upload needed
                 </div>
+              )}
+              {/* Edit in Word for the web, then re-check (Review only) */}
+              {isReview && (doc.SharePointFileUrl || doc.Revised) && (
+                <button onClick={handleEditInWord} disabled={!!editBusy}
+                  title="Opens a working copy in Word in your browser. It saves as you type; the approved file is never changed."
+                  style={{
+                    padding: "7px", fontSize: 11, borderRadius: 7, fontWeight: 600,
+                    border: "1.5px solid #85B7EB", background: "#E6F1FB", color: "#0C447C",
+                    cursor: editBusy ? "not-allowed" : "pointer",
+                  }}>
+                  {editBusy === "opening" ? "Opening Word..." : "Edit in Word ↗"}
+                </button>
+              )}
+              {isReview && (doc.SharePointFileUrl || doc.Revised) && (
+                <button onClick={handleRecheck} disabled={!!editBusy}
+                  title="Run the CDI checks again on the saved document"
+                  style={{
+                    padding: "7px", fontSize: 11, borderRadius: 7,
+                    fontWeight: editing ? 600 : 400,
+                    border: `1.5px solid ${editing ? "#1D9E75" : "#C0C0C0"}`,
+                    background: editing ? "#E1F5EE" : "transparent",
+                    color: editing ? "#085041" : "var(--color-text-secondary)",
+                    cursor: editBusy ? "not-allowed" : "pointer",
+                  }}>
+                  {editBusy === "checking" ? "Checking CDI..." : editing ? "Done editing — re-check" : "Re-check CDI"}
+                </button>
               )}
               {/* Auto-fix CDI issues — guided confirm-and-apply (Review only) */}
               {isReview && (cdiCount > 0 || cdiWarnCount > 0) && (

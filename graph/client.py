@@ -1234,30 +1234,13 @@ async def upload_file_to_sharepoint(
     return web_url
 
 
-async def download_file_from_sharepoint(web_url: str) -> tuple[bytes, str]:
-    """
-    Download a file from SharePoint by its webUrl.
-
-    This resolves the webUrl to a direct download stream via Graph API
-    using the /shares/u! encoding trick — avoids needing to store the
-    drive item ID separately.
-
-    Args:
-        web_url: The SharePoint webUrl returned by upload_file_to_sharepoint
-                 or stored in the lifecycle list's SharePointFileUrl field.
-
-    Returns:
-        Tuple of (file_bytes, content_type). content_type is the MIME type
-        reported by SharePoint (e.g. the .docx MIME type above).
-
-    Raises:
-        httpx.HTTPStatusError / graph exceptions on failure.
-    """
+async def sharepoint_item_metadata(web_url: str) -> dict:
+    """The drive item behind a SharePoint webUrl (name, webUrl, parentReference,
+    @microsoft.graph.downloadUrl …), resolved with the /shares/u! trick."""
     import base64
 
     token = await get_graph_access_token()
     client = get_client()
-
     # Encode the webUrl using the Graph /shares/u! trick:
     # base64url-encode the URL, strip padding, prefix with "u!"
     encoded = base64.urlsafe_b64encode(web_url.encode()).rstrip(b"=").decode()
@@ -1281,7 +1264,30 @@ async def download_file_from_sharepoint(web_url: str) -> tuple[bytes, str]:
             f"Resolve SharePoint item for download: {web_url}",
         )
 
-    meta = meta_resp.json()
+    return meta_resp.json()
+
+
+async def download_file_from_sharepoint(web_url: str) -> tuple[bytes, str]:
+    """
+    Download a file from SharePoint by its webUrl.
+
+    This resolves the webUrl to a direct download stream via Graph API
+    using the /shares/u! encoding trick — avoids needing to store the
+    drive item ID separately.
+
+    Args:
+        web_url: The SharePoint webUrl returned by upload_file_to_sharepoint
+                 or stored in the lifecycle list's SharePointFileUrl field.
+
+    Returns:
+        Tuple of (file_bytes, content_type). content_type is the MIME type
+        reported by SharePoint (e.g. the .docx MIME type above).
+
+    Raises:
+        httpx.HTTPStatusError / graph exceptions on failure.
+    """
+    meta = await sharepoint_item_metadata(web_url)
+    client = get_client()
 
     # @microsoft.graph.downloadUrl is a pre-authenticated URL — no token needed
     download_url = meta.get("@microsoft.graph.downloadUrl")
