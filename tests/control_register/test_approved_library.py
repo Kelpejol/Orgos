@@ -159,3 +159,11 @@ async def test_citing_a_control_no_document_defines_is_still_a_finding():
     result, _ = await _run([row(1, "DRG-ISMS-PRO-CIT")],
                            {"PRO-CIT": procedure("DRG-ISMS-PRO-CIT", restates=(), cites=("GONE-01",))})
     assert result["findings_raised"] == 1
+
+
+async def test_a_procedure_restating_its_standard_defines_nothing():
+    folder = [parsed(standard(), "std.docx"), parsed(procedure(), "pro.docx")]
+    result, _ = await _run([row(1, "DRG-ISMS-PRO-TST"), row(2, "DRG-ISMS-STD-TST")],
+                           {"PRO-TST": procedure(), "STD-TST": standard()},
+                           focus="DRG-ISMS-PRO-TST", folder=folder)
+    assert result["focus"]["defines"] == 0 and result["focus"]["states"] == 1

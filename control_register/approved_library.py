@@ -192,7 +192,8 @@ async def _catalogue():
     return entries or None
 
 
-def _summary_for(doc: Optional[ParsedDocument], plan, awaiting: dict) -> dict:
+def _summary_for(doc: Optional[ParsedDocument], plan, awaiting: dict,
+                 index: Optional[LibraryIndex] = None) -> dict:
     """What the run means for one document — for its lifecycle item."""
     if doc is None:
         return {}
@@ -206,7 +207,12 @@ def _summary_for(doc: Optional[ParsedDocument], plan, awaiting: dict) -> dict:
     return {
         "document": document_label(doc),
         "role": doc.role.value,
-        "defines": len(doc.controls),
+        # Controls this document is the definition of — not the short copies a
+        # procedure carries of its Standard's controls.
+        "defines": sum(1 for cid in own
+                       if index is None or ((index.definition(cid) or (None,))[0] is doc
+                                            and cid not in awaiting)),
+        "states": len(own),
         "carries_out": len(doc.implemented_ids),
         "raised_for_review": len(raised),
         "awaiting": waits,          # defining document → control IDs waiting for its approval
@@ -281,7 +287,7 @@ async def sync_approved_library(focus_code: str = "", apply: bool = True,
             "no_longer_defined": plan.no_longer_defined,
             "catalogue_checked": catalogue is not None,
             "awaiting_definition": awaiting,
-            "focus": _summary_for(focus, plan, awaiting),
+            "focus": _summary_for(focus, plan, awaiting, index),
             "actions": len(plan.actions),
         })
         if focus_code and focus is None:

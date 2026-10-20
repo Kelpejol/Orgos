@@ -28,8 +28,8 @@ const COLS = [
   { key: "next_review_date", label: "Next review" },
   {
     key: "linked_controls_count",
-    label: "Extracted",
-    title: "Number of AI-extracted candidate items sent to Extraction Review. This is not the final accepted control count.",
+    label: "Controls",
+    title: "Controls this document defines (by Control ID). A procedure that carries out its Standard's controls defines none.",
   },
   { key: "status",        label: "Status" },
 ];
@@ -104,9 +104,9 @@ export default function DocumentRegister({ go }) {
         <Field l="Status"        v={<StatusBadge label={selected.status} />} />
         <div style={{ marginTop: 12, display: "flex", gap: 6, flexWrap: "wrap" }}>
           <span
-            title="AI-extracted candidate items sent to Extraction Review. Final accepted controls are managed after review decisions."
+            title="Controls this document defines (by Control ID). A procedure that carries out its Standard's controls defines none."
           >
-            <InlineLink label={`${selected.linked_controls_count || 0} extracted candidates`} onClick={() => go("control")} />
+            <InlineLink label={`${selected.linked_controls_count || 0} controls defined`} onClick={() => go("control")} />
           </span>
           {/* Read it as a PDF rather than opening the editable source —
               the same "View" the Document Lifecycle board gives. */}
