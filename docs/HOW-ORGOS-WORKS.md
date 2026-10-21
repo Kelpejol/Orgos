@@ -91,6 +91,7 @@ The CDI checks run in Lifecycle **before** approval. They make sure a document i
 1. [The big picture: one way in](#1-the-big-picture-one-way-in)
    - [1a. Document types: who does what](#1a-document-types-who-does-what)
    - [1b. "Defined in" and "Carried out in"](#1b-defined-in-and-carried-out-in)
+   - [1c. The Document Standards page](#1c-the-document-standards-page)
 2. [Document Lifecycle: the way in](#2-document-lifecycle-the-way-in)
 3. [The CDI checks, one by one](#3-the-cdi-checks-one-by-one)
 4. [The reader at approval](#4-the-reader-at-approval-what-used-to-be-the-library-sync)
@@ -175,6 +176,36 @@ Take **ACS-L3-01**: *"keep a complete identity and account inventory"*.
 3. **Found the controls whose Standard isn't approved yet.** JMLA also carries out ACS-L3-08, which belongs to DRG-ISMS-STD-AUTH. That control waits, with a note on the procedure's Lifecycle item.
 
 **The Document Register's "controls defined" count** is the number of controls a document is the definition of. That's 6 for the Identity Standard and 0 for the procedure. Before 20 Oct it wrongly counted the procedure's short copies ("5 extracted candidates").
+
+---
+
+## 1c. The Document Standards page
+
+A new page in the main menu, **Document Standards**, has three tabs.
+
+**The standard** (everyone). What every controlled document must meet, read from the CDI Procedure itself (its 24 validation checks V01 to V24, the sections a document needs, Annex A for the document's register card, Annex C for a control, and Annex B's reference lists). Pick a document type (Policy, Standard, Procedure…) to see what it must contain and which checks apply. The page says which checks OrgOS enforces today, and lists the ones it does not, with what each is waiting for.
+
+**Check a document** (everyone). Upload a .docx or .pdf and see how it fares. **Nothing is saved**, so it can be used while writing. Every check gives one of seven answers: *passed*, *blocking problem*, *needs a decision*, *for your attention*, *could not check* (and why), *not applicable* (and why), or *not built yet*. A check that could not look never passes, and a clear result is never presented as a full clearance while checks remain unbuilt.
+
+**Convert to CDT** (Compliance only). Brings an existing document onto the controlled template, so its code, owner, approvers, version and dates live in the Register and the file cannot drift from it.
+1. Pick a document in Lifecycle Review (or upload a file to try it).
+2. **Read and prove.** OrgOS reads the document's header block and builds the converted file in memory. Nothing is saved.
+3. It shows exactly what changes:
+   - **Taken out**: only the header rows the cover regenerates (title, code, layer, domain, parent, owner, approvers, classification, distribution, version, dates, status).
+   - **Stays, unchanged**: every other header row (controls implemented, supersedes, related and child documents, standards, review cycle). The cover has no place for them and OrgOS reads them from the file; removing them changed how 42 real documents were read, which the proofs caught.
+   - **The new cover**, and **what is not carried across** (a hand-typed version or date; a draft has none, approval stamps them).
+   - Anything else that needs your attention (tracked changes, lists, page header and footer text that the template replaces).
+4. Five **proofs** are run on the converted file, and **nothing is offered unless all hold**:
+   - *body*: every body element is identical to the original;
+   - *removed*: nothing was lost except rows the cover regenerates;
+   - *reads-same*: OrgOS reads the same code, title, relationships and control definitions after as before;
+   - *sound*: no link or list points at anything that no longer exists;
+   - *merges*: the cover fills in completely.
+5. **Convert this document.** The converted file becomes the Lifecycle item's **own working copy**, named as its title; the cover facts are saved on the item; the CDI checks re-run. **The original file is never changed or deleted.**
+
+**What conversion will not do:** invent anything. A document that states no title or code, has no header block (its facts written as "Label: value" lines), has no template for its type (registers, forms), or opens with text it cannot place, is refused with the reason. On your real library, **84 of 123 documents convert with every proof holding; the other 39 are refused with the reason**, and no document fails a proof.
+
+**What is not built yet:** 11 of the 24 checks (V05 to V07 need the Role Register; V13, V16 to V21 and V24 are not written). The old CDI checker in Lifecycle Review still runs on upload; the new checks are not yet part of the Review gate.
 
 ---
 

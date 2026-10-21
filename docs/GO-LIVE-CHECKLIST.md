@@ -147,3 +147,12 @@ After the first run, Gap Analysis and the review queue will show them; listed he
 - **Role resolution in the review queue** for unrecognised role spellings, and scored role suggestions a reviewer accepts with one click (accepting adds an alias, so the same spelling resolves next time).
 
 Once those are in, Blocked controls clear themselves on the next sync.
+
+---
+
+## 9. Document Standards page
+
+- **Needs the master templates** in the ORGOS LIBRARY `Templates/` folder (Standard, Policy, Procedure, Guideline, Manual…), the same ones Lifecycle already uses to merge a cover. If one is missing, converting that type says so.
+- **Convert to CDT** on a real document: open the converted working copy in Word and look at the cover, the numbering and the tables before moving on. The proofs are structural; they cannot see how Word draws it.
+- If the CDI Procedure is reissued, regenerate the standard: `python scripts/build_cdi_reference.py "docs/Control of Documented Information Procedure.docx"` (it stops with an error if the Procedure's layout changed, rather than writing an empty file).
+- After any change to the converter, run the proof over the library: `python scripts/doc_standards_proof.py <library folder> <templates folder>`.

@@ -1,6 +1,8 @@
 # Document standards engine and role resolution — design for discussion
 
-*21 Oct 2026. For you to mark up, and to take the "Ask Bobby" questions to him. Nothing here is built yet.*
+*21 Oct 2026. For you to mark up, and to take the "Ask Bobby" questions to him.*
+
+> **Built since this was written (21 Oct):** the Document Standards page (see HOW-ORGOS-WORKS §1c), with checks V01 to V04, V08 to V12, V14, V15, V22 and V23, and Convert to CDT with its five proofs. Still to build: V05 to V07 (need the organogram), V13, V16 to V21, V24, wiring the checks into the Lifecycle Review gate, and everything about roles in Part B.
 
 ---
 

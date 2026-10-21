@@ -29,6 +29,7 @@ import ControlRegister from "./pages/ControlRegister/index.jsx";
 import RecordTracker from "./pages/RecordTracker/index.jsx";
 import AssignmentOwnership from "./pages/AssignmentOwnership/index.jsx";
 import Harmonisation from "./pages/Harmonisation/index.jsx";
+import DocumentStandards from "./pages/DocumentStandards/index.jsx";
 import StrategicRisks from "./pages/StrategicRisks/index.jsx";
 import StandardsMap from "./pages/StandardsMap/index.jsx";
 import GapAnalysis from "./pages/GapAnalysis/index.jsx";
@@ -358,6 +359,8 @@ function OrgOSShell() {
         return <AssignmentOwnership />;
       case "harmonisation":
         return <Harmonisation />;
+      case "doc-standards":
+        return <DocumentStandards />;
       case "control":
         return <ControlRegister />;
       case "risk":

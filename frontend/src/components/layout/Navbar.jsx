@@ -12,6 +12,7 @@ import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
 import {
   faHouse,
   faGauge,
+  faClipboardCheck,
   faLayerGroup,
   faFileLines,
   faCalendarDays,
@@ -42,6 +43,7 @@ const DROPDOWN_CLOSE_DELAY_MS = 150;
 const NAV_GROUPS = [
   { type: "external", id: "home", label: "Home", icon: faHouse, href: SHELL_URL },
   { type: "flat", id: "workhub", label: "Dashboard", icon: faGauge },
+  { type: "flat", id: "doc-standards", label: "Document Standards", icon: faClipboardCheck },
   {
     type: "dropdown",
     id: "foundations",
