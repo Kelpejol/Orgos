@@ -30,6 +30,34 @@ That is exactly the drift you described, caught while the author can still fix i
 
 ---
 
+## 1a. In plain words: what the annexes are
+
+The CDI Procedure is a rulebook. At the back it has three annexes. They are three different **forms** or **lists** the rules refer to:
+
+| Annex | What it is | Think of it as | Example |
+|---|---|---|---|
+| **Annex A: Document Register Record** | The fields kept about **a whole document** (26 of them) | The **registration card** for a document | Code, title, owner role, parent, domain, status, version, effective date, classification |
+| **Annex B: Reference Data** | **Lookup lists** the rules use | The **dropdown lists** and **approval chart** | Document types (POL, STD, PRO…), function codes (ISMS, QI, IT…), retired codes, and for each domain, who gives First Pass and Final Approval |
+| **Annex C: Control Record** | The fields kept about **one control** (16 of them) | The **registration card** for a control | Control ID, requirement, trigger, accountable role, executing role, evidence, mapping, risk, failure route, exception route |
+
+So: A describes documents, C describes controls, and B is the shared reference lists. Every control sits inside a document, which is why both cards exist.
+
+**What the engine does with them:**
+- It checks that a document's **A card** is complete and valid (V01, V02, V05, V06, V23…).
+- It checks that each control's **C card** is complete (V08, V10, V22…).
+- It uses the **B lists** to decide what's valid: is this function code real? Who approves for this domain?
+
+**What these checks look like on the real library today** (only controls in the document that *defines* them count):
+- 24 documents define controls (347 controls in total).
+- **Only 1 of the 24 states every field of every control**: the CDI Standard.
+- **23 lack a standards mapping** on some control (V22).
+- **17 lack some other required field** (V08), and **6 lack a risk statement** (V10).
+- **8 documents have no document code** at all (V02), and **29 have a file name carrying status, version or date** (V23).
+
+That's a measure of the work, and shows the engine would find real, specific problems.
+
+---
+
 ## 2. Part A: the engine
 
 ### 2.1 The checks, and what each needs
@@ -71,7 +99,9 @@ That is exactly the drift you described, caught while the author can still fix i
 ### 2.3 Transition: the hard part
 Applying all 18 BLOCKs to the 123 existing documents would stop nearly all of them. CDI anticipates this: **"Transition status: Legacy, In transition, Aligned"** is a mandatory field, and the Compliance Executive keeps a "transition list".
 
-Proposal: a document marked **Legacy** or **In transition** has its BLOCKs shown as **FLAGs** until its next revision. **Aligned** documents get the full BLOCK treatment. We need Bobby to confirm how that works (Ask Bobby, #1).
+**But is this a problem for us?** The "Legacy" concern is about documents that were **already approved** before the rules existed. Every one of the 123 documents in the library is a **draft** (83 say "Draft", 40 state no status), and none has been approved through OrgOS. So today there's nothing "legacy" in the CDI sense: they are all *new documents that haven't been approved yet*. Purging OrgOS's own data wouldn't change that: the **files** are the issue, not OrgOS's registers.
+
+**So the simplest answer:** treat all of them as new. Each must meet the standard before approval, and the engine tells the author exactly what to fix, and where. The transition tier only matters if Dragnet has documents it formally approved before OrgOS, and Bobby can say so (Ask Bobby, #1).
 
 ---
 
@@ -119,6 +149,47 @@ CDI requires **two approvals** on a route set by the document's **Primary Domain
 
 ---
 
+## 3a. Part C: converting existing documents onto the CDT
+
+The engine's **second job** is not only checking but **converting**: bringing a SharePoint document onto the **CDT (controlled document template)** so its control facts live in the Register, and the file can't drift from it.
+
+**What the CDT is, in plain words:** a standard front cover and header, with **placeholders** for the facts that change (code, version, effective date, approver, next review). The Register holds the real values, and software fills the placeholders when the document is viewed, downloaded or published. Nobody types them into the file, so the file and the Register cannot disagree.
+
+**What already exists:**
+- master templates with the placeholders;
+- the merge that fills them in, and stamps version, dates and approver at approval;
+- "Attach CDT cover" (`lifecycle/graft.py`): puts the template's cover in front of an existing document's body;
+- cover detection: whether a document already has one.
+
+**What doesn't exist yet, and is exactly what you described:**
+1. **Reading the document's own header block.** Every v06 document opens with a table of facts (code, title, owner, parent, approvers, classification, standards, supersedes…). The CDI parser already reads it. The current cover logic does **not**: it guesses facts from the Register and the folder name instead.
+2. **Removing that old header block** after conversion. Today the graft keeps the whole document, so the hand-typed block would sit next to the new cover and the two could disagree.
+3. **Showing what was carried over**, for the author to confirm, before anything is saved.
+
+**The convert flow (proposal)**
+1. The author clicks **Convert to CDT** in Review.
+2. OrgOS **reads the header block** and fills the Register's fields (Annex A) from it.
+3. It shows a **before and after**: what was read, what will go on the cover, what's missing.
+4. On confirmation it builds the new file: template cover and header with placeholders, then the **body unchanged**, with the old header block removed.
+5. **Safety check:** OrgOS compares the document body before and after and **proves no controlled text changed**. Anything else stops the conversion.
+6. From then on the Register is the master. Version, dates and approver are stamped at approval, and the file name is set to the title (V23).
+
+**What conversion can't do:** it can only carry over facts the document already states. If a control has no mapping, or a role isn't a real role, conversion won't invent one. Those are the engine's *checks*; the author must fix them.
+
+**How the two jobs fit together:** convert first (mechanical problems vanish: file name, dates, version, header drift), then check (content problems remain: mapping, roles, missing fields). Many of the 123 documents' mechanical failures would disappear in one step.
+
+---
+
+## 3b. "Not pretending": how we make sure each check really works
+
+A check that silently can't run is worse than no check. These rules go into the engine:
+1. **Every check returns one of four answers:** Pass, Fail, Flag, or **"Could not check"** with the reason. It can never quietly pass when it couldn't look.
+2. **Every check has a test on the real documents** with a known right answer (e.g. "the CDI Standard passes V22; the Identity Standard fails it").
+3. **A proof run:** after any change, the engine runs against the whole library and prints how many documents pass and fail each check. Any surprise is visible.
+4. **Failures to write are shown, not hidden.** Several earlier problems were silent: audit entries failing, evidence obligations not created, stale CDI results blocking. The engine reports its own failures on screen.
+
+---
+
 ## 4. Other decisions that CDI already settles
 
 | Topic | What CDI says | Consequence for OrgOS |
@@ -135,7 +206,7 @@ CDI requires **two approvals** on a route set by the document's **Primary Domain
 
 Each has my recommended answer, so he can confirm or correct.
 
-1. **Transition.** *Should documents marked Legacy or In transition have their BLOCK checks downgraded to FLAG until their next revision?* Otherwise V01 to V24 stop all 123 existing documents. **Recommended:** yes, with the transition list showing what each still needs.
+1. **Transition.** *Has Dragnet formally approved any document before OrgOS, so that some documents are genuinely "Legacy"?* If not, we treat all 123 as new documents and skip the transition tier. **Recommended:** treat all as new; if some are genuinely legacy, downgrade only those BLOCKs to FLAGs until their next revision.
 2. **Replacing the old checker.** *Confirm CDI V01–V24 replace CDI-01–15 (from Document Creation Standards, which CDI supersedes).* **Recommended:** yes.
 3. **Control Owner.** CDI defines it as "as recorded on its control record", but the control block has no field for it, and eight controls name it as accountable. *Who assigns it, and where?* **Recommended:** the reviewer records it when confirming each control, defaulting to the defining document's owner role.
 4. **Functional roles in the Role Register.** *Do Document Owner, Control Owner and Custodian Role sit in the Role Register as roles resolved by context, as proposed in 3.2?* V07 says every named role must exist there. **Recommended:** yes.
