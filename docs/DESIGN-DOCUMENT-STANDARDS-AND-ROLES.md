@@ -52,7 +52,7 @@ So: A describes documents, C describes controls, and B is the shared reference l
 - **Only 1 of the 24 states every field of every control**: the CDI Standard.
 - **23 lack a standards mapping** on some control (V22).
 - **17 lack some other required field** (V08), and **6 lack a risk statement** (V10).
-- **8 documents have no document code** at all (V02), and **29 have a file name carrying status, version or date** (V23).
+- **8 documents have no document code** at all (V02), and **29 break the file-name rule** (V23): 27 carry a status, version or date, and 2 differ from the title.
 
 That's a measure of the work, and shows the engine would find real, specific problems.
 
