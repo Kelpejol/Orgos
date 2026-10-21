@@ -273,6 +273,11 @@ _HEADER_KEYS: dict[str, tuple[str, ...]] = {
 }
 _HEADER_LABELS = {alias: key for key, aliases in _HEADER_KEYS.items() for alias in aliases}
 
+def header_key(label: str) -> str:
+    """The header field a label names ('Document code' → 'code'), or '' if it is not one."""
+    return _HEADER_LABELS.get(norm(label), "")
+
+
 # Where a value may come from, most authoritative first.
 _SOURCE_RANK = {"control block": 0, "cover": 1, "body": 2, "filename": 3}
 # Facts a document must not state two different ways.
@@ -320,11 +325,21 @@ def _header_tables(content: DocumentContent) -> list[tuple[str, list[tuple[str, 
         if not opens_as_block:
             continue
         pairs = []
-        for row in table.rows:
+        non_empty_rows = 0
+        caption = norm(" ".join(first)) in ("control block", "control metadata value", "field value", "field detail")
+        for r, row in enumerate(table.rows):
             cells = _cells(row)
+            if cells and any(cells) and not (r == 0 and caption):    # a caption row is not a fact row
+                non_empty_rows += 1
             if cells and norm(cells[0]) in _HEADER_LABELS:
                 pairs.append((cells[0], " ".join(cells[1:]).strip()))
-        if len(pairs) >= 4:
+        # A control block states at least four facts. A smaller table counts only
+        # when EVERY row is a known header fact — which is what is left of a
+        # converted document's block once the CDT cover has taken over the rest
+        # (e.g. just "Supersedes", or "Controls implemented").
+        every_row_a_fact = bool(pairs) and len(pairs) == non_empty_rows and not any(
+            norm(c) in ("field", "rule", "mandatory") for c in first)
+        if len(pairs) >= 4 or every_row_a_fact:
             first = norm(" ".join(_cells(table.rows[0])))
             out.append(("control block" if first == "control block" else "cover", pairs))
     return out

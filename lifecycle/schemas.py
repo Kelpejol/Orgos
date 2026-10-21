@@ -151,6 +151,13 @@ class CdtCoverFacts(BaseModel):
     effective_date: str = Field(default="", description="Human-printed, e.g. 'August 2026'. Blank while in Draft.")
     next_review_due: str = Field(default="", description="Human-printed, e.g. 'August 2027'.")
     standards: list[StandardEntry] = Field(default_factory=list)
+    extras: dict[str, str] = Field(
+        default_factory=dict,
+        description="Every label/value the document's own header block stated, verbatim "
+                    "(supersedes, legacy code, child documents, review cycle, status, …). "
+                    "The cover has no cell for most of them; they are kept here so converting "
+                    "a document onto the CDT never loses a fact. Not rendered by the template.",
+    )
 
     @classmethod
     def from_json(cls, raw: Any) -> "CdtCoverFacts":

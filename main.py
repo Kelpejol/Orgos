@@ -40,6 +40,7 @@ from agents.nl_search.router      import router as nl_search_router
 from org_roles.router             import router as org_roles_router
 from groups.router                import router as groups_router
 from records_catalogue.router     import router as records_catalogue_router
+from doc_standards.router         import router as doc_standards_router
 
 
 # Configure logging before anything else
@@ -149,6 +150,7 @@ app.include_router(nl_search_router)
 app.include_router(org_roles_router)
 app.include_router(groups_router)
 app.include_router(records_catalogue_router)
+app.include_router(doc_standards_router)
 
 # =============================================================================
 #  Health endpoints (no auth required — for monitoring)

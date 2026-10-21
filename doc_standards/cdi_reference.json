@@ -1,0 +1,634 @@
+{
+  "source": {
+    "code": "DRG-QI-PRO-CDI",
+    "file": "Control of Documented Information Procedure.docx"
+  },
+  "checks": [
+    {
+      "id": "V01",
+      "name": "All mandatory register fields are complete (Annex A)",
+      "enforcement": "BLOCK"
+    },
+    {
+      "id": "V02",
+      "name": "Display code is unique and built from current reference data; no retired function code",
+      "enforcement": "BLOCK"
+    },
+    {
+      "id": "V03",
+      "name": "Parent link exists and the parent is approved",
+      "enforcement": "BLOCK"
+    },
+    {
+      "id": "V04",
+      "name": "Document type matches layer, and content matches type (no tools or steps in a Policy)",
+      "enforcement": "FLAG"
+    },
+    {
+      "id": "V05",
+      "name": "Domain is from reference data and the approval route resolves to role holders",
+      "enforcement": "BLOCK"
+    },
+    {
+      "id": "V06",
+      "name": "First Pass and Final Approval resolve to different roles and different people",
+      "enforcement": "BLOCK"
+    },
+    {
+      "id": "V07",
+      "name": "Every role named in the text exists in the Role Register",
+      "enforcement": "BLOCK"
+    },
+    {
+      "id": "V08",
+      "name": "At programme extraction, each control has requirement, risk statement, accountable and executing roles, trigger or frequency, evidence Record ID, failure route and exception route. System links, freshness periods, machine evidence sources and Document Register links are loading tasks",
+      "enforcement": "BLOCK"
+    },
+    {
+      "id": "V09",
+      "name": "Every evidence reference resolves to a Record ID in the Catalogue, to declared evidence at source, or to a logged Record admission request within its decision time",
+      "enforcement": "BLOCK"
+    },
+    {
+      "id": "V10",
+      "name": "Every control carries a risk statement (what could happen, why, consequence), and no internal Risk Register or risk ID is referenced",
+      "enforcement": "BLOCK"
+    },
+    {
+      "id": "V11",
+      "name": "No control duplicates an existing Control ID or restates it with a changed requirement, role, evidence or trigger",
+      "enforcement": "BLOCK"
+    },
+    {
+      "id": "V12",
+      "name": "No vague qualifier is used in a requirement, trigger or step",
+      "enforcement": "FLAG"
+    },
+    {
+      "id": "V13",
+      "name": "No programme commentary, predecessor citation, pending list, drafting note or individual's name appears in controlled text",
+      "enforcement": "BLOCK"
+    },
+    {
+      "id": "V14",
+      "name": "Normative words are used correctly and abbreviations are defined",
+      "enforcement": "REPORT"
+    },
+    {
+      "id": "V15",
+      "name": "Required sections (7.3) are present; table of contents present over five pages",
+      "enforcement": "FLAG"
+    },
+    {
+      "id": "V16",
+      "name": "Layer 4 steps each name a responsible role, and handoffs name both roles",
+      "enforcement": "BLOCK"
+    },
+    {
+      "id": "V17",
+      "name": "Automated steps declare their evidence output and source system",
+      "enforcement": "BLOCK"
+    },
+    {
+      "id": "V18",
+      "name": "No local Record Type, retention, custodian or disposition is written in the text",
+      "enforcement": "BLOCK"
+    },
+    {
+      "id": "V19",
+      "name": "Similar existing documents or controls are shown to the author before a new record is created",
+      "enforcement": "FLAG"
+    },
+    {
+      "id": "V20",
+      "name": "A version increment carries a change summary, and a material change carries a version increment",
+      "enforcement": "BLOCK"
+    },
+    {
+      "id": "V21",
+      "name": "For operational documents, stakeholder consultation is recorded; for company position documents, the designation is confirmed by the Final Approver; sensitisation is recorded where required",
+      "enforcement": "BLOCK"
+    },
+    {
+      "id": "V22",
+      "name": "Every QMS or ISMS scoped control has a non-blank per-control Standard mapping (ISO 9001 clause and/or ISO/IEC 27001:2022 Annex A control, and NDPA section where relevant)",
+      "enforcement": "BLOCK"
+    },
+    {
+      "id": "V23",
+      "name": "File name equals title and carries no status, version or date text",
+      "enforcement": "BLOCK"
+    },
+    {
+      "id": "V24",
+      "name": "The AI Involvement field is completed, and laws and standards cited are at their current version",
+      "enforcement": "FLAG"
+    }
+  ],
+  "required_sections": [
+    {
+      "section": "1.0 Purpose",
+      "content": "Why the document exists. For a Policy, the risk or business reason",
+      "required": "Always"
+    },
+    {
+      "section": "2.0 Scope",
+      "content": "Who and what it applies to, and exclusions",
+      "required": "Always"
+    },
+    {
+      "section": "3.0 Definitions",
+      "content": "Abbreviations and technical terms",
+      "required": "If applicable"
+    },
+    {
+      "section": "4.0 Main content",
+      "content": "Commitments for Policies; requirements for Standards; steps for Procedures and Specifications; recommendations for Guidelines",
+      "required": "Always"
+    },
+    {
+      "section": "5.0 Roles and Responsibilities",
+      "content": "Who does what, by role",
+      "required": "Always"
+    },
+    {
+      "section": "6.0 Related Documents",
+      "content": "Parent, children, forms, directly implemented external standards",
+      "required": "If applicable"
+    },
+    {
+      "section": "7.0 Appendices",
+      "content": "Flowcharts, templates, reference material",
+      "required": "If applicable"
+    }
+  ],
+  "annex_a_register_fields": [
+    {
+      "field": "System ID",
+      "rule": "Assigned by the platform. Never reused",
+      "mandatory": "Yes"
+    },
+    {
+      "field": "Display code",
+      "rule": "Generated DRG-[Function]-[Type]-[Mnemonic]; unique",
+      "mandatory": "Yes"
+    },
+    {
+      "field": "Legacy code",
+      "rule": "Prior code where one existed",
+      "mandatory": "Where applicable"
+    },
+    {
+      "field": "Title",
+      "rule": "Full controlled title. Equals the file name where a file exists",
+      "mandatory": "Yes"
+    },
+    {
+      "field": "Document type and layer",
+      "rule": "From Annex B",
+      "mandatory": "Yes"
+    },
+    {
+      "field": "Function code",
+      "rule": "From Annex B",
+      "mandatory": "Yes"
+    },
+    {
+      "field": "Primary Domain",
+      "rule": "From Annex B; residual assignment reason recorded",
+      "mandatory": "Yes"
+    },
+    {
+      "field": "Affected Domains",
+      "rule": "From Annex B",
+      "mandatory": "Where applicable"
+    },
+    {
+      "field": "Parent",
+      "rule": "Link to an approved register record",
+      "mandatory": "Yes, except Master Policy and Manual"
+    },
+    {
+      "field": "Subordinate documents",
+      "rule": "Links, maintained by the platform",
+      "mandatory": "Yes for Layers 1 to 3"
+    },
+    {
+      "field": "Owner role",
+      "rule": "Link to the Role Register",
+      "mandatory": "Yes"
+    },
+    {
+      "field": "First Pass and Final Approval roles",
+      "rule": "Resolved from the domain route",
+      "mandatory": "Yes"
+    },
+    {
+      "field": "Alternate approval role",
+      "rule": "Named by the Chief Compliance Officer under 11.9",
+      "mandatory": "Where applicable"
+    },
+    {
+      "field": "Classification and distribution",
+      "rule": "From the Information Security classification control. Minimum Internal Use Only; default distribution All Staff",
+      "mandatory": "Yes"
+    },
+    {
+      "field": "Status",
+      "rule": "Draft, In Review, Approved, Superseded, Retired",
+      "mandatory": "Yes"
+    },
+    {
+      "field": "Version",
+      "rule": "Set on issue",
+      "mandatory": "Yes once issued"
+    },
+    {
+      "field": "Effective date, last review date, next review due",
+      "rule": "Next review no later than 12 months after last review",
+      "mandatory": "Yes once issued"
+    },
+    {
+      "field": "Review outcome",
+      "rule": "Reviewer, date, decision",
+      "mandatory": "Yes once reviewed"
+    },
+    {
+      "field": "Change summary",
+      "rule": "What changed and why, for each issued version",
+      "mandatory": "Yes once issued"
+    },
+    {
+      "field": "Supersedes / Superseded by",
+      "rule": "Links",
+      "mandatory": "Where applicable"
+    },
+    {
+      "field": "Standards mapping",
+      "rule": "Links to the Standards Map entries directly implemented",
+      "mandatory": "Yes for QMS or ISMS scoped documents"
+    },
+    {
+      "field": "Company position document",
+      "rule": "Yes or No; Yes confirmed by the Final Approver",
+      "mandatory": "Yes"
+    },
+    {
+      "field": "AI Involvement",
+      "rule": "Agent and step, or None",
+      "mandatory": "Yes"
+    },
+    {
+      "field": "Transition status",
+      "rule": "Legacy, In transition, Aligned",
+      "mandatory": "Yes for documents approved before this Procedure"
+    },
+    {
+      "field": "Offline Copy Required",
+      "rule": "Yes or No",
+      "mandatory": "Yes"
+    },
+    {
+      "field": "Authoritative location",
+      "rule": "The controlled view in the platform or published library",
+      "mandatory": "Yes"
+    }
+  ],
+  "annex_c_control_fields": [
+    {
+      "field": "Control ID",
+      "rule": "Stable; assigned on approval of the defining document",
+      "mandatory": "Yes"
+    },
+    {
+      "field": "Defining document",
+      "rule": "Link to the Layer 3 Standard, or to the Layer 4 document where the family has no Standard under 5.2",
+      "mandatory": "Yes"
+    },
+    {
+      "field": "Requirement",
+      "rule": "One discrete, testable statement",
+      "mandatory": "Yes"
+    },
+    {
+      "field": "Criterion",
+      "rule": "MUST, SHOULD or MAY, with a measurable threshold where one applies",
+      "mandatory": "Yes"
+    },
+    {
+      "field": "Trigger or frequency",
+      "rule": "Event, threshold or cadence. No vague qualifiers",
+      "mandatory": "Yes"
+    },
+    {
+      "field": "Accountable role",
+      "rule": "Link to the Role Register",
+      "mandatory": "Yes"
+    },
+    {
+      "field": "Executing role or system",
+      "rule": "Link to the Role Register or system register",
+      "mandatory": "Yes"
+    },
+    {
+      "field": "Evidence",
+      "rule": "Record ID, or declared evidence at source with source system, owner and retrieval route",
+      "mandatory": "Yes"
+    },
+    {
+      "field": "Standard mapping",
+      "rule": "Per-control ISO 9001 clause and/or ISO/IEC 27001:2022 Annex A control; NDPA section where relevant",
+      "mandatory": "Yes for QMS or ISMS scoped controls"
+    },
+    {
+      "field": "Risk statement",
+      "rule": "What could happen, why, and the consequence. No risk IDs or local risk registers",
+      "mandatory": "Yes"
+    },
+    {
+      "field": "Authority link",
+      "rule": "Law, regulation, contract, standard or parent control",
+      "mandatory": "Where applicable"
+    },
+    {
+      "field": "Monitoring method, frequency, role and evidence freshness",
+      "rule": "Where the control is monitored",
+      "mandatory": "Where applicable"
+    },
+    {
+      "field": "Failure route",
+      "rule": "Block, escalate, raise incident, raise nonconformity, open remediation",
+      "mandatory": "Yes"
+    },
+    {
+      "field": "Exception route",
+      "rule": "Who may approve an exception, for how long, and where it is recorded",
+      "mandatory": "Yes"
+    },
+    {
+      "field": "Implementing steps",
+      "rule": "Links to Layer 4 steps carrying this Control ID",
+      "mandatory": "Maintained by platform"
+    },
+    {
+      "field": "Status",
+      "rule": "Proposed, Approved, Retired",
+      "mandatory": "Yes"
+    }
+  ],
+  "annex_b": {
+    "document_types": [
+      {
+        "code": "POL",
+        "type": "Policy (Master or Domain)",
+        "layer": "Layer 1 or 2"
+      },
+      {
+        "code": "STD",
+        "type": "Standard",
+        "layer": "Layer 3"
+      },
+      {
+        "code": "PRO",
+        "type": "Procedure",
+        "layer": "Layer 4"
+      },
+      {
+        "code": "SPEC",
+        "type": "Specification",
+        "layer": "Layer 4"
+      },
+      {
+        "code": "MAN",
+        "type": "Manual",
+        "layer": "Companion to Layer 1"
+      },
+      {
+        "code": "GDL",
+        "type": "Guideline",
+        "layer": "Supporting"
+      },
+      {
+        "code": "PBK",
+        "type": "Playbook",
+        "layer": "Supporting"
+      },
+      {
+        "code": "CHK",
+        "type": "Checklist",
+        "layer": "Supporting"
+      },
+      {
+        "code": "FM",
+        "type": "Form or Template",
+        "layer": "Supporting; becomes a record when completed"
+      },
+      {
+        "code": "REG",
+        "type": "Register",
+        "layer": "Supporting; a controlled record"
+      }
+    ],
+    "function_codes": [
+      {
+        "code": "ISMS",
+        "function": "Information security, including cloud, access, cryptography and continuity"
+      },
+      {
+        "code": "QI",
+        "function": "Integrated quality and compliance, including governance, risk, incident, nonconformity, legal, context and data protection"
+      },
+      {
+        "code": "SD",
+        "function": "Software and product development"
+      },
+      {
+        "code": "IT",
+        "function": "IT and infrastructure"
+      },
+      {
+        "code": "FIN",
+        "function": "Finance and administration"
+      },
+      {
+        "code": "HR",
+        "function": "Human resources"
+      },
+      {
+        "code": "OPS",
+        "function": "Service delivery operations: testing, verification, recruitment, scholarship, candidate experience, customer success and client engagement"
+      },
+      {
+        "code": "MKT",
+        "function": "Marketing, brand and communications"
+      },
+      {
+        "code": "SAL",
+        "function": "Revenue and Sales"
+      }
+    ],
+    "retired_codes": [
+      {
+        "code": "TES",
+        "former": "Testing Operations",
+        "current": "OPS"
+      },
+      {
+        "code": "SCH",
+        "former": "Scholarship Operations",
+        "current": "OPS"
+      },
+      {
+        "code": "REC",
+        "former": "Recruitment Operations",
+        "current": "OPS"
+      },
+      {
+        "code": "CUS",
+        "former": "Customer Success",
+        "current": "OPS"
+      },
+      {
+        "code": "VER",
+        "former": "Verification Operations",
+        "current": "OPS"
+      },
+      {
+        "code": "CAE",
+        "former": "Candidate Experience",
+        "current": "OPS"
+      },
+      {
+        "code": "CLE",
+        "former": "Client Engagement",
+        "current": "OPS"
+      },
+      {
+        "code": "PROM",
+        "former": "Prometric test centres",
+        "current": "OPS"
+      },
+      {
+        "code": "DPR",
+        "former": "Data Protection",
+        "current": "QI, with Primary Domain Data Protection & Privacy"
+      },
+      {
+        "code": "QMS, QA",
+        "former": "Quality management",
+        "current": "QI"
+      },
+      {
+        "code": "ISM",
+        "former": "Information security",
+        "current": "ISMS"
+      },
+      {
+        "code": "DCE",
+        "former": "Cloud and access",
+        "current": "ISMS"
+      },
+      {
+        "code": "DEVOPS",
+        "former": "Cloud deployment and CI/CD",
+        "current": "ISMS where the subject is cloud operation; SD where it is the software delivery pipeline"
+      },
+      {
+        "code": "PD, TD, SEC, AI",
+        "former": "Product, technical development, secure development, AI-assisted development",
+        "current": "SD"
+      },
+      {
+        "code": "LEGAL, POLICY, PRO",
+        "former": "Legal, corporate policy, privacy submission guidance",
+        "current": "QI"
+      }
+    ],
+    "domain_routes": [
+      {
+        "domain": "Master Governance",
+        "scope": "Master Integrated Management System Policy",
+        "first_pass": "Chief Compliance Officer",
+        "final_approval": "Managing Director / CEO"
+      },
+      {
+        "domain": "Quality & Compliance",
+        "scope": "Quality & Compliance family Policies",
+        "first_pass": "Chief Compliance Officer",
+        "final_approval": "Managing Director / CEO"
+      },
+      {
+        "domain": "Information Security",
+        "scope": "Information Security family Policies",
+        "first_pass": "Information Security Officer",
+        "final_approval": "Chief Compliance Officer"
+      },
+      {
+        "domain": "Data Protection & Privacy",
+        "scope": "Data Protection & Privacy Policy",
+        "first_pass": "Chief Compliance Officer",
+        "final_approval": "Managing Director / CEO"
+      },
+      {
+        "domain": "IT & Infrastructure",
+        "scope": "IT & Infrastructure Policy",
+        "first_pass": "Head of IT and Infrastructure",
+        "final_approval": "Chief Compliance Officer"
+      },
+      {
+        "domain": "Software & Product Development",
+        "scope": "Software Development Lifecycle Policy",
+        "first_pass": "Head of Products and Software Development",
+        "final_approval": "Chief Compliance Officer"
+      },
+      {
+        "domain": "AI Governance",
+        "scope": "AI Use Policy",
+        "first_pass": "Information Security Officer",
+        "final_approval": "Chief Compliance Officer"
+      },
+      {
+        "domain": "Service Delivery & Operations",
+        "scope": "Service Delivery and Operations Policy",
+        "first_pass": "Chief Operating Officer",
+        "final_approval": "Chief Compliance Officer"
+      },
+      {
+        "domain": "Client Engagement",
+        "scope": "Client Engagement Policy",
+        "first_pass": "Chief Business Officer",
+        "final_approval": "Chief Compliance Officer"
+      },
+      {
+        "domain": "Marketing & Communications",
+        "scope": "Marketing & Communications Policy",
+        "first_pass": "Chief Business Officer",
+        "final_approval": "Chief Compliance Officer"
+      },
+      {
+        "domain": "Revenue & Sales",
+        "scope": "Revenue Sales commercial process and cross-domain control implementation",
+        "first_pass": "Chief Revenue Officer",
+        "final_approval": "Chief Compliance Officer"
+      },
+      {
+        "domain": "Finance & Administration",
+        "scope": "Finance & Administration Policy",
+        "first_pass": "Chief Compliance Officer",
+        "final_approval": "Managing Director / CEO"
+      },
+      {
+        "domain": "Human Resources",
+        "scope": "Human Resources Policy",
+        "first_pass": "Chief Compliance Officer",
+        "final_approval": "Managing Director / CEO"
+      },
+      {
+        "domain": "Legal & Corporate Governance",
+        "scope": "Legal & Corporate Governance Policy",
+        "first_pass": "Chief Compliance Officer",
+        "final_approval": "Managing Director / CEO"
+      }
+    ]
+  }
+}
