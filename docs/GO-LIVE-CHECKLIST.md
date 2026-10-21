@@ -99,7 +99,7 @@ Every script is a **dry run** unless given `--apply`. Run it without first and r
 | 2 | `python scripts/retire_draft_library_items.py` | the 355 controls + 7 findings raised earlier from the library folder's drafts |
 | 2a | `… --apply` | retired as Superseded, with a note saying why |
 | 3 | `crontab -l` | the SharePoint intake lines (06:00 and 20:00). If they're missing, run `scripts/setup_intake_cron.sh`. Intake opens a Lifecycle entry for each file in the library |
-| 4 | `python scripts/fix_intake_types.py` | corrects the type of intake items still in Review (e.g. a Standard filed as a Form because its folder name contained "Information"); `--apply` to write |
+| 4 | `python scripts/fix_intake_items.py` | re-reads each intake item still in Review and corrects what intake guessed: document code, type, title, department, standards (e.g. a Standard filed as a Form; a cited document's code taken as its own; "Draft" in a title). Lists every change first; `--apply` to write |
 | 5 | `python scripts/rerun_cdi_checks.py --dry-run` | refreshes day-one CDI results with the current checker (drop `--dry-run` to write). The Progress button also does this by itself |
 
 Then documents go through **Document Lifecycle** (Review → Sensitisation → Approval). **Each approval** reads the approved library with the new reader:

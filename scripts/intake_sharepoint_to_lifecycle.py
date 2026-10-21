@@ -77,7 +77,6 @@ LIFECYCLE_LIST_NAME = "Document Lifecycle"
 REGISTER_LIST_NAME = "Document Register"
 
 DEFAULT_OWNER_NAME = "System (SharePoint Intake)"
-DEFAULT_STANDARDS = "ISO 27001, ISO 9001, NDPA"
 
 
 @dataclass(frozen=True)
@@ -87,6 +86,10 @@ class IntakeClassification:
     document_code: str
     confidence: str
     reason: str
+    # What the document says about itself, so nothing is re-guessed from the file name.
+    title: str = ""
+    standards: str = ""          # "ISO 27001, NDPA" — only what the document states
+    department_source: str = ""  # how the department was decided
 
 
 # =============================================================================
@@ -374,35 +377,68 @@ async def extract_text_with_ocr(file_bytes: bytes, filename: str) -> str:
 #  OrgOS classification and duplicate checks
 # =============================================================================
 
+def department_from_code(code: str) -> str:
+    """The function segment of the code IS the department: DRG-ISMS-STD-IDL → ISMS,
+    DRG-QI-PRO-CDI → QI, DRG-IT-PRO-APP → IT. The same codes the Lifecycle
+    screens offer."""
+    from cdi.codes import parse_doc_code
+    return parse_doc_code(code)[0]
+
+
+# Fallback when a document has no usable code. Whole words only, and only the
+# department codes the app uses.
+_DEPARTMENT_WORDS = [
+    ("ISMS", ("isms", "information security", "cyber", "access control", "vulnerability")),
+    ("HR", ("hr", "human resources", "recruitment")),
+    ("FIN", ("finance", "accounts", "procurement", "vendor")),
+    ("IT", ("information technology", "infrastructure")),
+    ("QI", ("quality", "qms", "compliance", "governance", "data protection", "privacy", "ndpa")),
+]
+
+
 def _department_from_path(folder_path: str, filename: str) -> str:
     text = f"{folder_path} {filename}".lower()
-    department_map = {
-        "isms": "ISMS",
-        "information security": "ISMS",
-        "cyber": "ISMS",
-        "data protection": "DPO",
-        "privacy": "DPO",
-        "ndpa": "DPO",
-        "hr": "HR",
-        "human resources": "HR",
-        "finance": "FIN",
-        "account": "FIN",
-        "legal": "LEGAL",
-        "contract": "LEGAL",
-        "procurement": "PROC",
-        "vendor": "PROC",
-        "operations": "OPS",
-        "quality": "QMS",
-        "qms": "QMS",
-        "audit": "AUDIT",
-        "risk": "RISK",
-        "compliance": "GRC",
-        "grc": "GRC",
-    }
-    for needle, department in department_map.items():
-        if needle in text:
+    for department, words in _DEPARTMENT_WORDS:
+        if _has_word(text, *words):
             return department
-    return "GRC"
+    return "QI"          # the governance default; the note says it was a fallback
+
+
+def standards_from_text(text: str) -> str:
+    """The standards a document says it maps to, in the register's vocabulary.
+    Nothing is assumed: a document that states none gets none."""
+    t = text or ""
+    found = []
+    if re.search(r"\b27001\b", t): found.append("ISO 27001")
+    if re.search(r"\b9001\b", t): found.append("ISO 9001")
+    if re.search(r"\bNDP[AR]\b", t): found.append("NDPA")
+    return ", ".join(found)
+
+
+_STATUS_TAIL = re.compile(
+    r"[\s\-–]*(?:working\s+|clean\s+|pre-?issue\s+)*draft(?:\s+for\s+approval)?"
+    r"(?:\s+\d{4}-\d{2}-\d{2})?\s*$", re.IGNORECASE)
+
+
+def title_for(filename: str, header_title: str = "") -> str:
+    """The document's own title; failing that the file name without its extension
+    and trailing status (CDI V23: a name carries no status, version or date)."""
+    if header_title and header_title.strip():
+        return header_title.strip()[:255]
+    stem = os.path.splitext(filename)[0]
+    return (_STATUS_TAIL.sub("", stem).strip() or stem)[:255]
+
+
+def read_header(file_bytes: bytes, filename: str) -> Optional[dict]:
+    """What the document says about itself, read with the CDI parser; None when
+    it can't be parsed (a legacy .doc, a scan)."""
+    try:
+        from cdi.parser import parse_document
+        h = parse_document(file_bytes, filename).header
+        return {"code": h.code or "", "title": h.title or "", "standards": h.standards_as_written or ""}
+    except Exception as exc:
+        logger.info(f"Could not read the header of {filename}: {exc}")
+        return None
 
 
 # The type code inside a document code is authoritative: DRG-QI-STD-CDI is a
@@ -464,10 +500,12 @@ def _document_type_from_path(folder_path: str, filename: str) -> tuple[str, str,
 
 def extract_document_code_from_text(text: str) -> str:
     """
-    Read the controlled document code from the document body.
-    Never invent a code from the SharePoint filename.
+    Fallback only, for a file the CDI parser cannot read: the first code in the
+    opening of the text. The whole body is never searched — it cites other
+    documents' codes (a parent policy, a related procedure), and taking one of
+    those filed a document under another document's code.
     """
-    match = DOC_CODE_SEARCH_PATTERN.search(text.upper())
+    match = DOC_CODE_SEARCH_PATTERN.search((text or "")[:1500].upper())
     if not match:
         return ""
     candidate = match.group(0).upper().strip()
@@ -475,13 +513,19 @@ def extract_document_code_from_text(text: str) -> str:
     return candidate if is_valid_doc_code(candidate) else ""
 
 
-def classify_for_lifecycle(filename: str, folder_path: str, document_code: str) -> IntakeClassification:
+def classify_for_lifecycle(filename: str, folder_path: str, document_code: str,
+                           header: Optional[dict] = None) -> IntakeClassification:
+    header = header or {}
     from_code = document_type_from_code(document_code)
     if from_code:
         document_type, confidence, reason = from_code, "high", f"the document code {document_code} says {from_code}"
     else:
         document_type, confidence, reason = _document_type_from_path(folder_path, filename)
-    department = _department_from_path(folder_path, filename)
+    dept = department_from_code(document_code)
+    if dept:
+        department, dept_source = dept, f"from the document code {document_code}"
+    else:
+        department, dept_source = _department_from_path(folder_path, filename), "GUESSED from the folder (the document states no code)"
 
     return IntakeClassification(
         document_type=document_type,
@@ -489,13 +533,16 @@ def classify_for_lifecycle(filename: str, folder_path: str, document_code: str) 
         document_code=document_code,
         confidence=confidence,
         reason=reason,
+        title=title_for(filename, header.get("title", "")),
+        standards=standards_from_text(header.get("standards", "")),
+        department_source=dept_source,
     )
 
 
 # Lifecycle-valid document types and known department codes — the AI
 # classifier below is constrained to these; anything else is discarded.
 _VALID_LIFECYCLE_TYPES = {"Policy", "Standard", "Procedure", "SOP", "Form", "Guidelines", "Guideline", "Manual"}
-_VALID_DEPARTMENTS = {"ISMS", "DPO", "HR", "FIN", "LEGAL", "PROC", "OPS", "QMS", "AUDIT", "RISK", "GRC"}
+_VALID_DEPARTMENTS = {"QI", "ISMS", "HR", "FIN", "REC", "IT", "TES", "VER", "CX", "SD", "EX"}
 
 
 async def ai_refine_classification(
@@ -523,7 +570,7 @@ Document opening:
 {document_text[:2000]}
 
 Pick exactly one document_type from: Policy, Standard, Procedure, SOP, Form, Guideline, Manual
-Pick exactly one department from: ISMS (information security), DPO (data protection/privacy), HR, FIN (finance), LEGAL, PROC (procurement/vendor), OPS (operations), QMS (quality), AUDIT, RISK, GRC (general compliance)
+Pick exactly one department from: QI (quality, compliance, governance, data protection), ISMS (information security), HR, FIN (finance, procurement), REC (recruitment), IT, TES (testing), VER (verification), CX (client experience), SD (software development), EX (executive)
 
 Return ONLY JSON: {{"document_type": "...", "department": "...", "reason": "one short sentence"}}"""
         raw = await llm_generate(prompt, tier="light", max_tokens=150, temperature=0, json_mode=True)
@@ -668,11 +715,14 @@ async def create_lifecycle_entry(
     trigger = "SharePoint Intake" if cdi_status != "Failed" else "CDI Fix"
 
     notes = (
-        "Imported from SharePoint GRC MASTERY for controlled lifecycle onboarding. "
-        "Do not extract controls until this item is approved and appears in the "
-        "Document Register. "
-        f"Detected type: {classification.document_type} "
+        "Imported from the SharePoint control library for controlled lifecycle onboarding. "
+        "Controls enter OrgOS when this item is approved. "
+        f"Type: {classification.document_type} "
         f"({classification.confidence} confidence: {classification.reason}). "
+        f"Department: {classification.department} ({classification.department_source}). "
+        + ("" if classification.document_code else
+           "The document states no document code — set one before approving. ")
+        + ""
         f"Source folder: {file_info.get('folder_path', '')}."
     )
     if legacy_format:
@@ -682,7 +732,7 @@ async def create_lifecycle_entry(
         )
 
     fields: dict = {
-        "Title": os.path.splitext(filename)[0],
+        "Title": classification.title or title_for(filename),
         "DocumentCode": classification.document_code,
         "DocumentType": classification.document_type,
         "Department": classification.department,
@@ -696,8 +746,9 @@ async def create_lifecycle_entry(
         "RejectionCount": 0,
         "StakeholderResponseCount": 0,
         "SharePointFileUrl": web_url,
-        "StandardsMapping": DEFAULT_STANDARDS,
     }
+    if classification.standards:
+        fields["StandardsMapping"] = classification.standards     # as the document states it
     if owner_oid:
         fields["OwnerEntraId"] = owner_oid
     if cdi_failures:
@@ -849,12 +900,16 @@ async def run_intake(
             try:
                 file_bytes, download_name = await download_file(drive_id, file_info["id"])
                 document_text = await extract_text_with_ocr(file_bytes, download_name or filename)
-                document_code = extract_document_code_from_text(document_text)
+                header = read_header(file_bytes, download_name or filename)
+                if header is not None:
+                    document_code = header["code"]            # the document's OWN code, or none
+                else:
+                    document_code = extract_document_code_from_text(document_text)
             except Exception as exc:
                 if is_legacy:
                     # Unreadable legacy .doc — intake the card anyway; the
                     # FORMAT finding tells the owner to convert to .docx.
-                    file_bytes, download_name, document_code = b"", filename, ""
+                    file_bytes, download_name, document_code, header = b"", filename, "", None
                 else:
                     print(f"  {prefix} {filename[:64]}")
                     print(f"              → FAILED TO READ DOCUMENT CODE: {str(exc)[:90]}")
@@ -876,6 +931,7 @@ async def run_intake(
                 filename,
                 file_info["folder_path"],
                 document_code,
+                header,
             )
             # Keyword rules couldn't decide → let the AI read the document.
             classification = await ai_refine_classification(
