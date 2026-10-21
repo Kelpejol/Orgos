@@ -711,6 +711,11 @@ async def progress_doc(
                     detail="Upload a file before progressing from Review.",
                 )
             if doc.get("CDIStatus") == "Failed":
+                # A stored result is only as good as the checker that wrote it
+                # (an intake item keeps its day-one result for good). Judge the
+                # file by the current checker before refusing to progress.
+                await _refresh_stale_cdi(item_id, doc)
+            if doc.get("CDIStatus") == "Failed":
                 raise HTTPException(
                     status_code=422,
                     detail="CDI check failed — fix the listed failures and re-upload before progressing.",
@@ -2268,6 +2273,29 @@ async def reassign_doc(
         return await _sp_to_doc(updated)
     except Exception as exc:
         _handle_error(exc, f"reassign document {item_id}")
+
+
+async def _refresh_stale_cdi(item_id: str, doc: dict) -> None:
+    """
+    Re-run the CDI checks on the item's file with the current checker and store
+    the result (also on `doc`). Best-effort: if the file can't be fetched or the
+    check can't run, the stored result stands.
+    """
+    url = doc.get("SharePointFileUrl")
+    if not url:
+        return
+    try:
+        data, content_type = await download_file_from_sharepoint(url)
+        filename = _filename_from_sharepoint_url(url, content_type)
+        status_, failures = await _cdi_check_file(item_id, data, filename)
+    except Exception as exc:
+        logger.warning(f"Could not refresh the CDI result for lifecycle {item_id}: {exc}")
+        return
+    if status_ == "Error":
+        return                                   # a checker error is not a verdict
+    await update_list_item(_get_list_id(), _LIST_NAME, item_id,
+                           {"CDIStatus": status_, "CDIFailures": failures})
+    doc["CDIStatus"], doc["CDIFailures"] = status_, failures
 
 
 async def _cdi_check_file(item_id: str, file_bytes: bytes, filename: str) -> tuple[str, str]:

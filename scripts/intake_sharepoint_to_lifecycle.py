@@ -405,30 +405,55 @@ def _department_from_path(folder_path: str, filename: str) -> str:
     return "GRC"
 
 
+# The type code inside a document code is authoritative: DRG-QI-STD-CDI is a
+# Standard whatever its folder or file is called. Only unambiguous codes are
+# mapped; the rest fall through to the path guess below.
+_TYPE_BY_CODE = {
+    "STD": "Standard", "POL": "Policy", "PRO": "Procedure", "SOP": "SOP",
+    "GDL": "Guideline", "MAN": "Manual", "FRM": "Form", "FM": "Form", "CHK": "Form",
+    # Lifecycle has no Specification or Register type: a specification explains
+    # implementation like a procedure; a register is a record form.
+    "SPEC": "Procedure", "REG": "Form",
+}
+
+
+def document_type_from_code(code: str) -> str:
+    """'DRG-QI-STD-CDI' → 'Standard'; '' when the code doesn't say."""
+    from cdi.codes import parse_doc_code
+    return _TYPE_BY_CODE.get(parse_doc_code(code)[1], "")
+
+
+def _has_word(text: str, *words: str) -> bool:
+    """Whole words only: 'form' is not in 'Information', 'act' is not in 'contract'."""
+    return any(re.search(rf"\b{re.escape(w)}\b", text) for w in words)
+
+
 def _document_type_from_path(folder_path: str, filename: str) -> tuple[str, str, str]:
     text = f"{folder_path} {filename}".lower()
     name = filename.lower()
 
-    if any(token in text for token in ["form", "template", "checklist"]):
-        return "Form", "high", "folder or filename indicates a form/template/checklist"
-    if any(token in text for token in ["guideline", "guide", "manual", "handbook"]):
-        return "Guidelines", "high", "folder or filename indicates guidance/manual content"
-    if any(token in text for token in ["sop", "standard operating procedure", "work instruction"]):
-        return "SOP", "high", "folder or filename indicates SOP/work instruction"
-    if any(token in text for token in ["procedure", "process"]):
-        return "Procedure", "high", "folder or filename indicates procedure/process"
-    if "policy" in text or "policies" in text:
-        return "Policy", "high", "folder or filename indicates policy"
+    if _has_word(text, "form", "forms", "template", "templates", "checklist", "checklists"):
+        return "Form", "high", "folder or filename names a form/template/checklist"
+    if _has_word(text, "guideline", "guidelines", "guide", "manual", "handbook"):
+        return "Guidelines", "high", "folder or filename names guidance/a manual"
+    if _has_word(text, "sop") or "standard operating procedure" in text or "work instruction" in text:
+        return "SOP", "high", "folder or filename names an SOP/work instruction"
+    if _has_word(text, "standard", "standards"):
+        return "Standard", "medium", "folder or filename names a standard"
+    if _has_word(text, "procedure", "procedures", "process"):
+        return "Procedure", "high", "folder or filename names a procedure/process"
+    if _has_word(text, "policy", "policies"):
+        return "Policy", "high", "folder or filename names a policy"
 
     # These are controlled documents but are not valid Lifecycle choice values.
     # Intake them as Procedures so governance can review and reclassify if needed.
-    if any(token in text for token in ["job description", " jd ", "_jd_", "-jd-", "role profile"]):
+    if _has_word(text, "job description", "jd", "role profile") or "_jd_" in text or "-jd-" in text:
         return "Procedure", "medium", "job description mapped to lifecycle-safe Procedure"
-    if any(token in text for token in ["contract", "agreement", "nda", "sla"]):
+    if _has_word(text, "contract", "agreement", "nda", "sla"):
         return "Procedure", "medium", "contract/agreement mapped to lifecycle-safe Procedure"
-    if any(token in text for token in ["regulatory", "statutory", "law", "act", "regulation"]):
+    if _has_word(text, "regulatory", "statutory", "law", "act", "regulation"):
         return "Guidelines", "medium", "regulatory/reference material mapped to Guidelines"
-    if any(token in text for token in ["audit", "finding", "risk assessment", "risk register"]):
+    if _has_word(text, "audit", "finding", "risk assessment", "risk register"):
         return "Procedure", "medium", "audit/risk document mapped to Procedure for review"
 
     # Last small clue from extension-stripped name.
@@ -451,7 +476,11 @@ def extract_document_code_from_text(text: str) -> str:
 
 
 def classify_for_lifecycle(filename: str, folder_path: str, document_code: str) -> IntakeClassification:
-    document_type, confidence, reason = _document_type_from_path(folder_path, filename)
+    from_code = document_type_from_code(document_code)
+    if from_code:
+        document_type, confidence, reason = from_code, "high", f"the document code {document_code} says {from_code}"
+    else:
+        document_type, confidence, reason = _document_type_from_path(folder_path, filename)
     department = _department_from_path(folder_path, filename)
 
     return IntakeClassification(
@@ -465,7 +494,7 @@ def classify_for_lifecycle(filename: str, folder_path: str, document_code: str) 
 
 # Lifecycle-valid document types and known department codes — the AI
 # classifier below is constrained to these; anything else is discarded.
-_VALID_LIFECYCLE_TYPES = {"Policy", "Procedure", "SOP", "Form", "Guidelines"}
+_VALID_LIFECYCLE_TYPES = {"Policy", "Standard", "Procedure", "SOP", "Form", "Guidelines", "Guideline", "Manual"}
 _VALID_DEPARTMENTS = {"ISMS", "DPO", "HR", "FIN", "LEGAL", "PROC", "OPS", "QMS", "AUDIT", "RISK", "GRC"}
 
 
@@ -493,7 +522,7 @@ Filename: {filename}
 Document opening:
 {document_text[:2000]}
 
-Pick exactly one document_type from: Policy, Procedure, SOP, Form, Guidelines
+Pick exactly one document_type from: Policy, Standard, Procedure, SOP, Form, Guideline, Manual
 Pick exactly one department from: ISMS (information security), DPO (data protection/privacy), HR, FIN (finance), LEGAL, PROC (procurement/vendor), OPS (operations), QMS (quality), AUDIT, RISK, GRC (general compliance)
 
 Return ONLY JSON: {{"document_type": "...", "department": "...", "reason": "one short sentence"}}"""

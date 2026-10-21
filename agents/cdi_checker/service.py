@@ -971,12 +971,37 @@ def _verbatim_find(find: str, anchor: str) -> str:
     return ""
 
 
+# The wording CDI-06 is about. The AI is only ever asked to LOCATE it: a finding
+# naming a word that is not on this list, or not in the quoted text, is the
+# model inventing a problem ("requirements", "keep", "do not change" were
+# reported as aspirational in a Standard that states every control with
+# "shall"), and is dropped.
+_ASPIRATIONAL_WORDS = re.compile(
+    r"\b(?:should|where\s+possible|wherever\s+possible|as\s+appropriate|ideally|"
+    r"encouraged\s+to|if\s+possible|where\s+applicable|where\s+practicable|"
+    r"attempt\s+to|endeavou?r(?:s|ed)?\s+to|consider|may\s+wish\s+to|try\s+to)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_real_aspirational(word: str, anchor: str) -> bool:
+    """The reported word is aspirational wording AND appears in the quoted text."""
+    word = " ".join((word or "").split())
+    if not word or not _ASPIRATIONAL_WORDS.fullmatch(word):
+        return False
+    return bool(re.search(rf"\b{re.escape(word)}\b", anchor or "", re.IGNORECASE))
+
+
 def _ai_result_to_checks(ai: dict) -> list[dict]:
     """Convert the structured AI response into standard check result dicts."""
     checks: list[dict] = []
 
     # CDI-06
-    findings_06 = ai.get("cdi_06", {}).get("findings") or []
+    findings_06 = [
+        f for f in (ai.get("cdi_06", {}).get("findings") or [])
+        if _is_real_aspirational(str(f.get("word", "")),
+                                 str(f.get("anchor") or f.get("text") or ""))
+    ]
     if findings_06:
         for f in findings_06[:5]:
             word = f.get("word", "aspirational word")

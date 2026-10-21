@@ -246,3 +246,24 @@ def test_a_section_is_validated_with_its_heading():
 def test_language_checks_are_not_insert_validated():
     from agents.cdi_checker.service import validate_fix_content
     assert validate_fix_content("CDI-07", "anything at all")[0]
+
+
+# ── CDI-06: the AI only locates aspirational wording; it can't invent it ─────
+def test_an_ai_finding_naming_a_word_that_is_not_aspirational_is_dropped():
+    from agents.cdi_checker.service import _ai_result_to_checks
+    ai = {"cdi_06": {"findings": [
+        {"word": "requirements", "anchor": "requirements for controlling records", "find": "x", "replace": "y"},
+        {"word": "keep", "anchor": "keep the register", "find": "x", "replace": "y"},
+        {"word": "do not change", "anchor": "do not change the master", "find": "x", "replace": "y"},
+    ]}}
+    assert [c["result"] for c in _ai_result_to_checks(ai) if c["check_id"] == "CDI-06"] == ["PASS"]
+
+
+def test_a_real_aspirational_finding_is_kept_and_must_appear_in_its_quote():
+    from agents.cdi_checker.service import _ai_result_to_checks
+    real = {"word": "where possible", "anchor": "Staff should, where possible, log changes.",
+            "find": "where possible", "replace": "always"}
+    invented = {"word": "ideally", "anchor": "Staff shall log every change.", "find": "x", "replace": "y"}
+    results = [c["result"] for c in _ai_result_to_checks({"cdi_06": {"findings": [real, invented]}})
+               if c["check_id"] == "CDI-06"]
+    assert results == ["FAIL"]                      # only the real one (a warning downstream)
