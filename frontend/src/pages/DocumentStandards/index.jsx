@@ -14,6 +14,9 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import apiClient from "../../api/grcApi.js";
 import { useCurrentUserRole } from "../../hooks/useCurrentUserRole.js";
 import { LoadingState, ErrorState } from "../../components/shared/LoadingState.jsx";
+import {
+  ENFORCEMENT, STATUS, GROUPS, Pill, card, ResultCard, groupResults,
+} from "../../components/shared/StandardResults.jsx";
 
 const BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
@@ -79,39 +82,6 @@ function errorText(err) {
 }
 
 // ── small pieces ────────────────────────────────────────────────────────────
-
-const ENFORCEMENT = {
-  BLOCK: { bg: "#FCEBEB", tx: "#791F1F", bd: "#F09595", label: "Blocks approval" },
-  FLAG: { bg: "#FAEEDA", tx: "#633806", bd: "#FAC775", label: "Needs a decision" },
-  REPORT: { bg: "#E6F1FB", tx: "#0C447C", bd: "#85B7EB", label: "Reported" },
-};
-
-const STATUS = {
-  pass: { bg: "#E1F5EE", tx: "#085041", bd: "#5DCAA5", label: "Passed" },
-  fail: { bg: "#FCEBEB", tx: "#791F1F", bd: "#F09595", label: "Blocking problem" },
-  flag: { bg: "#FAEEDA", tx: "#633806", bd: "#FAC775", label: "Needs a decision" },
-  report: { bg: "#E6F1FB", tx: "#0C447C", bd: "#85B7EB", label: "For your attention" },
-  could_not_check: { bg: "#F1EFE8", tx: "#444441", bd: "#B4B2A9", label: "Could not check" },
-  not_applicable: { bg: "#F7F6F2", tx: "#6B6A63", bd: "#D8D6CC", label: "Not applicable" },
-  not_built: { bg: "#F7F6F2", tx: "#6B6A63", bd: "#D8D6CC", label: "Not built yet" },
-};
-
-const Pill = ({ tone, children, title }) => (
-  <span
-    title={title}
-    style={{
-      fontSize: 10, fontWeight: 600, padding: "2px 8px", borderRadius: 4, whiteSpace: "nowrap",
-      background: tone.bg, color: tone.tx, border: `0.5px solid ${tone.bd}`,
-    }}
-  >
-    {children}
-  </span>
-);
-
-const card = {
-  border: "1px solid var(--color-border-tertiary, #E0E0E0)",
-  borderRadius: 10, padding: "14px 16px", background: "var(--color-background-primary)",
-};
 
 const Heading = ({ children, hint }) => (
   <div style={{ margin: "20px 0 8px" }}>
@@ -284,42 +254,6 @@ export function StandardTab() {
 
 // ── Tab 2: check a document ─────────────────────────────────────────────────
 
-const GROUPS = [
-  { key: "fail", title: "Must be fixed before approval", open: true },
-  { key: "flag", title: "Needs a decision", open: true },
-  { key: "report", title: "For your attention", open: true },
-  { key: "could_not_check", title: "Could not be checked", open: true },
-  { key: "pass", title: "Passed", open: false },
-  { key: "not_applicable", title: "Does not apply to this document", open: false },
-  { key: "not_built", title: "Not built into OrgOS yet", open: false },
-];
-
-export function ResultCard({ r }) {
-  return (
-    <div style={{ ...card, padding: "10px 14px", marginBottom: 8 }}>
-      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-        <strong style={{ fontSize: 12 }}>{r.id}</strong>
-        <span style={{ fontSize: 12 }}>{r.name}</span>
-        <Pill tone={ENFORCEMENT[r.enforcement]}>{r.enforcement}</Pill>
-      </div>
-      {r.summary && <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 5, lineHeight: 1.5 }}>{r.summary}</div>}
-      {r.findings.length > 0 && (
-        <ul style={{ margin: "8px 0 0", paddingLeft: 18, fontSize: 12, lineHeight: 1.55 }}>
-          {r.findings.slice(0, 25).map((f, i) => (
-            <li key={i}>
-              {f.where && <code style={{ fontSize: 11, background: "#F1EFE8", padding: "0 4px", borderRadius: 3 }}>{f.where}</code>}{" "}
-              {f.message}
-              {f.fix && <div style={{ color: "#0C447C", fontSize: 11 }}>→ {f.fix}</div>}
-            </li>
-          ))}
-          {r.findings.length > 25 && <li style={{ color: "var(--color-text-tertiary)" }}>…and {r.findings.length - 25} more</li>}
-        </ul>
-      )}
-      {r.note && <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginTop: 6 }}>{r.note}</div>}
-    </div>
-  );
-}
-
 function CheckTab() {
   const [file, setFile] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -334,11 +268,7 @@ function CheckTab() {
     finally { setBusy(false); }
   };
 
-  const grouped = useMemo(() => {
-    const g = {};
-    (report?.results || []).forEach((r) => (g[r.status] ||= []).push(r));
-    return g;
-  }, [report]);
+  const grouped = useMemo(() => groupResults(report?.results), [report]);
 
   const tone = report && { blocked: STATUS.fail, decision: STATUS.flag, clear: STATUS.pass }[report.verdict];
 

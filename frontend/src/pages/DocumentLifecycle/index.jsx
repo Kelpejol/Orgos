@@ -20,6 +20,7 @@ import CdiFixPanel from "../../components/shared/CdiFixPanel.jsx";
 import DocumentViewer from "../../components/shared/DocumentViewer.jsx";
 import FeedbackAmendPanel from "../../components/shared/FeedbackAmendPanel.jsx";
 import apiClient from "../../api/grcApi.js";
+import StandardCheckPanel from "../../components/shared/StandardCheckPanel.jsx";
 import { useAiSuggestion } from "../../hooks/useAiSuggestion.js";
 
 // =============================================================================
@@ -1540,6 +1541,11 @@ const LifecycleCard = ({
         </div>
       )}
  
+      {/* The CDI Procedure's own checks (V01–V24) on this file — on request */}
+      {isReview && (doc.SharePointFileUrl || doc.Revised) && (
+        <StandardCheckPanel docId={doc.id} isCompliance={isCompliance} />
+      )}
+
       {/* ── Unowned: Claim / Reassign visible to all ── */}
       {isUnowned && (
         <div style={{ marginTop: 6 }}>
