@@ -27,7 +27,7 @@ export const isDefinition = (item) => Boolean(item?.ControlId) && !item?.Resolut
 const DEFINITION_FIELDS = [
   ["requirement", "Requirement"],
   ["trigger", "Trigger"],
-  ["responsibility_as_written", "Accountable / Executing"],
+  ["responsibility_as_written", "Control owner"],
   ["evidence_as_written", "Evidence"],
   ["risk", "Risk"],
   ["failure_route", "Failure route"],

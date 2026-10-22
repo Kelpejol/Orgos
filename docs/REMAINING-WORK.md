@@ -85,3 +85,8 @@ About 120 documents still to go through convert → fix → approve → accept, 
 ---
 
 **Order we agreed:** items 1 and 2 → Bobby's demo page → the rest, while Bobby answers and the organogram arrives.
+
+
+---
+
+**Role model (Control owner / Document owner): built** (V07, suggestions, Use this role, Keep as alias, Create role, renames, tests). Wording for Bobby: `docs/FOR-BOBBY-ROLE-WORDING.md`. Remaining: reissue of the Procedure by Bobby; the Control View demo page.

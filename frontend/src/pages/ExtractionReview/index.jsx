@@ -163,7 +163,7 @@ const ChainPreview = ({ item }) => {
                     border: "0.5px solid #85B7EB", fontSize: 11, color: "#0C447C", lineHeight: 1.6 }}>
         <div style={{ fontWeight: 600, marginBottom: 4 }}>If accepted:</div>
         <div>→ Control Register — {item.ChangeKind === "Changed" ? `${item.ControlId} is updated` : `${item.ControlId} is created`},
-          exactly as its document states it. Active if its accountable role is recognised; otherwise Blocked with the reason.</div>
+          exactly as its document states it. Active if its Control owner is recognised; otherwise Blocked with the reason.</div>
         <div>→ Evidence Tracker — {records.length
           ? `an obligation for ${records.join(", ")}`
           : "no obligation: the control names no record by Record ID"}</div>

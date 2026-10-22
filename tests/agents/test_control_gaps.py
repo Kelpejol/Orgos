@@ -50,7 +50,7 @@ def test_blocked_controls_are_one_ownership_gap_per_document_listing_each_role()
     assert [g["gap_key"] for g in own] == ["CDI|OWN:DRG-ISMS-STD-OTH|Ownership gap",
                                            "CDI|OWN:DRG-ISMS-STD-TST|Ownership gap"]
     finding = own[1]["finding"]
-    assert "“DPO” (2)" in finding and "1 name no single accountable role (TST-03)" in finding
+    assert "“DPO” (2)" in finding and "1 name no Control owner, or name more than one (TST-03)" in finding
 
 
 def test_a_control_no_procedure_carries_out_is_its_own_gap():

@@ -2,7 +2,7 @@
 
 *22 Oct 2026. From Bobby. This is the checklist of every part of OrgOS the change touches. Update the status as each is done.*
 
-Status: ✅ done · 🔨 in progress · ☐ not started · — not affected
+Status: ✅ done · 🔨 in progress · ✅ not started · — not affected
 
 ---
 
@@ -43,72 +43,72 @@ Status: ✅ done · 🔨 in progress · ☐ not started · — not affected
 ### A. The standard itself
 | Part | Today | Change | |
 |---|---|---|---|
-| `doc_standards/cdi_reference.json` and `checks.reference()` | Annex C lists "Accountable role" and "Executing role or system"; V08 names both | An **amendment layer** (`cdi_amendments.json`) replaces them with "Control owner" and rewrites the V08 wording. Shown as "Amended" on the Document Standards page | ☐ |
-| `scripts/build_cdi_reference.py` | Builds the reference from the Procedure | Warns if a listed amendment is already in the Procedure (so it can be dropped) | ☐ |
-| Wording for Bobby | — | A short document with the exact replacement text for Annex C, V08, the Control Owner definition and 7.8 | ☐ |
+| `doc_standards/cdi_reference.json` and `checks.reference()` | Annex C lists "Accountable role" and "Executing role or system"; V08 names both | An **amendment layer** (`cdi_amendments.json`) replaces them with "Control owner" and rewrites the V08 wording. Shown as "Amended" on the Document Standards page | ✅ |
+| `scripts/build_cdi_reference.py` | Builds the reference from the Procedure | Warns if a listed amendment is already in the Procedure (so it can be dropped) | ✅ |
+| Wording for Bobby | — | Exact replacement text: see `docs/FOR-BOBBY-ROLE-WORDING.md` | ✅ |
 
 ### B. Reading documents
 | Part | Today | Change | |
 |---|---|---|---|
-| `cdi/fields.py` aliases | "control owner" is one more spelling of the responsibility line | **Control owner** becomes its own field; "Accountable / Executing" and the other spellings stay as the legacy form | ☐ |
-| `cdi/fields.py` `split_responsibility` | Splits on "/" and ";" into two roles | Not used for a Control owner: the whole value is **one** role. Still used for the legacy form | ☐ |
-| `cdi/model.py` | `Responsibility(accountable, executing, …)`; label "Accountable / Executing" | Records whether the **Control owner** form or the legacy form was used; label becomes "Control owner" | ☐ |
-| `cdi/parser.py` | Builds the responsibility; raises an "ambiguous: where does it divide accountable from executing" finding | Reads a Control owner as a single role (no ambiguity possible); counts it as the responsibility core field for the "at least 3 fields" rule; a table column headed "Control owner" is read | ☐ |
+| `cdi/fields.py` aliases | "control owner" is one more spelling of the responsibility line | **Control owner** becomes its own field; "Accountable / Executing" and the other spellings stay as the legacy form | ✅ |
+| `cdi/fields.py` `split_responsibility` | Splits on "/" and ";" into two roles | Not used for a Control owner: the whole value is **one** role. Still used for the legacy form | ✅ |
+| `cdi/model.py` | `Responsibility(accountable, executing, …)`; label "Accountable / Executing" | Records whether the **Control owner** form or the legacy form was used; label becomes "Control owner" | ✅ |
+| `cdi/parser.py` | Builds the responsibility; raises an "ambiguous: where does it divide accountable from executing" finding | Reads a Control owner as a single role (no ambiguity possible); counts it as the responsibility core field for the "at least 3 fields" rule; a table column headed "Control owner" is read | ✅ |
 | Document header | Owner read from the cover | Unchanged: this is the **Document owner** | — |
 
 ### C. Control definitions (what review and the Register hold)
 | Part | Today | Change | |
 |---|---|---|---|
-| `control_register/definitions.py` | Candidate carries accountable, executing, `responsibility_as_written`; message "could be one role or two" | Candidate carries the **control owner**; accountable = executing = that role for the new form; the "one role or two" message applies only to the legacy form; label "Control owner" | ☐ |
-| `control_register/definitions.py` `decide_status` | Active only if the accountable role is a group | Same rule, same role: the control owner. Message names the **Control owner** | ☐ |
-| `control_register/sync.py` `control_fields` | Writes `OwnerRole` from the accountable role | Unchanged value; comment updated | ☐ |
+| `control_register/definitions.py` | Candidate carries accountable, executing, `responsibility_as_written`; message "could be one role or two" | Candidate carries the **control owner**; accountable = executing = that role for the new form; the "one role or two" message applies only to the legacy form; label "Control owner" | ✅ |
+| `control_register/definitions.py` `decide_status` | Active only if the accountable role is a group | Same rule, same role: the control owner. Message names the **Control owner** | ✅ |
+| `control_register/sync.py` `control_fields` | Writes `OwnerRole` from the accountable role | Unchanged value; comment updated | ✅ |
 | `control_register/router.py` | Shows `OwnerRole`, resolves its people | Unchanged | — |
 
 ### D. Screens
 | Part | Change | |
 |---|---|---|
-| `components/shared/ControlDefinitionReview.jsx` | Row label "Accountable / Executing" → "Control owner" (legacy documents show what they wrote) | ☐ |
-| `pages/ControlRegister/ControlDefinitionView.jsx` | "Accountable" / "Executing" rows → one "Control owner" row; a legacy control that still has two shows them as before, marked legacy | ☐ |
-| `pages/ExtractionReview` ("If accepted" text) | "Active if its accountable role is recognised" → "…its control owner is recognised" | ☐ |
+| `components/shared/ControlDefinitionReview.jsx` | Row label "Accountable / Executing" → "Control owner" (legacy documents show what they wrote) | ✅ |
+| `pages/ControlRegister/ControlDefinitionView.jsx` | "Accountable" / "Executing" rows → one "Control owner" row; a legacy control that still has two shows them as before, marked legacy | ✅ |
+| `pages/ExtractionReview` ("If accepted" text) | "Active if its accountable role is recognised" → "…its control owner is recognised" | ✅ |
 | `pages/RecordTracker`, `StandardsMap` | Show `OwnerRole` | — |
 
 ### E. The role check (new)
 | Part | Change | |
 |---|---|---|
-| `doc_standards/roles.py` (new) | Org Roles as a role book: exact and alias matching; scored suggestions from existing roles only | ☐ |
-| `doc_standards/service.build_context` | Loads Org Roles (names and aliases) into the context | ☐ |
-| `doc_standards/checks.py` **V07** | Built: every control's Control owner, the Document owner, and the cover approvers must exist in Org Roles. A placeholder ("Control Owner", "Document Owner", "Custodian Role") is called out as a field name, not a role. Findings carry the role and its suggestions | ☐ |
-| Legacy-form check | A control still written "Accountable / Executing" is reported with the instruction to move to "Control owner" | ☐ |
-| `lifecycle/router.py` **role-fix** endpoint | "Use this role": changes the role value (only in role fields) in the item's own working copy; refused unless in Review; respects the document write mode; the original is never changed | ☐ |
-| **Alias** endpoint (Compliance) | "Keep my wording": adds the spelling as an alias of the chosen role, then controls re-check | ☐ |
-| `StandardResults.jsx`, `StandardCheckPanel.jsx` | Under a V07 finding: the suggestions, **Use this role**, **Keep as alias**, **Create role** | ☐ |
-| **Create role** | Opens Org Roles with the name filled in (`GroupsPanel`, `App.jsx` navigation) | ☐ |
+| `doc_standards/roles.py` (new) | Org Roles as a role book: exact and alias matching; scored suggestions from existing roles only | ✅ |
+| `doc_standards/service.build_context` | Loads Org Roles (names and aliases) into the context | ✅ |
+| `doc_standards/checks.py` **V07** | Built: every control's Control owner, the Document owner, and the cover approvers must exist in Org Roles. A placeholder ("Control Owner", "Document Owner", "Custodian Role") is called out as a field name, not a role. Findings carry the role and its suggestions | ✅ |
+| Legacy-form check | A control still written "Accountable / Executing" is reported with the instruction to move to "Control owner" | ✅ |
+| `lifecycle/router.py` **role-fix** endpoint | "Use this role": changes the role value (only in role fields) in the item's own working copy; refused unless in Review; respects the document write mode; the original is never changed | ✅ |
+| **Alias** endpoint (Compliance) | "Keep my wording": adds the spelling as an alias of the chosen role, then controls re-check | ✅ |
+| `StandardResults.jsx`, `StandardCheckPanel.jsx` | Under a V07 finding: the suggestions, **Use this role**, **Keep as alias**, **Create role** | ✅ |
+| **Create role** | Opens Org Roles with the name filled in (`GroupsPanel`, `App.jsx` navigation) | ✅ |
 | `groups/` | Already re-checks every control when a role changes | ✅ |
 
 ### F. Evidence
 | Part | Change | |
 |---|---|---|
-| `evidence/obligations.py` | Owner was "executing, else accountable"; the new form has one role, so the owner is the **control owner**. Legacy controls behave as before | ☐ |
+| `evidence/obligations.py` | Owner was "executing, else accountable"; the new form has one role, so the owner is the **control owner**. Legacy controls behave as before | ✅ |
 | Custodian (Records Catalogue) | Unchanged: who holds the record | — |
 
 ### G. Gaps
 | Part | Change | |
 |---|---|---|
-| `agents/gap_analyzer/control_gaps.py` | "name no single accountable role" → "name no control owner"; the "ambiguous" case only for the legacy form; text about "accountable role and the executing role" updated | ☐ |
+| `agents/gap_analyzer/control_gaps.py` | "name no single accountable role" → "name no control owner"; the "ambiguous" case only for the legacy form; text about "accountable role and the executing role" updated | ✅ |
 
 ### H. The Document Standards engine
 | Part | Change | |
 |---|---|---|
-| V08 (`checks.py`) | A control must state a **Control owner** (not accountable and executing) | ☐ |
+| V08 (`checks.py`) | A control must state a **Control owner** (not accountable and executing) | ✅ |
 | V01 | Document owner stays the cover's Owner | — |
-| Standard tab | Shows the amendment and the new Annex C rows | ☐ |
+| Standard tab | Shows the amendment and the new Annex C rows | ✅ |
 | Convert to CDT | Cover Owner unchanged; a legacy "Accountable / Executing" line in the body is left as written (conversion never rewrites body text) | — |
 
 ### I. Lifecycle
 | Part | Change | |
 |---|---|---|
-| Review card panel | Shows the role suggestions and actions (see E) | ☐ |
-| Approval | Approvers stay people; their *roles* on the cover are checked by V07 | ☐ |
+| Review card panel | Shows the role suggestions and actions (see E) | ✅ |
+| Approval | Approvers stay people; their *roles* on the cover are checked by V07 | ✅ |
 
 ### J. The demo page (Control View)
 | Part | Change | |
@@ -116,10 +116,10 @@ Status: ✅ done · 🔨 in progress · ☐ not started · — not affected
 | Responsible role | **Control owner**, resolved to people through Org Roles. No accountable/executing split | ☐ (page not built yet) |
 
 ### K. Tests
-`tests/cdi/test_fields.py`, `test_parser.py`, `test_real_documents.py`, `test_library.py`, `tests/cdi/builders.py` (a Control owner control), `tests/control_register/*`, `tests/evidence/test_obligations.py`, `tests/agents/test_control_gaps.py`, `tests/doc_standards/test_checks.py` and `helpers.py`. New tests for roles matching, suggestions, V07, role-fix, alias, and the legacy-form check. ☐
+`tests/cdi/test_fields.py`, `test_parser.py`, `test_real_documents.py`, `test_library.py`, `tests/cdi/builders.py` (a Control owner control), `tests/control_register/*`, `tests/evidence/test_obligations.py`, `tests/agents/test_control_gaps.py`, `tests/doc_standards/test_checks.py` and `helpers.py`. New tests for roles matching, suggestions, V07, role-fix, alias, and the legacy-form check. ✅
 
 ### L. Documents
-`docs/HOW-ORGOS-WORKS.md` (sections 5, 10, 11), `docs/DESIGN-DOCUMENT-STANDARDS-AND-ROLES.md` (Part B and the Ask-Bobby list), `docs/REMAINING-WORK.md`, `docs/GO-LIVE-CHECKLIST.md`. ☐
+`docs/HOW-ORGOS-WORKS.md` (sections 5, 10, 11), `docs/DESIGN-DOCUMENT-STANDARDS-AND-ROLES.md` (Part B and the Ask-Bobby list), `docs/REMAINING-WORK.md`, `docs/GO-LIVE-CHECKLIST.md`. ✅
 
 ---
 

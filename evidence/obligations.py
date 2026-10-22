@@ -82,7 +82,7 @@ class Obligation:
     record_name: str          # the Catalogue's name, else as the document wrote it
     control_title: str
     operating_trigger: str
-    owner_role: str           # who produces it: the executing role, else the accountable
+    owner_role: str           # who produces it: the Control owner (older documents: the executing role, else the accountable)
     defined_in: str
     location: str = ""        # the Catalogue's authoritative location
     system_id: str = ""

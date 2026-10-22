@@ -1,7 +1,7 @@
 // =============================================================================
 // pages/ControlRegister/ControlDefinitionView.jsx
 // One confirmed control, as its defining document states it: the requirement,
-// who is accountable and who executes, when it runs, what proves it (joined to
+// who owns it, when it runs, what proves it (joined to
 // the Records Catalogue), what happens when it fails, the standards it maps to,
 // and where it is defined and carried out. Fields the document does not state
 // are listed as such — nothing is filled in.
@@ -98,15 +98,15 @@ export default function ControlDefinitionView({ control, onBack }) {
       {c.Status === "Blocked" && (
         <div style={{ marginTop: 14, padding: "10px 12px", background: "#FCEBEB", borderRadius: 8,
                       fontSize: 12, color: "#791F1F", border: "1px solid #F09595", lineHeight: 1.5 }}>
-          <strong>Blocked.</strong> {c.BlockedReason || "The accountable role is not recognised."}
+          <strong>Blocked.</strong> {c.BlockedReason || "The Control owner is not recognised."}
         </div>
       )}
 
       <Section title="Responsibility">
         {d.accountable ? (
           <>
-            <Field l={split ? "Accountable" : "Accountable and executing"} v={d.accountable} />
-            {split && <Field l="Executing" v={d.executing} />}
+            <Field l={split ? "Accountable (older form)" : "Control owner"} v={d.accountable} />
+            {split && <Field l="Executing (older form)" v={d.executing} />}
             <Field l="Who holds it" v={<OwnerDisplay item={c} />} />
             {d.responsibility_ambiguous && (
               <div style={{ fontSize: 11.5, color: "#633806", marginTop: 4 }}>
@@ -116,7 +116,7 @@ export default function ControlDefinitionView({ control, onBack }) {
           </>
         ) : (
           <div style={{ fontSize: 12, color: "var(--color-text-tertiary)" }}>
-            The document names no accountable role.
+            The document names no Control owner.
           </div>
         )}
       </Section>

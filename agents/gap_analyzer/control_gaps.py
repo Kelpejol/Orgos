@@ -97,7 +97,7 @@ def find_control_gaps(controls: list[dict]) -> list[dict]:
             parts.append("roles OrgOS does not recognise — " + "; ".join(
                 f"“{r}” ({n})" for r, n in sorted(unrecognised.items(), key=lambda x: (-x[1], x[0]))))
         if unstated:
-            parts.append(f"{len(unstated)} name no single accountable role ({_ids(unstated, 8)})")
+            parts.append(f"{len(unstated)} name no Control owner, or name more than one ({_ids(unstated, 8)})")
         gaps.append(_gap(
             f"OWN:{doc}", "Ownership gap", "Major", doc, f"Blocked controls in {doc}",
             f"{len(group)} control(s) in {doc} are Blocked: " + "; ".join(parts) + ". "
@@ -106,7 +106,7 @@ def find_control_gaps(controls: list[dict]) -> list[dict]:
             "auditor will find them unowned.",
             "Add each real role to the Role Catalogue (or as an alias of the role it means). "
             f"Where a control names no role, several, or a misspelt one, revise {doc} to state one "
-            "accountable role and the executing role.",
+            "Control owner (one role).",
             ["Document Owner", "Compliance Executive (QMS & NDPA)"],
             "Every listed control shows Active after the next library sync.",
             [c["control_id"] for c in group],

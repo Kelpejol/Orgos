@@ -201,7 +201,7 @@ def control_fields(candidate: dict, status: str, blocked_reason: str) -> dict:
         "DefinitionJson": json.dumps(candidate, ensure_ascii=False, sort_keys=True),
         "MappingJson": json.dumps(candidate["mapping"], ensure_ascii=False),
         "ControlStatement": candidate["requirement"],
-        "OwnerRole": candidate["accountable"],
+        "OwnerRole": candidate["accountable"],       # the Control owner (older documents: the accountable role)
         "ISOClause": candidate["mapping_as_written"][:255],
         "SourceDocument": candidate["defined_in_label"],
         "SourceClause": candidate["defined_in"]["section"][:255],

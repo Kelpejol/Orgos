@@ -27,7 +27,7 @@ REVIEWED_FIELDS: list[tuple[str, str]] = [
     ("title", "Title"),
     ("requirement", "Requirement"),
     ("trigger", "Trigger"),
-    ("responsibility_as_written", "Accountable / Executing"),
+    ("responsibility_as_written", "Control owner"),
     ("evidence_as_written", "Evidence"),
     ("risk", "Risk"),
     ("failure_route", "Failure route"),
@@ -57,6 +57,9 @@ def candidate_from(doc: ParsedDocument, control: ControlDefinition,
         "accountable": r.accountable if r else "",
         "executing": r.executing if r else "",
         "responsibility_ambiguous": bool(r and r.ambiguous),
+        # True when the document states a single Control owner (one role, never ambiguous);
+        # absent/False for the older "Accountable / Executing" form, which is read as before.
+        "control_owner": bool(r and r.control_owner),
         "evidence_as_written": control.evidence_as_written,
         "evidence": [{"record_id": e.record_id, "name": e.name} for e in control.evidence],
         "risk": control.risk,
@@ -138,14 +141,15 @@ def completeness(candidate: dict) -> tuple[str, str]:
 
 def decide_status(candidate: dict, resolve: Callable[[str], dict]) -> tuple[str, str]:
     """
-    ('Active' | 'Blocked', reason). Active only when the accountable role is
-    one OrgOS recognises. An Entra job title alone is not authority for a role
+    ('Active' | 'Blocked', reason). Active only when the control owner (the
+    accountable role, for a document still in the older form) is one OrgOS recognises. An Entra job title alone is not authority for a role
     assignment (Bobby), so a role that matches only a job title is Blocked.
     `resolve` is OwnershipIndex.resolve.
     """
     role = (candidate.get("accountable") or "").strip()
     if not role:
-        return "Blocked", "The defining document names no accountable role."
+        return "Blocked", ("The defining document names no Control owner." if candidate.get("control_owner")
+                           else "The defining document names no Control owner (it has no accountable role either).")
     if candidate.get("responsibility_ambiguous"):
         return "Blocked", (
             f"“{candidate.get('responsibility_as_written')}” could be one role or two; "
