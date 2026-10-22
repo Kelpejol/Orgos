@@ -38,6 +38,8 @@ Status: ✅ done · 🔨 being built · ⏳ waiting · ☐ not started
 - ⏳ Suggested role matches in the review queue (accepting one adds an alias).
 
 ## 3. To build
+**In progress (22 Oct): the role model change from Bobby.** One Control owner per control and a Document owner, no Accountable/Executing; roles checked against Org Roles with suggestions and a Create-role link. The full checklist of every part it touches is in **[ROLE-MODEL-CHANGE.md](ROLE-MODEL-CHANGE.md)**. It answers Bobby questions 3, 4 and 7, and removes the "executing role" item.
+
 **Core**
 1. ✅ Put the new checks into the Lifecycle Review gate, running beside the old ones until Bobby answers #1. *(Built 22 Oct: a "Document standard" panel on the Review card; mode `advisory` by default, `enforce` when you are ready; FLAGs decided by Compliance with a reason. To do on your side: add the `StandardsDecisions` column, and choose when to switch to `enforce` once Bobby answers #1.)*
 2. ✅ Fix versions: one number with no "R", a change summary for new versions, approval stamping the cover from the Register. *(Built 22 Oct. To do on your side: run `scripts/migrate_versions.py` to rewrite existing "R02" entries as "02". Publishing to the published and archive libraries still waits on Bobby #6, item 13.)*
