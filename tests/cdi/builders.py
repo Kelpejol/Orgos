@@ -54,7 +54,7 @@ class DocBuilder:
             "owner": "Document Owner", "approval": "Approval Authority",
             "classification": "Classification", "status": "Issue Status",
             "standards": "Standards", "implemented": "Standard controls implemented",
-            "version": "Version",
+            "version": "Version", "first_pass": "First Pass Approval", "final_approval": "Final Approval",
         }
         rows = [["Control block", ""]] + [[labels[k], v] for k, v in fields.items()]
         return self.table(rows)

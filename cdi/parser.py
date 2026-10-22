@@ -50,6 +50,7 @@ from cdi.fields import (
     parse_control_list,
     parse_mapping,
     split_labelled,
+    parse_control_owner,
     split_responsibility,
 )
 from cdi.model import (
@@ -544,9 +545,10 @@ class _RawControl:
 
     @property
     def field_count(self) -> int:
-        keys = {k for k, v in self.fields.items() if v and k in _CORE_FIELDS | {"accountable", "executing"}}
-        if {"accountable", "executing"} & keys:
-            keys = (keys - {"accountable", "executing"}) | {"responsibility"}
+        owners = {"accountable", "executing", "control_owner"}
+        keys = {k for k, v in self.fields.items() if v and k in _CORE_FIELDS | owners}
+        if owners & keys:
+            keys = (keys - owners) | {"responsibility"}
         return len(keys)
 
 
@@ -742,7 +744,10 @@ def _sections_headed_by_controls(partial: list[_RawControl]) -> list[Implementat
 
 def _build_control(raw: _RawControl, vocabulary: list[str], findings: list[Finding]) -> ControlDefinition:
     f = raw.fields
-    if f.get("responsibility"):
+    if f.get("control_owner"):
+        # One role, as written. Wins over any older accountable / executing line.
+        responsibility = parse_control_owner(f["control_owner"])
+    elif f.get("responsibility"):
         responsibility = split_responsibility(f["responsibility"], vocabulary)
     elif f.get("accountable") or f.get("executing"):
         # Stated on separate lines, the split is already made; re-splitting

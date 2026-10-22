@@ -187,3 +187,45 @@ def test_apply_does_nothing_when_a_proof_fails(client):
         r, (_, _, upload_mock, update_mock, *_) = run_apply(client, ITEM)
     assert r.status_code == 422
     upload_mock.assert_not_awaited() and update_mock.assert_not_awaited()
+
+
+# ── "Keep my wording": agree a spelling as an alias of an existing role ───────────────
+
+async def test_role_alias_is_saved_for_an_existing_role():
+    from unittest.mock import AsyncMock, patch
+    from doc_standards import router as r
+    groups = [{"id": "g1", "name": "Information Security Officer", "aliases": [], "description": ""}]
+    saved = {**groups[0], "aliases": ["ISO Lead"]}
+    with patch("groups.service.list_groups", new=AsyncMock(return_value=groups)), \
+         patch("groups.service.update_group", new=AsyncMock(return_value=saved)) as upd, \
+         patch("control_register.status.recheck_soon"):
+        out = await r.add_role_alias(r.RoleAlias(group_id="g1", alias="ISO  Lead"), None)
+    assert out["ok"] and upd.await_args.args[4] == ["ISO Lead"]
+
+
+async def test_role_alias_refuses_a_field_name_and_a_spelling_that_belongs_to_another_role():
+    import pytest
+    from unittest.mock import AsyncMock, patch
+    from fastapi import HTTPException
+    from doc_standards import router as r
+    groups = [{"id": "g1", "name": "A Role", "aliases": [], "description": ""},
+              {"id": "g2", "name": "Other Role", "aliases": [], "description": ""}]
+    with patch("groups.service.list_groups", new=AsyncMock(return_value=groups)):
+        with pytest.raises(HTTPException) as e1:
+            await r.add_role_alias(r.RoleAlias(group_id="g1", alias="Control Owner"), None)
+        with pytest.raises(HTTPException) as e2:
+            await r.add_role_alias(r.RoleAlias(group_id="g1", alias="Other Role"), None)
+    assert e1.value.status_code == 422 and e2.value.status_code == 409
+
+
+async def test_role_alias_that_was_not_stored_is_not_reported_as_saved():
+    import pytest
+    from unittest.mock import AsyncMock, patch
+    from fastapi import HTTPException
+    from doc_standards import router as r
+    groups = [{"id": "g1", "name": "A Role", "aliases": [], "description": ""}]
+    with patch("groups.service.list_groups", new=AsyncMock(return_value=groups)), \
+         patch("groups.service.update_group", new=AsyncMock(return_value=groups[0])):
+        with pytest.raises(HTTPException) as e:
+            await r.add_role_alias(r.RoleAlias(group_id="g1", alias="ISO Lead"), None)
+    assert e.value.status_code == 503

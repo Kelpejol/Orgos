@@ -1,0 +1,25 @@
+{
+  "note": "Changes Dragnet has agreed to the CDI Procedure but that its text does not yet carry. OrgOS applies them on top of the Procedure and says so on the Document Standards page. Each amendment switches itself off once the reissued Procedure no longer contains the text it replaces; delete it then.",
+  "amendments": [
+    {
+      "id": "A1",
+      "date": "2026-10-22",
+      "authority": "Bobby, in reply to the OrgOS progress note",
+      "title": "One responsible role per control: the Control owner",
+      "summary": "A control has one responsible role, the Control owner, stated in the control itself. Accountable and Executing are retired. A document has a Document owner. A role named in a document must exist in Org Roles (the Role Register), and a role that does not is caught at Review.",
+      "annex_c": {
+        "remove": ["Accountable role", "Executing role or system"],
+        "add": [
+          {
+            "field": "Control owner",
+            "rule": "The one role responsible for the control, named as it appears in the Role Register (Org Roles). A role, not a person, and not two roles. The words \"Control Owner\" or \"Document Owner\" are the name of a field, not a role",
+            "mandatory": "Yes"
+          }
+        ]
+      },
+      "check_wording": {
+        "V08": [["accountable and executing roles", "a Control owner"]]
+      }
+    }
+  ]
+}

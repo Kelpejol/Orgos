@@ -53,6 +53,12 @@ _CACHE_SECONDS = 300
 _cache: dict[str, tuple[float, dict, list]] = {}
 
 
+def invalidate() -> None:
+    """Forget cached results. Called when a role changes: a role someone has just created must
+    be found by the very next check, not five minutes later."""
+    _cache.clear()
+
+
 def mode() -> str:
     value = (settings.standard_gate or "").strip().lower()
     return value if value in MODES else "advisory"
@@ -160,7 +166,7 @@ async def evaluate_bytes(file_bytes: bytes, filename: str, *, wait_for_library: 
         raise Unreadable(f"The document could not be read ({type(exc).__name__}).")
     ctx, notes = await service.build_context(parsed, wait_for_library=wait_for_library)
     report = await asyncio.to_thread(run_checks, parsed, filename, file_bytes, ctx)
-    if ctx.index is not None and ctx.register is not None and ctx.catalogue is not None:
+    if ctx.index is not None and ctx.register is not None and ctx.catalogue is not None and ctx.roles is not None:
         _cache[key] = (time.monotonic(), report, notes)       # never cache a result made without its context
     return report, notes
 

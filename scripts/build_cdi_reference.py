@@ -84,6 +84,14 @@ def main(path: str) -> None:
         raise SystemExit("a check has an unknown enforcement level")
     with open(OUT, "w") as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
+    amendments_file = os.path.join(os.path.dirname(OUT), "cdi_amendments.json")
+    if os.path.exists(amendments_file):
+        import json as _json
+        for a in _json.load(open(amendments_file))["amendments"]:
+            remove = set(a.get("annex_c", {}).get("remove", []))
+            if remove and not any(r["field"] in remove for r in control):
+                print(f"NOTE: amendment {a['id']} ({a['title']}) is already in this Procedure. "
+                      "Delete it from doc_standards/cdi_amendments.json.")
     print(f"{len(checks)} checks, {len(sections)} sections, {len(register)} register fields, "
           f"{len(control)} control fields, {len(types)} types, {len(functions)} functions, "
           f"{len(retired)} retired codes, {len(routes)} domain routes → {OUT}")

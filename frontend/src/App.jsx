@@ -6,7 +6,7 @@
 // Tier 2–4 screens: prototype components kept intact (will be wired in later tiers).
 // =============================================================================
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Routes, Route } from "react-router-dom";
 import Navbar from "./components/layout/Navbar.jsx";
 import { useCurrentUserRole } from "./hooks/useCurrentUserRole.js";
@@ -329,6 +329,13 @@ function OrgOSShell() {
   const { isCompliance } = useCurrentUserRole();
 
   const go = (id) => setNav(id);
+
+  // Other screens can send the user somewhere (e.g. a check's "Create role" opens Org Roles).
+  useEffect(() => {
+    const onNavigate = (e) => e.detail?.to && setNav(e.detail.to);
+    window.addEventListener("orgos:navigate", onNavigate);
+    return () => window.removeEventListener("orgos:navigate", onNavigate);
+  }, []);
 
   const renderScreen = () => {
     // Guard compliance-only routes — Standard Users see AccessDenied

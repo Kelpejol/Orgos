@@ -41,6 +41,8 @@ from cdi.library import LibraryIndex, _base_code, document_label
 from cdi.model import DocumentRole, FindingKind, ParsedDocument
 from cdi.parser import _type_from_layer
 from cdi.reader import read_document
+from doc_standards import roles as role_matching
+from doc_standards.roles import RoleBook
 
 logger = logging.getLogger(__name__)
 
@@ -50,10 +52,43 @@ PASS, FAIL, FLAG, REPORT = "pass", "fail", "flag", "report"
 COULD_NOT, NOT_APPLICABLE, NOT_BUILT = "could_not_check", "not_applicable", "not_built"
 
 
+_AMENDMENTS = os.path.join(os.path.dirname(os.path.abspath(__file__)), "cdi_amendments.json")
+
+
+def _apply_amendments(ref: dict) -> dict:
+    """
+    Lay agreed-but-not-yet-published changes over the Procedure's own text, and
+    say so: each amended row or check is tagged with the amendment that changed
+    it. An amendment whose text is no longer in the Procedure (it has been
+    reissued with the change) is reported as obsolete and not applied.
+    """
+    with open(_AMENDMENTS) as f:
+        amendments = json.load(f)["amendments"]
+    ref["amendments"] = []
+    for a in amendments:
+        rows = ref["annex_c_control_fields"]
+        remove = set(a.get("annex_c", {}).get("remove", []))
+        present = [r for r in rows if r["field"] in remove]
+        if remove and not present:
+            ref["amendments"].append({**a, "status": "obsolete"})
+            continue
+        at = next(i for i, r in enumerate(rows) if r["field"] in remove) if present else len(rows)
+        kept = [r for r in rows if r["field"] not in remove]
+        new = [{**r, "amended": a["id"]} for r in a.get("annex_c", {}).get("add", [])]
+        ref["annex_c_control_fields"] = kept[:at] + new + kept[at:]
+        for check in ref["checks"]:
+            for old, replacement in a.get("check_wording", {}).get(check["id"], []):
+                if old in check["name"]:
+                    check["name"] = check["name"].replace(old, replacement)
+                    check["amended"] = a["id"]
+        ref["amendments"].append({**a, "status": "applied"})
+    return ref
+
+
 @lru_cache(maxsize=1)
 def reference() -> dict:
     with open(_REFERENCE) as f:
-        return json.load(f)
+        return _apply_amendments(json.load(f))
 
 
 # ── result shapes ───────────────────────────────────────────────────────────
@@ -63,9 +98,10 @@ class Finding:
     message: str
     where: str = ""        # "ACS-L3-01", "section 5.0" — where in the document
     fix: str = ""
+    data: dict = field(default_factory=dict)    # what a screen needs to act on it (e.g. a role and its suggestions)
 
     def as_dict(self) -> dict:
-        return {"message": self.message, "where": self.where, "fix": self.fix}
+        return {"message": self.message, "where": self.where, "fix": self.fix, "data": self.data}
 
 
 @dataclass
@@ -100,6 +136,7 @@ class Context:
     register: Optional[list[dict]] = None          # Document Register rows ({"fields": {...}})
     catalogue: Optional[dict] = None               # Record ID → RecordEntry
     index: Optional[LibraryIndex] = None           # the library INCLUDING this document
+    roles: Optional[RoleBook] = None               # Org Roles: the roles that exist
 
 
 @dataclass
@@ -276,6 +313,63 @@ def _needs_controls(s: Subject) -> Optional[Outcome]:
     return None
 
 
+def v07(s: Subject) -> Outcome:
+    """Every role the document names must be a role in Org Roles — never a job title, never a field name."""
+    book = s.ctx.roles
+    if book is None:
+        return Outcome(unknown="Org Roles could not be read, so the roles this document names could not be checked.")
+    h = s.parsed.header
+    named: dict[str, dict] = {}
+
+    def add(text: str, kind: str, where: str) -> None:
+        text = (text or "").strip().rstrip(".").strip()
+        if text:
+            entry = named.setdefault(role_matching.norm(text), {"text": text, "uses": []})
+            entry["uses"].append((kind, where))
+
+    for c in s.parsed.controls:                       # a role named anywhere in the text, even in a copy
+        if c.responsibility and c.responsibility.accountable:
+            add(c.responsibility.accountable, "Control owner", c.control_id)
+    add(h.owner, "Document owner", "cover")
+    add(h.first_pass_approval, "First pass approval", "cover")
+    add(h.final_approval, "Final approval", "cover")
+    for duty in s.parsed.roles:
+        add(duty.role, "Roles section", "roles section")
+
+    problems = []
+    for entry in named.values():
+        text = entry["text"]
+        if book.find(text):
+            continue
+        kinds = sorted({k for k, _ in entry["uses"]})
+        places = list(dict.fromkeys(w for _, w in entry["uses"]))
+        placeholder, several = role_matching.is_placeholder(text), role_matching.names_several(text)
+        suggestions = [] if several else book.suggest(text)
+        if placeholder:
+            message = (f"“{text}” is the name of a field, not a role. Name the role that holds it, "
+                       "as it is in Org Roles.")
+        elif several:
+            message = f"“{text}” names more than one role. A control has exactly one {kinds[0].lower()}."
+        else:
+            message = f"“{text}” is not a role in Org Roles ({', '.join(kinds)})."
+        if suggestions:
+            fix = "Did you mean " + " or ".join(f"“{x.role.name}”" for x in suggestions) + "? Or create the role in Org Roles."
+        else:
+            fix = "Use a role that exists in Org Roles, or create this one."
+        problems.append(Finding(message, ", ".join(places[:8]) + (f" +{len(places) - 8} more" if len(places) > 8 else ""), fix, {
+            "kind": "role", "role": text, "kinds": kinds, "locations": places,
+            "placeholder": placeholder, "several": several,
+            "suggestions": [x.as_dict() for x in suggestions],
+        }))
+    note = "A Microsoft job title is never a role; Org Roles is the Role Register until the organogram is in."
+    if not len(book):
+        note = "Org Roles has no roles yet, so every role named is reported. " + note
+    return Outcome(problems=problems, note=note,
+                   summary=(f"All {len(named)} role(s) named exist in Org Roles." if not problems and named
+                            else "The document names no roles." if not named
+                            else f"{len(problems)} of {len(named)} role(s) named are not in Org Roles."))
+
+
 def v08(s: Subject) -> Outcome:
     early = _needs_controls(s)
     if early:
@@ -286,7 +380,12 @@ def v08(s: Subject) -> Outcome:
         if gaps:
             problems.append(Finding(f"does not state: {', '.join(gaps)}.", c.control_id,
                                     "Add each missing field to the control block."))
-    return Outcome(problems=problems, summary=f"All {len(s.here)} control(s) state every required field." if not problems
+    # Not a failure — the older line still names a role — but the CDI now has one Control owner.
+    legacy = [c.control_id for c in s.here if c.responsibility and not c.responsibility.control_owner]
+    note = (f"{len(legacy)} control(s) still use the older “Accountable / Executing” line "
+            f"({', '.join(legacy[:6])}{'…' if len(legacy) > 6 else ''}). Move them to “Control owner: <one role>”." if legacy else "")
+    return Outcome(problems=problems, note=note,
+                   summary=f"All {len(s.here)} control(s) state every required field." if not problems
                    else f"{len(problems)} of {len(s.here)} control(s) are incomplete.")
 
 
@@ -463,14 +562,13 @@ def v23(s: Subject) -> Outcome:
 # ── the registry ────────────────────────────────────────────────────────────
 
 CHECKS: dict[str, Callable[[Subject], Outcome]] = {
-    "V01": v01, "V02": v02, "V03": v03, "V04": v04, "V08": v08, "V09": v09, "V10": v10,
+    "V01": v01, "V02": v02, "V03": v03, "V04": v04, "V07": v07, "V08": v08, "V09": v09, "V10": v10,
     "V11": v11, "V12": v12, "V14": v14, "V15": v15, "V22": v22, "V23": v23,
 }
 
 NOT_BUILT_REASONS = {
     "V05": "Needs the Role Register (built from the organogram), which does not exist yet.",
     "V06": "Needs the Role Register (built from the organogram), which does not exist yet.",
-    "V07": "Needs the Role Register (built from the organogram), which does not exist yet.",
     "V13": "Needs a careful rule set: drafting notes and markers can be found, but an individual's name cannot "
            "be told from other capitalised text reliably.",
     "V16": "Not built yet: reading each Layer 4 step's responsible role.",

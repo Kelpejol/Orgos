@@ -9,6 +9,7 @@
 
 import { useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import apiClient from "../../api/grcApi.js";
 import { GROUPS, Pill, ResultCard, STATUS, groupResults } from "./StandardResults.jsx";
 
@@ -42,6 +43,33 @@ export default function StandardCheckPanel({ docId, isCompliance }) {
       qc.setQueryData(key, r.data); setData(r.data);
     } catch (e) { setError(e.message); }
     finally { setBusy(""); }
+  };
+
+  // The roles that exist, for the "choose another role" list.
+  const { data: roleNames = [] } = useQuery({
+    queryKey: ["role-names-for-check"],
+    queryFn: () => apiClient.get("/api/v1/groups").then((r) => (r.data || []).map((g) => g.name).filter(Boolean).sort()),
+    staleTime: 60_000,
+  });
+
+  // After any role change the checks are run again: the finding either goes or says why not.
+  const roleAction = {
+    use: async (fromRole, toRole) => {
+      setBusy("fixing"); setError("");
+      try {
+        await apiClient.post(`/api/v1/lifecycle/documents/${docId}/role-fix`, { from_role: fromRole, to_role: toRole });
+        qc.invalidateQueries({ queryKey: ["lifecycle"] });
+        await run();
+      } catch (e) { setError(e.response?.data?.detail || e.message); setBusy(""); }
+    },
+    alias: async (groupId, alias) => {
+      setBusy("fixing"); setError("");
+      try {
+        await apiClient.post("/api/v1/doc-standards/role-alias", { group_id: groupId, alias });
+        qc.invalidateQueries({ queryKey: ["groups"] });
+        await run();
+      } catch (e) { setError(e.response?.data?.detail || e.message); setBusy(""); }
+    },
   };
 
   const grouped = useMemo(() => groupResults(data?.report?.results), [data]);
@@ -94,7 +122,8 @@ export default function StandardCheckPanel({ docId, isCompliance }) {
                   <Pill tone={STATUS[g.key]}>{grouped[g.key].length}</Pill> {g.title}
                 </summary>
                 {grouped[g.key].map((r) => (
-                  <ResultCard key={r.id} r={r} canDecide={isCompliance} onDecide={decide} busy={!!busy} />
+                  <ResultCard key={r.id} r={r} canDecide={isCompliance} onDecide={decide} busy={!!busy}
+                    roles={roleNames} onRole={roleAction} />
                 ))}
               </details>
             ))}

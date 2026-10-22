@@ -145,6 +145,46 @@ async def convert_download(file: UploadFile = File(...), kind: str = Form("readi
                     headers={"Content-Disposition": f'attachment; filename="{out}{suffix}.docx"'})
 
 
+class RoleAlias(BaseModel):
+    group_id: str
+    alias: str
+
+
+@router.post("/role-alias")
+async def add_role_alias(body: RoleAlias, user: CurrentUser = Depends(require_compliance_lead)) -> dict:
+    """
+    "Keep my wording": agree that this spelling means an existing role, so documents that write it
+    that way resolve to it. The document is not changed. Compliance only, because it widens what
+    every document may call a role.
+    """
+    from control_register.status import recheck_soon
+    from doc_standards import roles as role_matching
+    from groups import service as groups_service
+
+    alias = " ".join((body.alias or "").split())
+    if len(alias) < 2 or role_matching.is_placeholder(alias):
+        raise HTTPException(status_code=422, detail="That is not a spelling of a role (it is empty, or the name of a field).")
+    groups = await groups_service.list_groups()
+    target = next((g for g in groups if g["id"] == body.group_id), None)
+    if target is None:
+        raise HTTPException(status_code=404, detail="That role was not found in Org Roles.")
+    clash = role_matching.RoleBook.from_groups(groups).find(alias)
+    if clash is not None and clash.group_id == target["id"]:
+        return {"ok": True, "already": True, "role": target["name"], "aliases": target["aliases"]}
+    if clash is not None:
+        raise HTTPException(status_code=409, detail=f"“{alias}” is already a name or alias of {clash.name}.")
+    try:
+        updated = await groups_service.update_group(target["id"], None, None, None, target["aliases"] + [alias])
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"The alias could not be saved ({exc}).")
+    # update_group silently saves nothing when the list has no Aliases column: never report that as success.
+    if alias.lower() not in {a.lower() for a in updated.get("aliases", [])}:
+        raise HTTPException(status_code=503, detail=(
+            "The alias was not saved. The Org Roles list needs an 'Aliases' column (multiple lines of text, plain)."))
+    recheck_soon()
+    return {"ok": True, "already": False, "role": updated["name"], "aliases": updated["aliases"]}
+
+
 class ApplyConversion(BaseModel):
     item_id: str
 

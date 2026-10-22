@@ -48,6 +48,8 @@ def recheck_soon() -> None:
     """Fire-and-forget after a role change; the request doesn't wait for it."""
     async def run():
         try:
+            from doc_standards import gate
+            gate.invalidate()                  # a role changed: results that depend on Org Roles are out of date
             await recheck_control_statuses()
         except Exception:
             logger.exception("Re-checking control statuses after a role change failed")

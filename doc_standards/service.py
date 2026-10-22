@@ -70,6 +70,7 @@ def standard_view() -> dict:
             "register_fields": ref["annex_a_register_fields"],
             "control_fields": ref["annex_c_control_fields"],
             "reference_data": {k: v for k, v in ref["annex_b"].items() if k != "document_types"},
+            "amendments": [a for a in ref.get("amendments", []) if a["status"] == "applied"],
             "built": sum(1 for c in checks if c["built"]), "total": len(checks)}
 
 
@@ -132,6 +133,12 @@ async def build_context(parsed: ParsedDocument, *, wait_for_library: bool = True
             notes.append("The Records Catalogue is empty or not configured, so Record IDs were not looked up.")
     except Exception as exc:
         notes.append(f"The Records Catalogue could not be read ({exc}).")
+    try:
+        from groups import service as groups_service
+        from doc_standards.roles import RoleBook
+        ctx.roles = RoleBook.from_groups(await groups_service.list_groups())
+    except Exception as exc:
+        notes.append(f"Org Roles could not be read ({exc}), so the roles a document names were not checked.")
     from control_register.approved_library import is_warm
     if not wait_for_library and not is_warm():
         start_warming()

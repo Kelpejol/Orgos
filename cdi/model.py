@@ -136,6 +136,9 @@ class Responsibility:
     executing: str
     as_written: str
     ambiguous: bool = False   # the split could not be decided from the text
+    # True when the document states a "Control owner": ONE role, nothing to split.
+    # False for the older "Accountable / Executing" line, read as two roles.
+    control_owner: bool = False
 
     @property
     def single_role(self) -> bool:
@@ -173,7 +176,7 @@ class ControlDefinition:
     FIELD_LABELS = {
         "requirement": "Requirement",
         "trigger": "Trigger",
-        "responsibility": "Accountable / Executing",
+        "responsibility": "Control owner",
         "evidence": "Evidence",
         "risk": "Risk",
         "failure_route": "Failure route",

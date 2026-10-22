@@ -324,6 +324,17 @@ def split_responsibility(text: str, known_roles: Iterable[str] = ()) -> Responsi
     return Responsibility(accountable, executing, as_written, ambiguous)
 
 
+def parse_control_owner(text: str) -> Responsibility:
+    """
+    A Control owner is ONE role: the whole value, as written (a trailing full stop
+    is punctuation). There is nothing to split — a "/" or a "&" can be part of a
+    role's name — and a value naming two roles is not split to make it fit: the
+    role check reports it, because a control has exactly one.
+    """
+    role = " ".join((text or "").split()).rstrip(".").strip()
+    return Responsibility(role, role, (text or "").strip(), False, control_owner=True)
+
+
 # =============================================================================
 #  Lists of control IDs
 # =============================================================================
@@ -362,8 +373,12 @@ CONTROL_FIELD_ALIASES: dict[str, tuple[str, ...]] = {
     "responsibility": (
         "accountable / executing", "accountable/executing", "accountable and executing",
         "accountable / operating role", "responsible role", "responsible roles",
-        "role", "roles", "responsible", "owner role", "owner", "control owner",
+        "role", "roles", "responsible", "owner role", "owner",
     ),
+    # Bobby (22 Oct 2026): a control has ONE responsible role, the Control owner,
+    # stated in the control. This is the form documents are being updated to; the
+    # "accountable / executing" spellings above are the form they are leaving.
+    "control_owner": ("control owner", "control owner role"),
     "accountable": ("accountable", "accountable role"),
     "executing": ("executing", "executing role", "operating role", "executor"),
     "evidence": (
@@ -390,6 +405,7 @@ _CONTROL_KEYWORDS: tuple[tuple[str, str], ...] = (
     ("record id", "record_ids"),
     ("evidence", "evidence"),
     ("risk", "risk"),
+    ("control owner", "control_owner"),
     ("accountable", "responsibility"),
     ("responsib", "responsibility"),
     ("role", "responsibility"),

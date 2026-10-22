@@ -104,7 +104,65 @@ function FlagDecision({ r, canDecide, onDecide, busy }) {
   );
 }
 
-export function ResultCard({ r, canDecide = false, onDecide, busy = false }) {
+// A role the document names that Org Roles does not have (V07): the roles that ARE there and
+// might be meant, a free choice from all of them, and — when the role is really new — Create role.
+// `onRole` is given only where the document can be changed (a Lifecycle Review card).
+function RoleActions({ f, roles = [], canCreate, canAlias, onRole, busy }) {
+  const d = f.data;
+  const [choice, setChoice] = useState("");
+  const from = d.role;
+  const row = { display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginTop: 4 };
+  const btn = (primary, off) => ({
+    padding: "3px 9px", fontSize: 11, fontWeight: 600, borderRadius: 6, cursor: off ? "not-allowed" : "pointer",
+    border: primary ? "none" : "1.5px solid #C0C0C0", background: off ? "#E8E8E8" : primary ? "#1D9E75" : "transparent",
+    color: off ? "#999" : primary ? "#fff" : "var(--color-text-primary)",
+  });
+  const createRole = () => {
+    try { sessionStorage.setItem("orgos.newRoleName", d.placeholder ? "" : from); } catch { /* the form just opens empty */ }
+    window.dispatchEvent(new CustomEvent("orgos:navigate", { detail: { to: "org-roles" } }));
+  };
+  return (
+    <div style={{ marginTop: 4, marginBottom: 6, padding: "6px 8px", background: "#F7F6F2", borderRadius: 6, fontSize: 11 }}>
+      {d.suggestions?.length > 0 ? (
+        <div>Do you mean:</div>
+      ) : (
+        <div style={{ color: "var(--color-text-secondary)" }}>No existing role is close to this.</div>
+      )}
+      {(d.suggestions || []).map((s) => (
+        <div key={s.group_id} style={row}>
+          <strong>{s.name}</strong>
+          <span style={{ color: "var(--color-text-secondary)" }}>{s.reason}</span>
+          {onRole && (
+            <button disabled={busy} style={btn(true, busy)} onClick={() => onRole.use(from, s.name)}>Use this role</button>
+          )}
+          {onRole && canAlias && !d.placeholder && (
+            <button disabled={busy} style={btn(false, busy)} title="Agree that this spelling means this role. The document is not changed."
+              onClick={() => onRole.alias(s.group_id, from)}>Keep my wording as an alias</button>
+          )}
+        </div>
+      ))}
+      {onRole && roles.length > 0 && (
+        <div style={row}>
+          <select value={choice} onChange={(e) => setChoice(e.target.value)}
+            style={{ fontSize: 11, padding: "3px 6px", borderRadius: 6, border: "1.5px solid #C0C0C0", maxWidth: 260 }}>
+            <option value="">Choose another role…</option>
+            {roles.map((n) => <option key={n} value={n}>{n}</option>)}
+          </select>
+          <button disabled={busy || !choice} style={btn(true, busy || !choice)} onClick={() => onRole.use(from, choice)}>Use this role</button>
+        </div>
+      )}
+      <div style={row}>
+        {canCreate ? (
+          <button disabled={busy} style={btn(false, busy)} onClick={createRole}>Create role{d.placeholder ? "" : ` “${from}”`}</button>
+        ) : (
+          <span style={{ color: "var(--color-text-secondary)" }}>Only Compliance can create a role. Ask them to add “{from}”.</span>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export function ResultCard({ r, canDecide = false, onDecide, busy = false, roles, onRole }) {
   return (
     <div style={{ ...card, padding: "10px 14px", marginBottom: 8 }}>
       <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
@@ -120,6 +178,9 @@ export function ResultCard({ r, canDecide = false, onDecide, busy = false }) {
               {f.where && <code style={{ fontSize: 11, background: "#F1EFE8", padding: "0 4px", borderRadius: 3 }}>{f.where}</code>}{" "}
               {f.message}
               {f.fix && <div style={{ color: "#0C447C", fontSize: 11 }}>→ {f.fix}</div>}
+              {f.data?.kind === "role" && (
+                <RoleActions f={f} roles={roles} canCreate={canDecide} canAlias={canDecide} onRole={onRole} busy={busy} />
+              )}
             </li>
           ))}
           {r.findings.length > 25 && <li style={{ color: "var(--color-text-tertiary)" }}>…and {r.findings.length - 25} more</li>}

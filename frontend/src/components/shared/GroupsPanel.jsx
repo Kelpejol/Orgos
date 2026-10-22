@@ -160,10 +160,20 @@ function GroupCard({ group, canEdit, owns }) {
   );
 }
 
+// "Create role" on a document check sends the role's name here: shown once, then forgotten.
+const PREFILL_KEY = "orgos.newRoleName";
+function takeRolePrefill() {
+  try {
+    const v = sessionStorage.getItem(PREFILL_KEY) || "";
+    sessionStorage.removeItem(PREFILL_KEY);
+    return v;
+  } catch { return ""; }
+}
+
 function CreateGroupForm({ onDone }) {
   const qc = useQueryClient();
   const { notify } = useAlert();
-  const [name, setName] = useState("");
+  const [name, setName] = useState(takeRolePrefill);
   const [description, setDescription] = useState("");
   const [category, setCategory] = useState("");
   const [aliases, setAliases] = useState("");
@@ -225,7 +235,9 @@ export default function GroupsPanel() {
   const { isCompliance } = useCurrentUserRole();
   const { data: ownership = {} } = useOwnershipSummary();
   const { data: groups = [], isLoading, error, refetch } = useGroups();
-  const [creating, setCreating] = useState(false);
+  const [creating, setCreating] = useState(() => {
+    try { return !!sessionStorage.getItem(PREFILL_KEY); } catch { return false; }
+  });
 
   const notProvisioned = error && (error.response?.status === 503 || /not exist|provision/i.test(error.message || ""));
 

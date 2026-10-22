@@ -2493,6 +2493,28 @@ async def _editable_item(item_id: str, user: CurrentUser) -> dict:
     return fields
 
 
+async def _ensure_working_copy(item_id: str, fields: dict, user: CurrentUser) -> tuple[str, str]:
+    """
+    The URL and file name of this item's OWN working copy, making it on first use.
+    A revision starts from the approved published file and an intake item from the
+    library draft; neither is ever edited: the file is copied into
+    Lifecycle Documents/{item_id}/ and the item is pointed at the copy.
+    """
+    meta = await sharepoint_item_metadata(fields["SharePointFileUrl"])
+    name = meta.get("name") or f"{fields.get('DocumentCode') or item_id}.docx"
+    if not name.lower().endswith(".docx"):
+        raise HTTPException(status_code=422, detail=(
+            f"'{name}' is not a Word document, so it can't be edited here. Upload a .docx version."))
+    if _is_working_copy(meta, item_id):
+        return meta.get("webUrl") or fields["SharePointFileUrl"], name
+    data, _ = await download_file_from_sharepoint(fields["SharePointFileUrl"])
+    working = await _upload_to_sharepoint(item_id, name, data)
+    await update_list_item(_get_list_id(), _LIST_NAME, item_id, {"SharePointFileUrl": working})
+    await _audit_lifecycle_action({**fields, "id": item_id}, user, "Working copy created",
+                                  f"{name} copied for editing; the original is unchanged.")
+    return working, name
+
+
 @router.post("/documents/{item_id}/edit")
 async def open_for_editing(item_id: str, user: CurrentUser = Depends(get_current_user)) -> dict:
     """
@@ -2506,20 +2528,7 @@ async def open_for_editing(item_id: str, user: CurrentUser = Depends(get_current
     """
     fields = await _editable_item(item_id, user)
     try:
-        meta = await sharepoint_item_metadata(fields["SharePointFileUrl"])
-        name = meta.get("name") or f"{fields.get('DocumentCode') or item_id}.docx"
-        if not name.lower().endswith(".docx"):
-            raise HTTPException(status_code=422, detail=(
-                f"'{name}' is not a Word document, so it can't be edited in the browser. "
-                "Upload a .docx version."))
-        if _is_working_copy(meta, item_id):
-            working = meta.get("webUrl") or fields["SharePointFileUrl"]
-        else:
-            data, _ = await download_file_from_sharepoint(fields["SharePointFileUrl"])
-            working = await _upload_to_sharepoint(item_id, name, data)
-            await update_list_item(_get_list_id(), _LIST_NAME, item_id, {"SharePointFileUrl": working})
-            await _audit_lifecycle_action({**fields, "id": item_id}, user, "Working copy created",
-                                          f"{name} copied for editing; the original is unchanged.")
+        working, _name = await _ensure_working_copy(item_id, fields, user)
         return {"edit_url": _office_edit_url(working), "working_copy_url": working}
     except HTTPException:
         raise
@@ -2561,6 +2570,71 @@ async def version_options(item_id: str, user: CurrentUser = Depends(get_current_
         "min_new_summary": versioning.MIN_NEW_SUMMARY,
         "min_correction_summary": versioning.MIN_CORRECTION_SUMMARY,
     }
+
+
+class RoleFixBody(BaseModel):
+    from_role: str          # the role as the document writes it
+    to_role: str            # the role to use: must exist in Org Roles
+
+
+@router.post("/documents/{item_id}/role-fix")
+async def role_fix(item_id: str, body: RoleFixBody, user: CurrentUser = Depends(get_current_user)) -> dict:
+    """
+    "Use this role": change a role named in the document to one that exists in Org Roles.
+    Only role FIELDS change (a Control owner line, a role column, an Owner or approver row),
+    never the same words in running text, and the edit proves that before it is saved. It is made
+    on the item's own working copy: the original file is never touched.
+    """
+    from doc_standards import roles as role_matching
+    from doc_standards.role_fix import RoleFixError, replace_role
+    from groups import service as groups_service
+
+    fields = await _editable_item(item_id, user)
+    book = role_matching.RoleBook.from_groups(await groups_service.list_groups())
+    target = book.find(body.to_role)
+    if target is None:
+        raise HTTPException(status_code=422, detail=(
+            f"“{body.to_role}” is not a role in Org Roles. Choose one that exists, or create it first."))
+    try:
+        working, name = await _ensure_working_copy(item_id, fields, user)
+        data, _ = await download_file_from_sharepoint(working)
+        fix = replace_role(data, body.from_role, target.name)
+    except RoleFixError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _handle_error(exc, f"role fix {item_id}")
+
+    # A CDT source keeps its cover values on the item, not in the file.
+    try:
+        cover = CdtCoverFacts.from_json(fields.get("CDTCoverFacts", ""))
+    except ValueError:
+        cover = CdtCoverFacts()
+    cover_places = []
+    for attr, label in (("owner", "the cover's Document owner"), ("first_pass_approval", "the cover's First pass approval"),
+                        ("final_approval", "the cover's Final approval")):
+        if role_matching.norm(getattr(cover, attr)) == role_matching.norm(body.from_role):
+            setattr(cover, attr, target.name)
+            cover_places.append(label)
+    if not fix.count and not cover_places:
+        raise HTTPException(status_code=409, detail=(
+            f"“{body.from_role}” was not found in a role field of the document, so nothing was changed. "
+            "It may be written differently in the file: edit it in Word."))
+    try:
+        if fix.count:
+            await _upload_to_sharepoint(item_id, name, fix.data)
+        if cover_places:
+            await update_list_item(_get_list_id(), _LIST_NAME, item_id, {"CDTCoverFacts": cover.to_json()})
+    except Exception as exc:
+        _handle_error(exc, f"role fix save {item_id}")
+    standard_gate.invalidate()
+    places = fix.places + cover_places
+    await _audit_lifecycle_action(
+        {**fields, "id": item_id}, user, "Role changed in the document",
+        f"“{body.from_role}” → “{target.name}” in {len(places)} place(s): {', '.join(dict.fromkeys(places))}. "
+        "Made on the working copy; the original is unchanged.")
+    return {"changed": len(places), "places": places, "to_role": target.name}
 
 
 class StandardDecision(BaseModel):
