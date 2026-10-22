@@ -156,3 +156,15 @@ Once those are in, Blocked controls clear themselves on the next sync.
 - **Convert to CDT** on a real document: open the converted working copy in Word and look at the cover, the numbering and the tables before moving on. The proofs are structural; they cannot see how Word draws it.
 - If the CDI Procedure is reissued, regenerate the standard: `python scripts/build_cdi_reference.py "docs/Control of Documented Information Procedure.docx"` (it stops with an error if the Procedure's layout changed, rather than writing an empty file).
 - After any change to the converter, run the proof over the library: `python scripts/doc_standards_proof.py <library folder> <templates folder>`.
+
+---
+
+## 10. The standard as a gate in Document Lifecycle
+
+- **Add one column** to the **Document Lifecycle** list: `StandardsDecisions`, *multiple lines of text* (plain text, not rich text). It stores Compliance's decisions on flagged checks. Without it, a decision cannot be saved and the panel says so.
+- **The gate has three modes**, set by `STANDARD_GATE` in the server `.env`:
+  - `advisory` (the default): the "Document standard" panel on a Review card shows the CDI checks, and says what *would* stop the document, but nothing is stopped.
+  - `enforce`: a blocking problem (V-check BLOCK), or a flag Compliance has not decided, stops the move to Sensitisation and stops approval. A BLOCK can never be waived; a FLAG is decided with a reason.
+  - `off`: not shown at the gate.
+  Change the mode, then restart OrgOS. Do not switch to `enforce` until Bobby has answered whether V01–V24 replace the old checker (REMAINING-WORK §1, question 1) and you are ready for documents to be stopped.
+- The old CDI checks still run beside the new ones.

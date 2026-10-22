@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from dataclasses import dataclass, field
 from typing import Optional
 from urllib.parse import unquote, urlparse
@@ -51,6 +52,14 @@ _parsed: dict[tuple[str, str], ParsedDocument] = {}
 _lock = asyncio.Lock()
 # library-folder file id → (lastModified, parse or None if unreadable)
 _folder_parsed: dict[str, tuple[str, Optional[ParsedDocument]]] = {}
+# When the library was last read in full. A gate check that must answer within a
+# request uses the library only if it has been read recently (see is_warm).
+_library_read_at: float = 0.0
+WARM_FOR_SECONDS = 1800
+
+
+def is_warm() -> bool:
+    return _library_read_at > 0 and time.monotonic() - _library_read_at < WARM_FOR_SECONDS
 
 
 @dataclass
@@ -150,6 +159,9 @@ async def load_library_folder(concurrency: int = 4) -> tuple[list[ParsedDocument
             docs.append(doc)
 
     await asyncio.gather(*(read(f) for f in files))
+    global _library_read_at
+    if not missed:
+        _library_read_at = time.monotonic()
     return docs, missed
 
 

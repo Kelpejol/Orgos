@@ -215,6 +215,7 @@ LISTS: dict[str, dict] = {
             "RejectionReason":           (NOTE,   None),
             "SharePointFileUrl":         (TEXT,   None),
             "CDIFailures":               (NOTE,   None),
+            "StandardsDecisions":        (NOTE,   None),   # Compliance decisions on FLAGged standard checks
             "LinkedGapId":               (TEXT,   None),
             "LinkedNCId":                (TEXT,   None),
             "StandardsMapping":          (TEXT,   None),

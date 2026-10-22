@@ -23,7 +23,7 @@ from pydantic import BaseModel
 
 from agents.cdi_checker.service import is_valid_doc_code, run_cdi_check
 from agents.llm_client import llm_generate
-from auth.validator import ROLE_ADMIN, ROLE_COMPLIANCE, CurrentUser, get_current_user
+from auth.validator import ROLE_ADMIN, ROLE_COMPLIANCE, CurrentUser, get_current_user, require_compliance_lead
 from config import settings
 from graph.auth import get_graph_access_token
 from graph.client import (
@@ -49,6 +49,7 @@ from lifecycle.graft import graft_cover_onto_document
 from lifecycle.merge import MergeError, merge, scan_markers
 from lifecycle.schemas import CdtCoverFacts, MergeContext, RevisionHistoryEntry, StandardEntry
 from lifecycle.templates import InvalidTemplateError, TemplateNotFoundError, load_master_template
+from doc_standards import gate as standard_gate
 
 logger = logging.getLogger(__name__)
 
@@ -230,6 +231,7 @@ async def _sp_to_doc(item: dict) -> dict:
         "RejectionCount":           int(f.get("RejectionCount", 0) or 0),
         "SharePointFileUrl":        f.get("SharePointFileUrl", ""),
         "CDIFailures":              f.get("CDIFailures", ""),
+        "StandardsDecisions":       f.get("StandardsDecisions", ""),
         "LinkedGapId":              f.get("LinkedGapId", ""),
         "LinkedNCId":               f.get("LinkedNCId", ""),
         "StandardsMapping":         f.get("StandardsMapping", ""),
@@ -720,6 +722,10 @@ async def progress_doc(
                     status_code=422,
                     detail="CDI check failed — fix the listed failures and re-upload before progressing.",
                 )
+            # The CDI Procedure's own checks (V01–V24). Beside the check above until
+            # Bobby confirms they replace it; stops the document only when the
+            # standard gate is set to enforce (settings.standard_gate).
+            await standard_gate.enforce(doc)
             if not body.stakeholders and not body.skip_stakeholders:
                 raise HTTPException(
                     status_code=422,
@@ -748,6 +754,7 @@ async def progress_doc(
                     {"Stage": "Approval", "SubmittedForApproval": date.today().isoformat()},
                 )
                 doc["Stage"] = "Approval"  # keep local dict consistent for finalise
+                await standard_gate.enforce(doc)       # approval re-checks the standard
                 note = (
                     f"Approver skipped — document auto-finalised by "
                     f"{finaliser.get('display_name') or user.name} on {date.today().isoformat()}."
@@ -921,6 +928,18 @@ async def approval_impact(
             return blocked(
                 f"Document code '{doc.get('DocumentCode', '')}' is invalid — fix it before approving."
             )
+
+        if standard_gate.mode() != "off":
+            try:
+                evaluation = await standard_gate.evaluate_item(doc)
+            except Exception:
+                evaluation = None
+            if evaluation and evaluation.get("available") and not evaluation["gate"]["ready"]:
+                message = standard_gate.block_message(evaluation["report"], evaluation["gate"])
+                if evaluation["gate"]["enforced"]:
+                    return blocked(message)
+                impact["warnings"].append(
+                    "Advisory: " + message + " The standard is not being enforced yet, so this does not stop the approval.")
 
         revision_of = str(doc.get("RevisionOf") or "").strip()
         if revision_of:
@@ -1370,6 +1389,8 @@ async def approve_doc(
 
         approver_resolved  = await resolve_user(user.oid)
         approver_email_val = approver_resolved.get("email", "")
+
+        await standard_gate.enforce(doc)               # approval re-checks the standard
 
         approval_note = f"Approval note: {body.notes}" if body.notes else ""
         register_item_id, extraction_result = await _finalize_document_approval(
@@ -2454,6 +2475,61 @@ async def recheck_after_editing(item_id: str, user: CurrentUser = Depends(get_cu
         raise
     except Exception as exc:
         _handle_error(exc, f"re-check lifecycle {item_id}")
+
+
+class StandardDecision(BaseModel):
+    check_id: str
+    accept: bool = True
+    reason: str = ""
+
+
+@router.get("/documents/{item_id}/standard-check")
+async def standard_check(item_id: str, user: CurrentUser = Depends(get_current_user)) -> dict:
+    """The CDI checks (V01–V24) on this item's file, with Compliance's decisions on any FLAGs.
+    Writes nothing. Uses the library only if it has already been read, so it answers promptly."""
+    try:
+        doc = await _sp_to_doc(await get_list_item(_get_list_id(), _LIST_NAME, item_id))
+        return await standard_gate.evaluate_item(doc)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _handle_error(exc, f"standard check {item_id}")
+
+
+@router.post("/documents/{item_id}/standard-decision")
+async def standard_decision(item_id: str, body: StandardDecision,
+                            user: CurrentUser = Depends(require_compliance_lead)) -> dict:
+    """
+    Compliance accepts a FLAG with a reason (or withdraws its acceptance). A BLOCK
+    cannot be waived. The decision covers exactly what was found: if the findings
+    change, the flag is raised again.
+    """
+    doc = await _sp_to_doc(await get_list_item(_get_list_id(), _LIST_NAME, item_id))
+    if doc.get("ApprovalStatus") == "Approved":
+        raise HTTPException(status_code=409, detail="This document is already approved.")
+    evaluation = await standard_gate.evaluate_item(doc)
+    if not evaluation.get("available"):
+        raise HTTPException(status_code=422, detail=evaluation.get("reason") or "There is nothing to decide.")
+    try:
+        decisions = standard_gate.record_decision(
+            standard_gate.parse_decisions(doc.get("StandardsDecisions")), evaluation["report"],
+            body.check_id, body.accept, body.reason, user.name or user.email, user.oid)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    try:
+        await update_list_item(_get_list_id(), _LIST_NAME, item_id,
+                               {"StandardsDecisions": standard_gate.dump_decisions(decisions)})
+    except Exception as exc:
+        logger.exception("Could not save standard decisions on lifecycle %s", item_id)
+        raise HTTPException(status_code=503, detail=(
+            "The decision could not be saved. The Document Lifecycle list needs a 'StandardsDecisions' "
+            f"column (multiple lines of text, plain). ({exc})"))
+    await _audit_lifecycle_action(
+        {**doc, "id": item_id}, user,
+        f"Standard flag {'accepted' if body.accept else 'withdrawn'}: {body.check_id}", body.reason or "")
+    standard_gate.attach_decisions(evaluation["report"], decisions)
+    evaluation["gate"] = standard_gate.summarise(evaluation["report"])
+    return evaluation
 
 
 @router.get("/documents/{item_id}/download")

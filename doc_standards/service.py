@@ -25,7 +25,8 @@ from lifecycle.schemas import CdtCoverFacts
 
 logger = logging.getLogger(__name__)
 
-CONTEXT_TIMEOUT_SECONDS = 90
+# Cloudflare cuts a request off at about 100 seconds; stay well inside it.
+CONTEXT_TIMEOUT_SECONDS = 60
 
 # What each document type's main section holds (CDI Procedure §7.3, section 4.0).
 _MAIN_CONTENT = {"POL": "Commitments", "STD": "Requirements (the controls)", "PRO": "Steps",
@@ -90,8 +91,33 @@ async def _library_documents(parsed: ParsedDocument) -> list[ParsedDocument]:
     return [d for d in approved.documents + folder if not same(d)]
 
 
-async def build_context(parsed: ParsedDocument) -> tuple[Context, list[str]]:
-    """The context for checking `parsed`, and a plain-words note for anything missing."""
+_warming: Optional[asyncio.Task] = None
+
+
+def start_warming() -> None:
+    """Read the library in the background so a later check can use it without waiting."""
+    global _warming
+    if _warming is not None and not _warming.done():
+        return
+
+    async def run() -> None:
+        try:
+            from control_register.approved_library import load_approved_library, load_library_folder
+            await asyncio.gather(load_approved_library(), load_library_folder())
+        except Exception:
+            logger.exception("Reading the library in the background failed")
+
+    _warming = asyncio.create_task(run())
+
+
+async def build_context(parsed: ParsedDocument, *, wait_for_library: bool = True) -> tuple[Context, list[str]]:
+    """
+    The context for checking `parsed`, and a plain-words note for anything missing.
+
+    `wait_for_library=False` is for a check that sits inside a request which must
+    answer promptly (a Lifecycle gate): it uses the library only if it has been
+    read recently, and otherwise starts reading it in the background and says so.
+    """
     ctx, notes = Context(), []
     try:
         ctx.register = await _register_rows()
@@ -106,6 +132,12 @@ async def build_context(parsed: ParsedDocument) -> tuple[Context, list[str]]:
             notes.append("The Records Catalogue is empty or not configured, so Record IDs were not looked up.")
     except Exception as exc:
         notes.append(f"The Records Catalogue could not be read ({exc}).")
+    from control_register.approved_library import is_warm
+    if not wait_for_library and not is_warm():
+        start_warming()
+        notes.append("The library is being read for the first time, so checks that compare this document with "
+                     "others did not run. Check again in a minute or two.")
+        return ctx, notes
     try:
         others = await asyncio.wait_for(_library_documents(parsed), CONTEXT_TIMEOUT_SECONDS)
         ctx.index = LibraryIndex([*others, parsed])

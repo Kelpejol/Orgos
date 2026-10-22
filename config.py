@@ -108,6 +108,16 @@ class Settings(BaseSettings):
     #   DOCUMENT_WRITE_MODE=dev | live   (unset: dev in development, live in prod)
     document_write_mode: str = Field(default="")
 
+    # Whether the CDI validation checks (V01–V24, doc_standards/) stop a document
+    # at the Lifecycle Review gate and at approval.
+    #   off       the checks are not run at the gate
+    #   advisory  they run and are shown; a document that would be stopped says so
+    #             but is not stopped. The default: enforcing all 18 BLOCK rules would
+    #             halt nearly every existing document at once.
+    #   enforce   a BLOCK failure, or a FLAG nobody has decided, stops Progress and approval
+    #   STANDARD_GATE=off | advisory | enforce
+    standard_gate: str = Field(default="advisory")
+
     # Where OrgOS is reached from a browser, e.g. https://orgos.dragnet-solutions.com
     # Used to build the ready-made "read this document" link that Power Automate
     # puts in its Teams notifications. Falls back to the first allowed origin.
