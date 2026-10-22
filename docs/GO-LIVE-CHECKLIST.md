@@ -168,3 +168,10 @@ Once those are in, Blocked controls clear themselves on the next sync.
   - `off`: not shown at the gate.
   Change the mode, then restart OrgOS. Do not switch to `enforce` until Bobby has answered whether V01–V24 replace the old checker (REMAINING-WORK §1, question 1) and you are ready for documents to be stopped.
 - The old CDI checks still run beside the new ones.
+
+---
+
+## 11. One version number
+
+- Run `python scripts/migrate_versions.py` (a dry run that lists every change), then again with `--apply`, to rewrite existing Document Register entries from "R02" to "02". Nothing else about an entry changes. New approvals write the version plain.
+- From now on every approval asks how it treats the version (first issue, new version, correction, annual review). A new version cannot be approved without a change summary that says what changed and why.

@@ -21,6 +21,7 @@ import DocumentViewer from "../../components/shared/DocumentViewer.jsx";
 import FeedbackAmendPanel from "../../components/shared/FeedbackAmendPanel.jsx";
 import apiClient from "../../api/grcApi.js";
 import StandardCheckPanel from "../../components/shared/StandardCheckPanel.jsx";
+import VersionChoice from "../../components/shared/VersionChoice.jsx";
 import { useAiSuggestion } from "../../hooks/useAiSuggestion.js";
 
 // =============================================================================
@@ -2343,6 +2344,9 @@ const ApproverModal = ({ doc, onClose, onDone }) => {
   const [resolved,    setResolved]    = useState(null);
   const [saving,      setSaving]      = useState(false);
   const [error,       setError]       = useState("");
+  const [skipping,    setSkipping]    = useState(false);   // skipping the approver finalises, so it needs the version too
+  const [version,     setVersion]     = useState({ decision: "", summary: "" });
+  const [versionReady, setVersionReady] = useState(false);
 
   const handleSubmit = async () => {
     if (!resolved) { setError("Select an approver first."); return; }
@@ -2364,7 +2368,11 @@ const ApproverModal = ({ doc, onClose, onDone }) => {
   const handleSkip = async () => {
     setSaving(true); setError("");
     try {
-      await lifecycleApi.progress(doc.id, "Sensitisation", { skip_approver: true });
+      await lifecycleApi.progress(doc.id, "Sensitisation", {
+        skip_approver: true,
+        version_decision: version.decision || undefined,
+        change_summary: version.summary.trim() || undefined,
+      });
       qc.invalidateQueries({ queryKey: ["lifecycle"] });
       onDone();
     } catch (err) {
@@ -2416,11 +2424,22 @@ const ApproverModal = ({ doc, onClose, onDone }) => {
           />
         </div>
 
+        {skipping && (
+          <>
+            <div style={{ fontSize: 12, color: "#633806", background: "#FAEEDA", border: "0.5px solid #FAC775",
+                          borderRadius: 8, padding: "8px 10px", marginBottom: 10, lineHeight: 1.5 }}>
+              Skipping the approver approves and publishes the document straight away, so say how this
+              treats the version first.
+            </div>
+            <VersionChoice docId={doc.id} value={version} onChange={setVersion} onReady={setVersionReady} />
+          </>
+        )}
+
         {/* Actions */}
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <button
             onClick={handleSubmit}
-            disabled={saving || !resolved}
+            disabled={saving || !resolved || skipping}
             style={{
               flex: 1, padding: "11px", fontSize: 13, borderRadius: 9, border: "none", fontWeight: 600,
               background: saving || !resolved ? "#E8E8E8" : "#993556",
@@ -2432,8 +2451,8 @@ const ApproverModal = ({ doc, onClose, onDone }) => {
             {saving ? "Submitting..." : `Submit for Approval${resolved ? ` — ${resolved.display_name}` : ""}`}
           </button>
           <button
-            onClick={handleSkip}
-            disabled={saving}
+            onClick={skipping ? handleSkip : () => setSkipping(true)}
+            disabled={saving || (skipping && !versionReady)}
             title="Finalise without assigning an approver — the document is published and approved automatically"
             style={{
               padding: "11px 14px", fontSize: 12, borderRadius: 9, fontWeight: 500,
@@ -2442,7 +2461,7 @@ const ApproverModal = ({ doc, onClose, onDone }) => {
               cursor: saving ? "not-allowed" : "pointer",
             }}
           >
-            {saving ? "Finalising…" : "Skip"}
+            {saving ? "Finalising…" : skipping ? "Approve without an approver" : "Skip"}
           </button>
           <button onClick={onClose} style={{
             padding: "11px 14px", fontSize: 13, borderRadius: 9,
@@ -2466,11 +2485,17 @@ const ApproveConfirmModal = ({ doc, onClose, onDone }) => {
   const [saving, setSaving] = useState(false);
   const [error,  setError]  = useState("");
   const [impact, setImpact] = useState(null);
+  const [version, setVersion] = useState({ decision: "", summary: "" });
+  const [versionReady, setVersionReady] = useState(false);
 
   const handleApprove = async () => {
     setSaving(true); setError("");
     try {
-      await lifecycleApi.approve(doc.id, { notes: notes.trim() || undefined });
+      await lifecycleApi.approve(doc.id, {
+        notes: notes.trim() || undefined,
+        version_decision: version.decision || undefined,
+        change_summary: version.summary.trim() || undefined,
+      });
       qc.invalidateQueries({ queryKey: ["lifecycle"] });
       onDone();
     } catch (err) {
@@ -2486,7 +2511,7 @@ const ApproveConfirmModal = ({ doc, onClose, onDone }) => {
     }}>
       <div onClick={e => e.stopPropagation()} style={{
         background: "var(--color-background-primary)", borderRadius: 14,
-        padding: "24px 28px", maxWidth: 420, width: "100%",
+        padding: "24px 28px", maxWidth: 520, width: "100%", maxHeight: "92vh", overflowY: "auto",
         boxShadow: "0 20px 60px rgba(0,0,0,0.25)",
       }}>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14 }}>
@@ -2498,10 +2523,14 @@ const ApproveConfirmModal = ({ doc, onClose, onDone }) => {
           </div>
           <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 20, color: "var(--color-text-tertiary)" }}>×</button>
         </div>
+        {/* The version: new, a correction, or an annual review (CDI §14) */}
+        <VersionChoice docId={doc.id} value={version} onChange={setVersion} onReady={setVersionReady} />
         {/* Cascade impact — what approving will create/update (DINT §5.3.1) */}
         <div style={{ marginBottom: 14 }}>
           <CascadeImpactPreview
             impactUrl={`/api/v1/lifecycle/documents/${doc.id}/approval-impact`}
+            impactParams={{ version_decision: version.decision || undefined,
+                            change_summary: version.summary.trim() || undefined }}
             onImpact={setImpact}
           />
         </div>
@@ -2531,12 +2560,12 @@ const ApproveConfirmModal = ({ doc, onClose, onDone }) => {
           />
         </div>
         <div style={{ display: "flex", gap: 10 }}>
-          <button onClick={handleApprove} disabled={saving || impact?.blocked} style={{
+          <button onClick={handleApprove} disabled={saving || impact?.blocked || !versionReady} style={{
             flex: 1, padding: "11px", fontSize: 13, borderRadius: 9, border: "none", fontWeight: 600,
-            background: saving || impact?.blocked ? "#E8E8E8" : "#1D9E75",
-            color: saving || impact?.blocked ? "#999" : "#fff",
-            cursor: saving || impact?.blocked ? "not-allowed" : "pointer",
-          }}>{saving ? "Approving..." : impact?.blocked ? "Approval blocked" : "Confirm Approval ✓"}</button>
+            background: saving || impact?.blocked || !versionReady ? "#E8E8E8" : "#1D9E75",
+            color: saving || impact?.blocked || !versionReady ? "#999" : "#fff",
+            cursor: saving || impact?.blocked || !versionReady ? "not-allowed" : "pointer",
+          }}>{saving ? "Approving..." : impact?.blocked ? "Approval blocked" : !versionReady ? "Complete the version above" : "Confirm Approval ✓"}</button>
           <button onClick={onClose} style={{
             padding: "11px 16px", fontSize: 13, borderRadius: 9,
             border: "1.5px solid #D0D0D0", background: "transparent",

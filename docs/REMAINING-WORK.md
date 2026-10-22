@@ -13,6 +13,7 @@ Status: ✅ done · 🔨 being built · ⏳ waiting · ☐ not started
 - ✅ Changing a role on Org Roles re-checks every control at once.
 - ✅ Edit in Word on a Lifecycle item.
 - ✅ Document Standards page: the standard, check a document, convert to CDT (13 of 24 checks; 5 conversion proofs).
+- ✅ The CDI checks as a gate in Lifecycle Review (advisory by default), and one version number with a change summary (22 Oct).
 
 ---
 
@@ -38,8 +39,8 @@ Status: ✅ done · 🔨 being built · ⏳ waiting · ☐ not started
 
 ## 3. To build
 **Core**
-1. 🔨 Put the new checks into the Lifecycle Review gate, running beside the old ones until Bobby answers #1.
-2. 🔨 Fix versions: one number with no "R", a change summary for new versions, approval stamping the cover from the Register.
+1. ✅ Put the new checks into the Lifecycle Review gate, running beside the old ones until Bobby answers #1. *(Built 22 Oct: a "Document standard" panel on the Review card; mode `advisory` by default, `enforce` when you are ready; FLAGs decided by Compliance with a reason. To do on your side: add the `StandardsDecisions` column, and choose when to switch to `enforce` once Bobby answers #1.)*
+2. ✅ Fix versions: one number with no "R", a change summary for new versions, approval stamping the cover from the Register. *(Built 22 Oct. To do on your side: run `scripts/migrate_versions.py` to rewrite existing "R02" entries as "02". Publishing to the published and archive libraries still waits on Bobby #6, item 13.)*
 
 **Next**
 

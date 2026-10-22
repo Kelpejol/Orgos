@@ -223,6 +223,7 @@ A document goes through three stages: **Review → Sensitisation → Approval.**
 
 ### Stage 1: Review (the owner)
 - The owner uploads the document. **The CDI checks run automatically** (section 3).
+- **A "Document standard" panel** on the Review card runs the CDI Procedure's own checks (V01–V24) on the file, on request, and says where each problem is. Compliance decides any flagged check, with a reason. By default it is **advisory**: it shows what would stop the document without stopping it. When the gate is switched to **enforce**, a blocking problem, or a flag nobody has decided, stops the move to Sensitisation and stops approval. The old CDI checks still run beside it. See the go-live checklist, section 10.
 - **Or edits it in the browser: "Edit in Word ↗"** opens the document in Word for the web, and it saves as you type.
   - Editing always happens on **this item's own working copy**. For a revision, OrgOS first copies the approved published file and edits the copy, so **the approved version is never changed**. A draft from the library folder is copied the same way.
   - When you've finished, click **"Done editing — re-check"** to run the CDI checks on the saved file.
@@ -240,36 +241,33 @@ A document goes through three stages: **Review → Sensitisation → Approval.**
 
 ### Stage 3: Approval (the approver)
 - **Approve** does the following:
-  1. Updates the cover: version goes up (Draft → 01 → 02…), effective date = today, next review = one year later, and a revision-history line is added.
+  1. Stamps the cover from the Register: the version and dates follow the approver's choice (see "Versions" below), and a revision-history line is added.
   2. Saves a **published copy** to the OrgOS site under *Lifecycle Documents*.
   3. Creates or updates the **Document Register** entry (R01, R02…).
   4. **Reads the approved library with the new reader** (section 1). This document's new and changed controls go to Extraction Review, and problems against other approved documents go to Assignment & Ownership. If anything goes wrong (e.g. a published copy can't be downloaded), **nothing is written** and a note on the Lifecycle item says how to retry: `python scripts/sync_control_library.py --apply`.
 - **Reject** needs a reason (20+ characters). The document goes back to Review.
 - The owner can recall it, and Compliance can reverse an approval.
 
-### Versions: why "R01", and why there are two numbers
-Today OrgOS keeps **two** version numbers:
+### Versions: one number, and what approval does to it
+There is **one** version number, written **01, 02, 03…** with no "R". It follows CDI Procedure §12 and §14.
 
-| Where | Format | When it changes |
-|---|---|---|
-| **Document Register** ("Rev" column) | **R01, R02, R03…** "R" stands for **Revision**, a convention from the earlier DINT design | Every approval of a revision adds one: R01 → R02 |
-| **The CDT cover** (in the file, if it has the cover) | **01, 02, 03…** "Draft" before the first issue | Every approval: Draft → 01 → 02 |
+- A **draft has no version.** The number is given when the document is issued.
+- The **Document Register is the master** of the version, the effective date, the next review date and the approver. Approval **stamps the cover from the Register**; nobody types them into the file.
 
-So when you revise the Identity Standard, the Register goes **R01 → R02**. That's simply because a revision was approved. The entry is updated in place, never duplicated.
+**When someone approves a document, they say how it treats the version:**
 
-**Your CDI Procedure says this should be different:**
-- *"Version: the single identifier of an issued document, incremented on issue. Replaces the former Revision and Issue fields."* So there should be **one** number, **no "R"**.
-- *Drafts carry the status Draft and have no version number* (§12.1). OrgOS now follows this: a draft is no longer asked for a version.
-- *Correcting typos, broken cross-references or formatting is not a material change and **does not increment the version**. It is logged* (§14.3).
-- *A review that finds no substantial change **keeps the version**, updates the review dates, and logs "annual review, no change"* (§14.5).
-- *Every issued version carries a change summary stating **what changed and why*** (§14.2).
+| Situation | Choices |
+|---|---|
+| **First issue** | It becomes **version 01**. The approver writes what the document is and why it is being issued |
+| **A revision** (including a scheduled review) | **New version**: a real change; the number goes up and both dates move. **Correction, no new version**: a typo, a broken cross-reference or formatting; nothing moves, it is logged. **Annual review, no change**: the version stays and only the next review date moves |
 
-**What OrgOS does differently today:**
-- It keeps two numbers, one with an "R".
-- It raises the version on **every** approval, including a typo fix or an unchanged annual review.
-- So removing the version and date you typed into the Identity Standard will become **R02**, although by CDI it's a logged correction with no new version.
+- A **new version needs a change summary** (at least 20 characters) saying what changed and why. "Issued for use", "Approved", "Updated" and similar are refused: CDI §14.2 says they don't count. A correction needs a short note saying what was corrected. An annual review needs no words; it is logged as "Annual review, no change".
+- The choice is made on the approval screen, and also when the approver is skipped (skipping approves and publishes, so it needs the same choice). It is checked **before** anything moves, so a refusal never leaves a document stranded in Approval.
+- The approval preview shows what the choice will do before you confirm it, for example "version 02 → 03, new effective date and review date".
 
-**For the document-standards discussion:** one Version field (01, 02…), shared by the Register and the cover. When approving, the approver chooses *new version* (material change, with a change summary) or *no new version* (correction or unchanged review, logged).
+**Things to know:**
+- A first issue is always **01**, even if the cover has a hand-typed version such as "05". The approval preview warns when that will happen. If the document already had issued versions elsewhere, say so in the change summary. (Convert to CDT drops a hand-typed version for the same reason.)
+- Existing Register entries written as "R02" are still read correctly. `python scripts/migrate_versions.py` (dry run first) rewrites them as "02".
 
 ### What's still open
 - **The published copy doesn't go back to the library folder.** It's saved under *Lifecycle Documents* on the OrgOS site, and that's the copy the reader uses. The folder keeps the draft. Whether approved copies should replace the folder file is for the document-standards discussion.

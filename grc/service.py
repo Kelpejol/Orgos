@@ -253,7 +253,7 @@ async def _sp_item_to_doc(item: dict) -> DocumentRead:
         type=fields.get(DOC_FIELDS["type"]) or "Policy",
         department=fields.get(DOC_FIELDS["department"]) or "",
         owner=await _build_person_ref(fields, "Owner"),
-        current_version=fields.get(DOC_FIELDS["current_version"]) or "R01",
+        current_version=fields.get(DOC_FIELDS["current_version"]) or "",
         effective_date=effective_date,
         next_review_date=_parse_date(fields.get(DOC_FIELDS["next_review_date"])),
         applicable_standards=_parse_multi_choice(

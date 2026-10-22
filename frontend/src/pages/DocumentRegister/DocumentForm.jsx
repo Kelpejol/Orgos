@@ -37,7 +37,7 @@ export default function DocumentForm({ document, onSuccess, onCancel }) {
     title: document?.title || "",
     type: document?.type || "",
     department: document?.department || "",
-    current_version: document?.current_version || "R01",
+    current_version: document?.current_version || "01",
     effective_date: document?.effective_date || "",
     next_review_date: document?.next_review_date || "",
     owner_id: "",
@@ -105,7 +105,7 @@ export default function DocumentForm({ document, onSuccess, onCancel }) {
         <FormSelect label="Department" id="dept" value={form.department}
           onChange={set("department")} options={DEPARTMENTS} required />
         <FormInput label="Version" id="version" value={form.current_version}
-          onChange={set("current_version")} required placeholder="R01" />
+          onChange={set("current_version")} required placeholder="01" />
         <FormInput label="Effective date" id="eff_date" value={form.effective_date}
           onChange={set("effective_date")} type="date" required />
         <FormInput label="Next review date" id="rev_date" value={form.next_review_date}

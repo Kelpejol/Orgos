@@ -70,7 +70,8 @@ async def test_approval_uploads_the_published_copy_under_a_real_filename():
         mock_upload.return_value = "https://sp/published.docx"
         mock_create.return_value = {"id": "99", "fields": {}}
 
-        await lr._finalize_document_approval("10", doc, approver_oid="a", approver_email="")
+        await lr._finalize_document_approval("10", doc, approver_oid="a", approver_email="",
+                                             change_summary="First issue of the BCDR procedure.")
 
     uploaded_name = mock_upload.call_args.args[1]
     assert "/" not in uploaded_name

@@ -81,7 +81,7 @@ class DocumentBase(BaseModel):
     type: DocumentType
     department: str = Field(description="Owning department")
     current_version: str = Field(
-        description="Version string e.g. R03", examples=["R01", "R03"]
+        description="The document's version, e.g. 03 (CDI §14). Blank for a draft.", examples=["01", "03"]
     )
     effective_date: date = Field(description="Date approved and published")
     next_review_date: Optional[date] = Field(

@@ -11,6 +11,7 @@ import DocumentViewer from "../../components/shared/DocumentViewer.jsx";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { lifecycleApi } from "../../api/grcApi.js";
 import { CascadeImpactPreview } from "../../components/shared/CascadeImpactModal.jsx";
+import VersionChoice from "../../components/shared/VersionChoice.jsx";
 import { useAiSuggestion } from "../../hooks/useAiSuggestion.js";
 import { useCurrentUser } from "../../hooks/useCurrentUser.js";
 
@@ -150,6 +151,8 @@ export default function LifecycleApprove() {
   const [showViewer, setShowViewer] = useState(false);
   const [approveNotes, setApproveNotes] = useState("");
   const [approvalImpact, setApprovalImpact] = useState(null);
+  const [version, setVersion] = useState({ decision: "", summary: "" });
+  const [versionReady, setVersionReady] = useState(false);
   const aiAssessmentHook = useAiSuggestion(
     id,
     'ai_assessment',
@@ -164,7 +167,11 @@ export default function LifecycleApprove() {
 
   const approveMutation = useMutation({
     mutationFn: (notes) =>
-      lifecycleApi.approve(id, { notes }).then((r) => r.data),
+      lifecycleApi.approve(id, {
+        notes,
+        version_decision: version.decision || undefined,
+        change_summary: version.summary.trim() || undefined,
+      }).then((r) => r.data),
     onSuccess: () => {
       queryClient.invalidateQueries(["lifecycle-approve", id]);
       setShowApproveConfirm(false);
@@ -500,10 +507,14 @@ export default function LifecycleApprove() {
                 </div>
               ) : (
                 <div>
+                  {/* The version: new, a correction, or an annual review (CDI §14) */}
+                  <VersionChoice docId={id} value={version} onChange={setVersion} onReady={setVersionReady} />
                   {/* Cascade impact — what approving will create/update (DINT §5.3.1) */}
                   <div style={{ marginBottom: 12 }}>
                     <CascadeImpactPreview
                       impactUrl={`/api/v1/lifecycle/documents/${id}/approval-impact`}
+                      impactParams={{ version_decision: version.decision || undefined,
+                                      change_summary: version.summary.trim() || undefined }}
                       onImpact={setApprovalImpact}
                     />
                   </div>
@@ -526,7 +537,7 @@ export default function LifecycleApprove() {
                       background: "#FCEBEB", border: "1px solid #F09595", borderRadius: 8,
                       padding: "8px 12px", marginBottom: 10, fontSize: 12, color: "#791F1F",
                     }}>
-                      Failed to approve. Please try again.
+                      {approveMutation.error?.message || "Failed to approve. Please try again."}
                     </div>
                   )}
                   <div style={{ display: "flex", gap: 8 }}>
@@ -541,16 +552,16 @@ export default function LifecycleApprove() {
                     </button>
                     <button
                       onClick={() => approveMutation.mutate(approveNotes || null)}
-                      disabled={approveMutation.isPending || approvalImpact?.blocked}
+                      disabled={approveMutation.isPending || approvalImpact?.blocked || !versionReady}
                       style={{
                         flex: 2, padding: "9px", fontSize: 13, fontWeight: 600,
                         borderRadius: 8, border: "none",
-                        background: approveMutation.isPending || approvalImpact?.blocked ? "#E8E8E8" : "#1D9E75",
-                        color: approveMutation.isPending || approvalImpact?.blocked ? "#999" : "#fff",
-                        cursor: approveMutation.isPending || approvalImpact?.blocked ? "not-allowed" : "pointer",
+                        background: approveMutation.isPending || approvalImpact?.blocked || !versionReady ? "#E8E8E8" : "#1D9E75",
+                        color: approveMutation.isPending || approvalImpact?.blocked || !versionReady ? "#999" : "#fff",
+                        cursor: approveMutation.isPending || approvalImpact?.blocked || !versionReady ? "not-allowed" : "pointer",
                       }}
                     >
-                      {approveMutation.isPending ? "Approving…" : approvalImpact?.blocked ? "Approval blocked" : "Confirm approval"}
+                      {approveMutation.isPending ? "Approving…" : approvalImpact?.blocked ? "Approval blocked" : !versionReady ? "Complete the version above" : "Confirm approval"}
                     </button>
                   </div>
                 </div>

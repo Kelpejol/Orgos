@@ -50,6 +50,7 @@ from lifecycle.merge import MergeError, merge, scan_markers
 from lifecycle.schemas import CdtCoverFacts, MergeContext, RevisionHistoryEntry, StandardEntry
 from lifecycle.templates import InvalidTemplateError, TemplateNotFoundError, load_master_template
 from doc_standards import gate as standard_gate
+from lifecycle import versioning
 
 logger = logging.getLogger(__name__)
 
@@ -301,24 +302,47 @@ class ReviseDoc(BaseModel):
     triggering_document:  Optional[str] = None    # If reason = Sphere of influence review
 
 
-def _next_version(current: str) -> str:
-    """R01 → R02 → R03… Tolerates '1', 'r2', blank (treated as R01)."""
-    m = re.match(r"^\s*R?0*(\d+)\s*$", str(current or ""), re.IGNORECASE)
-    n = int(m.group(1)) if m else 1
-    return f"R{n + 1:02d}"
+def _revision_target(doc: dict) -> str:
+    """
+    The Document Register entry this item revises, or "" for a first issue. A
+    scheduled review revises the entry it was opened for. One definition, used by
+    approval, its preview and the version options, so they cannot disagree.
+    """
+    target = str(doc.get("RevisionOf") or "").strip()
+    if not target and doc.get("Trigger") == "Scheduled Review":
+        target = str(doc.get("LinkedDocumentRegisterItem") or "").strip()
+    return target
 
 
-def _next_cdt_version(current: str) -> str:
-    """
-    The CDT cover's OWN "Version" numbering — separate from the system-wide
-    "R0x" convention above (real documents print plain numbers: 04, 05, 06…).
-    "Draft"/blank → "01" (first issue); a numeric string bumps by one,
-    zero-padded to 2 digits, matching the estate's own convention.
-    """
-    m = re.match(r"^\s*0*(\d+)\s*$", str(current or "").strip())
-    if not m:
-        return "01"
-    return f"{int(m.group(1)) + 1:02d}"
+def _iso_date(value) -> Optional[date]:
+    try:
+        return date.fromisoformat(str(value or "")[:10])
+    except ValueError:
+        return None
+
+
+async def _register_entry_for(doc: dict) -> tuple[str, dict]:
+    """(the Register entry this item revises, its fields) — ("", {}) for a first issue or if unreadable."""
+    target = _revision_target(doc)
+    if not target:
+        return "", {}
+    try:
+        entry = await get_list_item(settings.document_register_list_id, "Document Register", target)
+        return target, entry.get("fields", {}) or {}
+    except Exception as exc:
+        logger.warning(f"Could not read Document Register entry {target}: {exc}")
+        return "", {}
+
+
+async def _plan_version(doc: dict, decision: Optional[str], summary: Optional[str]) -> versioning.VersionOutcome:
+    """What approving this item would do to the version — or a 422 saying why it cannot."""
+    target, fields = await _register_entry_for(doc)
+    try:
+        return versioning.plan(decision, summary or "",
+                               existing_version=fields.get("CurrentVersion", "") if target else "",
+                               today=date.today(), review_days=REVIEW_PERIOD_DAYS)
+    except versioning.VersionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
 
 
 class ProgressDoc(BaseModel):
@@ -333,6 +357,9 @@ class ProgressDoc(BaseModel):
     approver_id:      Optional[str] = None
     approver_name:    Optional[str] = None
     approver_email:   Optional[str] = None   # UPN — required to write the Person/Group column
+    # Only used when skipping the approver auto-finalises the document (see ApproveDoc)
+    version_decision: Optional[str] = None
+    change_summary:   Optional[str] = None
 
 
 class ReassignDoc(BaseModel):
@@ -342,6 +369,11 @@ class ReassignDoc(BaseModel):
 
 class ApproveDoc(BaseModel):
     notes: Optional[str] = None
+    # How this approval treats the version (CDI §14): "new" (needs a change summary),
+    # "correction" (no new version) or "review" (annual review, no change). A first
+    # issue is always a new version; a revision must choose.
+    version_decision: Optional[str] = None
+    change_summary:   Optional[str] = None
 
 
 class RejectDoc(BaseModel):
@@ -558,7 +590,7 @@ async def revise_doc(
     DINT §5.3.2 — put an existing ACTIVE Document Register document back into
     the Document Lifecycle for amendment. The active version stays live in the
     register (status → Under Review) until the revision is approved; approval
-    then updates the register item in place with a version bump (R01 → R02).
+    then updates the register item in place; approval chooses the version outcome (new version, correction, or annual review).
     """
     reason = (body.reason or "").strip()
     if reason not in REVISION_REASONS:
@@ -616,7 +648,7 @@ async def revise_doc(
             owner_name = await _resolve_display_name(owner_oid, user.name)
 
         notes_lines = [
-            f"Revision of {reg.get('DocumentCode', '')} ({reg.get('CurrentVersion') or 'R01'}).",
+            f"Revision of {reg.get('DocumentCode', '')} (version {versioning.display_version(reg.get('CurrentVersion')) or 'not recorded'}).",
             f"Reason: {reason}",
             f"Description: {body.description.strip()}",
         ]
@@ -749,12 +781,17 @@ async def progress_doc(
             # record an audit note naming who finalised it.
             if body.skip_approver and not body.approver_id:
                 finaliser = await resolve_user(user.oid)
+                # Everything that can refuse is checked BEFORE the document moves.
+                # Past this point it sits in Approval with nobody to approve it, so a
+                # refusal after the move (a missing change summary, a standard it
+                # does not meet) would strand it there.
+                await standard_gate.enforce(doc)                              # approval re-checks the standard
+                await _plan_version(doc, body.version_decision, body.change_summary)
                 await update_list_item(
                     _get_list_id(), _LIST_NAME, item_id,
                     {"Stage": "Approval", "SubmittedForApproval": date.today().isoformat()},
                 )
                 doc["Stage"] = "Approval"  # keep local dict consistent for finalise
-                await standard_gate.enforce(doc)       # approval re-checks the standard
                 note = (
                     f"Approver skipped — document auto-finalised by "
                     f"{finaliser.get('display_name') or user.name} on {date.today().isoformat()}."
@@ -765,6 +802,8 @@ async def progress_doc(
                     approver_oid=user.oid,
                     approver_email=finaliser.get("email", ""),
                     approval_note=note,
+                    version_decision=body.version_decision or "",
+                    change_summary=body.change_summary or "",
                 )
                 updated = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
                 result = await _sp_to_doc(updated)
@@ -885,6 +924,8 @@ async def claim_doc(
 @router.get("/documents/{item_id}/approval-impact")
 async def approval_impact(
     item_id: str,
+    version_decision: Optional[str] = None,
+    change_summary: str = "",
     user: CurrentUser = Depends(get_current_user),
 ) -> dict:
     """
@@ -941,31 +982,40 @@ async def approval_impact(
                 impact["warnings"].append(
                     "Advisory: " + message + " The standard is not being enforced yet, so this does not stop the approval.")
 
-        revision_of = str(doc.get("RevisionOf") or "").strip()
+        revision_of, reg_fields = await _register_entry_for(doc)
+        current_version = versioning.display_version(reg_fields.get("CurrentVersion", "")) if revision_of else ""
+        try:
+            outcome = versioning.plan(
+                version_decision, change_summary, existing_version=reg_fields.get("CurrentVersion", "") if revision_of else "",
+                today=date.today(), review_days=REVIEW_PERIOD_DAYS)
+        except versioning.VersionError as exc:
+            outcome = None
+            impact["flags"].append({"register": "Document Register", "detail": f"Before approving: {exc}"})
+        code = doc.get("DocumentCode", "")
+        typed = _load_cdt_cover(doc).version
+        if outcome and not revision_of and versioning.parse_version(typed) is not None:
+            impact["warnings"].append(
+                f"The document's cover says version {typed}, typed by hand. The Document Register is the master, "
+                f"so this first issue is recorded as version {outcome.version} and the cover is stamped to match. "
+                "If it already had issued versions elsewhere, say so in the change summary.")
         if revision_of:
-            current_version = "R01"
-            try:
-                existing_reg = await get_list_item(
-                    settings.document_register_list_id, "Document Register", revision_of
-                )
-                current_version = existing_reg.get("fields", {}).get("CurrentVersion", "R01") or "R01"
-            except Exception as exc:
-                logger.warning(f"Approval impact could not fetch register item {revision_of}: {exc}")
+            if outcome is None:
+                what = f"stays at version {current_version} until you choose how this approval treats it"
+            elif outcome.decision == versioning.NEW:
+                what = (f"version {current_version} → {outcome.version}, new effective date "
+                        f"({outcome.effective_date:%d %B %Y}) and review date ({outcome.next_review_date:%d %B %Y})")
+            elif outcome.decision == versioning.CORRECTION:
+                what = f"stays at version {outcome.version}; the correction is logged and the file is replaced"
+            else:
+                what = f"stays at version {outcome.version}; the next review moves to {outcome.next_review_date:%d %B %Y}"
             impact["updates"].append({
                 "register": "Document Register",
-                "detail": (
-                    f"{doc.get('DocumentCode', '')} is UPDATED in place: version "
-                    f"{current_version} → {_next_version(current_version)}, status back to Active, "
-                    "new effective date, file link refreshed."
-                ),
+                "detail": f"{code} is UPDATED in place: {what}. Status back to Active; file link refreshed.",
             })
         else:
             impact["creates"].append({
                 "register": "Document Register",
-                "detail": (
-                    f"New entry {doc.get('DocumentCode', '')} — status Active, version R01, "
-                    "effective today."
-                ),
+                "detail": f"New entry {code} — status Active, version {outcome.version if outcome else '01'}, effective today.",
             })
 
         impact["updates"].append({
@@ -990,9 +1040,10 @@ async def approval_impact(
             impact["warnings"].append("CDI status is Failed — the published document will carry unresolved CDI findings.")
 
         if revision_of:
-            published_as = f"as revision {_next_version(current_version)} of the existing register entry"
+            published_as = (f"as version {outcome.version} of the existing register entry" if outcome and outcome.issues_new_version
+                            else f"as an update to the existing register entry (version {current_version})")
         else:
-            published_as = "as a new register entry (R01)"
+            published_as = f"as a new register entry (version {outcome.version if outcome else '01'})"
         impact["summary"] = (
             f"Approving publishes {doc.get('DocumentCode', 'this document')} {published_as}. "
             "This action cannot be undone."
@@ -1094,11 +1145,17 @@ async def _finalize_document_approval(
     approver_oid: str,
     approver_email: str = "",
     approval_note: str = "",
+    version_decision: str = "",
+    change_summary: str = "",
 ) -> tuple[str, dict]:
     """
     Shared approval cascade — publishes the document to the Document Register
-    (creating a new entry, or updating in place with a version bump for a
-    revision), marks the lifecycle item Approved, and runs control extraction.
+    (creating a new entry, or updating the existing one in place), marks the
+    lifecycle item Approved, and reads the approved library for controls.
+
+    The VERSION follows CDI §14 (lifecycle/versioning.py): a first issue is
+    version 01; a revision is a new version (with a change summary), a
+    correction (no new version) or an annual review with no change.
 
     Used by BOTH:
       • approve_doc — a designated approver approves the document.
@@ -1125,12 +1182,31 @@ async def _finalize_document_approval(
             ),
         )
 
-    revision_of = str(doc.get("RevisionOf") or "").strip()
-    if not revision_of and doc.get("Trigger") == "Scheduled Review":
-        # A scheduled review revises the register entry it was opened for;
-        # without this, approving it created a second register entry.
-        revision_of = str(doc.get("LinkedDocumentRegisterItem") or "").strip()
-    new_version = "R01"
+    revision_of = _revision_target(doc)
+
+    # The Register is the master of the version: read what it holds BEFORE doing
+    # anything, so the choice is checked while nothing has been written.
+    existing_fields: dict = {}
+    if revision_of:
+        try:
+            existing_fields = (await get_list_item(
+                settings.document_register_list_id, "Document Register", revision_of)).get("fields", {}) or {}
+        except Exception as exc:
+            if (version_decision or "").strip().lower() in (versioning.CORRECTION, versioning.REVIEW):
+                raise HTTPException(status_code=502, detail=(
+                    f"The Document Register entry this revises could not be read ({exc}), so a correction or "
+                    "review cannot be applied to it."))
+            logger.warning(
+                f"Lifecycle {item_id} is a revision of register item {revision_of}, "
+                f"but it could not be fetched ({exc}) — publishing as a new entry instead.")
+            revision_of = ""
+    try:
+        outcome = versioning.plan(
+            version_decision, change_summary or "",
+            existing_version=existing_fields.get("CurrentVersion", "") if revision_of else "",
+            today=effective_date, review_days=REVIEW_PERIOD_DAYS)
+    except versioning.VersionError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
 
     # ── CDT (v06): advance the cover facts + revision history, and attempt to
     # produce the PUBLISHED (marker-free) copy for the register. Best-effort —
@@ -1139,20 +1215,22 @@ async def _finalize_document_approval(
     approver_name = await _resolve_display_name(approver_oid, "")
     cdt_cover = _load_cdt_cover(doc)
     cdt_history = _load_revision_history(doc)
-    cdt_cover.version = _next_cdt_version(cdt_cover.version)
-    cdt_cover.effective_date = effective_date.strftime("%B %Y")
-    # The review date follows from the effective date — a document approved
-    # today is due for review a review period later, so it is set here rather
-    # than left for someone to work out and type. Always recomputed, because
-    # a date carried over from the previous revision would read as a document
-    # already overdue the day it is published.
-    cdt_cover.next_review_due = (effective_date + timedelta(days=REVIEW_PERIOD_DAYS)).strftime("%B %Y")
+    # Stamp the cover from the Register's facts and the version decision — nobody
+    # types these into the file. A new version moves the version and both dates; a
+    # correction moves nothing; an unchanged review moves only the review date.
+    effective = outcome.effective_date or _iso_date(existing_fields.get("EffectiveDate"))
+    next_review = outcome.next_review_date or _iso_date(existing_fields.get("NextReviewDate"))
+    cdt_cover.version = outcome.version
+    if effective:
+        cdt_cover.effective_date = effective.strftime("%B %Y")
+    if next_review:
+        cdt_cover.next_review_due = next_review.strftime("%B %Y")
     if not cdt_cover.final_approval:
         cdt_cover.final_approval = approver_name or cdt_cover.final_approval
     cdt_history = cdt_history + [RevisionHistoryEntry(
-        version=cdt_cover.version,
-        date=cdt_cover.effective_date,
-        purpose=(approval_note or "Approved for use")[:500],
+        version=outcome.version,
+        date=effective_date.strftime("%B %Y" if outcome.issues_new_version else "%d %B %Y"),
+        purpose=outcome.history_purpose[:500],
         approved_by=approver_name or str(approver_oid),
     )]
 
@@ -1178,40 +1256,27 @@ async def _finalize_document_approval(
                 f"Register copy until this is fixed): {exc}"
             )
 
+    new_version = outcome.version
     if revision_of:
         # ── Revision of an existing register document — update in place ──
-        # The register item keeps its identity; the version bumps R01→R02→…
-        # and the document returns to Active (DINT §5.3.2).
-        try:
-            existing_reg = await get_list_item(
-                settings.document_register_list_id, "Document Register", revision_of
-            )
-            new_version = _next_version(
-                existing_reg.get("fields", {}).get("CurrentVersion", "R01")
-            )
-        except Exception as exc:
-            logger.warning(
-                f"Lifecycle {item_id} is a revision of register item {revision_of}, "
-                f"but it could not be fetched ({exc}) — publishing as a new entry instead."
-            )
-            revision_of = ""
-
-    if revision_of:
+        # The register item keeps its identity and returns to Active (DINT §5.3.2).
         dr_update: dict = {
             "Status":         "Active",
-            "CurrentVersion": new_version,
-            "EffectiveDate":  effective_date.isoformat(),
+            "CurrentVersion": outcome.version,     # also writes a legacy "R02" as "02"
             "CDTCoverFacts":  cdt_cover.to_json(),
             "RevisionHistory": RevisionHistoryEntry.list_to_json(cdt_history),
         }
+        if outcome.effective_date:
+            dr_update["EffectiveDate"] = outcome.effective_date.isoformat()
         if doc.get("Title"):
             dr_update["Title"] = doc["Title"]
         if doc.get("StandardsMapping"):
             dr_update["ApplicableStandards"] = doc["StandardsMapping"]
-        # Due a review period after it takes effect — not the sensitisation
-        # deadline, which is already past and made the daily review job open
-        # a "Scheduled Review" for a document approved that morning.
-        dr_update["NextReviewDate"] = (effective_date + timedelta(days=REVIEW_PERIOD_DAYS)).isoformat()
+        # Due a review period after a new version takes effect or a review is done —
+        # not the sensitisation deadline, which is already past and made the daily
+        # review job open a "Scheduled Review" for a document approved that morning.
+        if outcome.next_review_date:
+            dr_update["NextReviewDate"] = outcome.next_review_date.isoformat()
 
         try:
             await update_list_item(
@@ -1241,7 +1306,7 @@ async def _finalize_document_approval(
             "Status":              "Active",
             "OwnerId":             doc.get("OwnerEntraId", ""),
             "Owner":               doc.get("OwnerName", ""),
-            "CurrentVersion":      new_version,
+            "CurrentVersion":      outcome.version,
             "EffectiveDate":       effective_date.isoformat(),
             "ApplicableStandards": doc.get("StandardsMapping", ""),
             "LinkedControlsCount": 0,
@@ -1399,6 +1464,8 @@ async def approve_doc(
             approver_oid=user.oid,
             approver_email=approver_email_val,
             approval_note=approval_note,
+            version_decision=body.version_decision or "",
+            change_summary=body.change_summary or "",
         )
 
         updated = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
@@ -2475,6 +2542,25 @@ async def recheck_after_editing(item_id: str, user: CurrentUser = Depends(get_cu
         raise
     except Exception as exc:
         _handle_error(exc, f"re-check lifecycle {item_id}")
+
+
+@router.get("/documents/{item_id}/version-options")
+async def version_options(item_id: str, user: CurrentUser = Depends(get_current_user)) -> dict:
+    """What an approval of this item may do to the version — for the approval screens (CDI §14)."""
+    doc = await _sp_to_doc(await get_list_item(_get_list_id(), _LIST_NAME, item_id))
+    target, fields = await _register_entry_for(doc)
+    current = fields.get("CurrentVersion", "") if target else ""
+    has_issued = versioning.parse_version(current) is not None
+    return {
+        "has_issued_version": has_issued,
+        "current_version": versioning.display_version(current) if has_issued else "",
+        "next_version": versioning.next_version(current),
+        "decisions": list(versioning.DECISIONS) if has_issued else [versioning.NEW],
+        "default_decision": versioning.REVIEW if has_issued and doc.get("Trigger") == "Scheduled Review" else versioning.NEW,
+        "review_days": REVIEW_PERIOD_DAYS,
+        "min_new_summary": versioning.MIN_NEW_SUMMARY,
+        "min_correction_summary": versioning.MIN_CORRECTION_SUMMARY,
+    }
 
 
 class StandardDecision(BaseModel):

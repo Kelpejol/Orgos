@@ -33,7 +33,7 @@ def _document_read(**overrides) -> DocumentRead:
     base = dict(
         id="8", document_code="DRG-QI-GDL-DAG-01-26", title="Document Authoring Guide",
         type=DocumentType.GUIDELINES, department="Quality & Compliance",
-        current_version="R01", effective_date=date(2026, 1, 1), status=DocumentStatus.ACTIVE,
+        current_version="01", effective_date=date(2026, 1, 1), status=DocumentStatus.ACTIVE,
         sharepoint_url="https://sp/register/DAG.docx",
         cdt_cover=CdtCoverFacts(domain="Quality & Compliance", version="01"),
         revision_history=[{"version": "01", "date": "Jan 2026", "purpose": "Issued", "approved_by": "CCO"}],

@@ -39,20 +39,6 @@ def _lifecycle_doc(**overrides) -> dict:
 
 
 # -----------------------------------------------------------------------------
-#  _next_cdt_version — pure
-# -----------------------------------------------------------------------------
-
-def test_next_cdt_version_draft_becomes_01():
-    assert lr._next_cdt_version("Draft") == "01"
-    assert lr._next_cdt_version("") == "01"
-
-
-def test_next_cdt_version_increments_numeric():
-    assert lr._next_cdt_version("05") == "06"
-    assert lr._next_cdt_version("9") == "10"
-
-
-# -----------------------------------------------------------------------------
 #  _finalize_document_approval — merge SUCCEEDS
 # -----------------------------------------------------------------------------
 
@@ -77,6 +63,7 @@ async def test_approval_advances_cover_and_uses_published_copy():
 
         register_id, _ = await lr._finalize_document_approval(
             "10", doc, approver_oid="approver-oid", approver_email="",
+            change_summary="First issue of the procedure under the CDI v06 control pattern.",
         )
 
     assert register_id == "99"
@@ -84,11 +71,12 @@ async def test_approval_advances_cover_and_uses_published_copy():
     # The register was created WITH the advanced cover + appended history.
     create_fields = mock_create.call_args.args[2]
     cover = CdtCoverFacts.from_json(create_fields["CDTCoverFacts"])
-    assert cover.version == "06"                      # 05 → 06
+    assert cover.version == "01"                      # a first issue is 01, whatever the cover had typed
     assert cover.final_approval == "Jane Approver"     # auto-populated
     history = RevisionHistoryEntry.list_from_json(create_fields["RevisionHistory"])
     assert len(history) == 2                          # original + the new approval row
-    assert history[-1].version == "06"
+    assert history[-1].version == "01"
+    assert history[-1].purpose.startswith("First issue of the procedure")   # the change summary, not "Approved for use"
     assert history[-1].approved_by == "Jane Approver"
 
     # The merge was actually invoked with the SOURCE bytes, and its output
@@ -130,6 +118,7 @@ async def test_approval_falls_back_to_source_when_merge_fails():
 
         register_id, extraction = await lr._finalize_document_approval(
             "10", doc, approver_oid="approver-oid", approver_email="",
+            change_summary="First issue of the procedure under the CDI v06 control pattern.",
         )
 
     # Approval SUCCEEDS despite the merge failure — this is the hard rule.
@@ -150,7 +139,7 @@ async def test_approval_falls_back_to_source_when_merge_fails():
     # the underlying data, only the "clean copy" convenience.
     create_fields = mock_create.call_args.args[2]
     cover = CdtCoverFacts.from_json(create_fields["CDTCoverFacts"])
-    assert cover.version == "06"
+    assert cover.version == "01"
 
 
 # -----------------------------------------------------------------------------
@@ -187,7 +176,8 @@ async def test_approval_sets_next_review_due_from_the_effective_date():
         mock_upload.return_value = "https://sp/published.docx"
         mock_create.return_value = {"id": "99", "fields": {}}
 
-        await lr._finalize_document_approval("10", doc, approver_oid="approver-oid", approver_email="")
+        await lr._finalize_document_approval("10", doc, approver_oid="approver-oid", approver_email="",
+                                             change_summary="First issue of the procedure under the CDI v06 control pattern.")
 
     cover = CdtCoverFacts.from_json(mock_create.call_args.args[2]["CDTCoverFacts"])
     today = date.today()

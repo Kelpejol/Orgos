@@ -10,7 +10,7 @@
 //
 // On submit: POST /api/v1/lifecycle/documents/revise. The active version stays
 // live in the register (status → Under Review) until the revision is approved;
-// approval updates the register entry in place with a version bump (R01 → R02).
+// approval updates the register entry in place; the approver then chooses the version outcome (CDI §14).
 // =============================================================================
 
 import { useEffect, useMemo, useState } from "react";
@@ -133,7 +133,7 @@ export default function ReviseDocumentModal({ open, onClose, document: docProp, 
             <div style={{ fontSize: 16, fontWeight: 700 }}>Revise document</div>
             <div style={{ fontSize: 12, color: "var(--color-text-tertiary)", marginTop: 4, lineHeight: 1.45 }}>
               {doc
-                ? <>Re-open <strong>{doc.document_code}</strong> ({doc.current_version || "R01"}) for amendment.</>
+                ? <>Re-open <strong>{doc.document_code}</strong> (version {doc.current_version || "not recorded"}) for amendment.</>
                 : "Select an active document to re-open for amendment."}
             </div>
           </div>
@@ -176,7 +176,7 @@ export default function ReviseDocumentModal({ open, onClose, document: docProp, 
                   >
                     <div style={{ fontSize: 12, fontWeight: 600 }}>{d.title}</div>
                     <div style={{ fontSize: 10, color: "var(--color-text-tertiary)", fontFamily: "var(--font-mono)" }}>
-                      {d.document_code} · {d.current_version || "R01"} · {d.department || "—"}
+                      {d.document_code} · v{d.current_version || "—"} · {d.department || "—"}
                     </div>
                   </div>
                 ))}
@@ -251,7 +251,7 @@ export default function ReviseDocumentModal({ open, onClose, document: docProp, 
               <div style={{ fontSize: 11, color: "#0C447C", lineHeight: 1.55 }}>
                 ＋ <strong>Document Lifecycle</strong> — revision task enters at Review, assigned to the document owner, current approved file attached.<br />
                 ↻ <strong>Document Register</strong> — {doc.document_code} is flagged Under Review; the current version stays live until the revision is approved.<br />
-                ↻ On approval — the register entry updates in place ({doc.current_version || "R01"} → next revision), and the document is re-extracted into Extraction Review.
+                ↻ On approval — the register entry updates in place (at approval you choose: new version, correction, or annual review), and its controls are read into Extraction Review.
               </div>
             </div>
 
