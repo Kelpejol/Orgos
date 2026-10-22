@@ -64,3 +64,11 @@ backups/
 census.json
 census.txt
 .cdi_corpus/
+
+# Internal source documents kept on disk but never committed (CDI family, governance review package,
+# Records Catalogue). Copy them to the server by hand; scripts read them from docs/.
+docs/*.xlsx
+docs/*.pdf
+docs/Control of Documented Information *.docx
+docs/CDI and Records Forms and Templates Set.docx
+docs/Dragnet20Governance*/
