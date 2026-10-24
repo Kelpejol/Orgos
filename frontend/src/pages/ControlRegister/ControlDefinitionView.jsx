@@ -110,7 +110,7 @@ export default function ControlDefinitionView({ control, onBack }) {
             <Field l="Who holds it" v={<OwnerDisplay item={c} />} />
             {d.responsibility_ambiguous && (
               <div style={{ fontSize: 11.5, color: "#633806", marginTop: 4 }}>
-                “{d.responsibility_as_written}” could be one role or two; the Role Catalogue settles it.
+                “{d.responsibility_as_written}” could be one role or two; Org Roles settles it.
               </div>
             )}
           </>

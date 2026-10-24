@@ -155,12 +155,17 @@ def decide_status(candidate: dict, resolve: Callable[[str], dict]) -> tuple[str,
             f"“{candidate.get('responsibility_as_written')}” could be one role or two; "
             "a person must settle which is accountable."
         )
+    from doc_standards.roles import is_placeholder
+    if is_placeholder(role):
+        return "Blocked", (
+            f"“{role}” is the name of a field, not a role. The document must name the actual role "
+            "(one that exists in Org Roles) in this control.")
     hit = resolve(role)
     if hit.get("kind") == "group":
         return "Active", ""
     if hit.get("kind") == "job_title":
         return "Blocked", (
             f"“{role}” matches only an Entra job title, which is not authority for a role. "
-            "Add it to the Role Catalogue."
+            "Create it in Org Roles."
         )
-    return "Blocked", f"“{role}” is not in the Role Catalogue."
+    return "Blocked", f"“{role}” is not a role in Org Roles. Use a role that exists, or create it there."

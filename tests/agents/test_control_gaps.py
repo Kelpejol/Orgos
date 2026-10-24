@@ -18,7 +18,7 @@ def control(cid, doc="DRG-ISMS-STD-TST", status="Active", accountable="CTO", amb
             refs=()):
     return {
         "id": cid, "control_id": cid, "status": status, "statement": "x", "owner_role": accountable,
-        "blocked_reason": "" if status == "Active" else f"“{accountable}” is not in the Role Catalogue.",
+        "blocked_reason": "" if status == "Active" else f"“{accountable}” is not a role in Org Roles.",
         "refs": list(refs),
         "definition": {
             "control_id": cid, "title": "T", "accountable": accountable,
