@@ -1,0 +1,54 @@
+{
+  "_about": "Reviewed spelling/wording variants and clear combined-title splits only. Keys are exact register titles. No fuzzy memberships or automatic aliases. Missing target roles are reported; new roles need an exact split-title source. A title is one role unless listed here; a slash is never split on a guess. Judgement calls are marked in docs/ only by the person who made them.",
+  "Graphic Designer": [
+    "Graphics Designer"
+  ],
+  "Graphic Designer — Contract": [
+    "Graphics Designer"
+  ],
+  "Admin Officer": [
+    "Administrative Officer"
+  ],
+  "Verification Operations Officer": [
+    "Verification Officer"
+  ],
+  "Trust and Identity Solution — Business Developer": [
+    "Business Developer – Trust and Identity Solutions"
+  ],
+  "Managing Director/Chief Executive Officer": [
+    "Managing Director",
+    "Chief Executive Officer"
+  ],
+  "Chief Business Officer/ Chief Operations Officer": [
+    "Chief Business Officer",
+    "Chief Operations Officer"
+  ],
+  "Chief Product and Innovation Officer/ Chief Compliance Officer / Chief Technology Officer": [
+    "Chief Product and Innovation Officer",
+    "Chief Compliance Officer",
+    "Chief Technology Officer"
+  ],
+  "Project Coordinator/Client Engagement Executive": [
+    "Projects Coordinator",
+    "Client Engagement Executive"
+  ],
+  "Human Resources Manager/ Legal Liasion": [
+    "HR Manager",
+    "Legal Liaison"
+  ],
+  "Finance/Admin Senior Executive": [
+    "Senior Executive — Finance & Administration"
+  ],
+  "Finance/Admin Manager": [
+    "Finance/Admin Manager"
+  ],
+  "Head of Scholarships/Testing Services": [
+    "Head of Scholarships/Testing Services"
+  ],
+  "Testing Operations Senior Executive": [
+    "Testing Operations Senior Executive"
+  ],
+  "Verification Operations Senior Executive": [
+    "Verification Operations Senior Executive"
+  ]
+}
