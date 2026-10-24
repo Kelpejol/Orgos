@@ -253,7 +253,7 @@ async def test_a_document_defined_controls_owner_is_not_reassigned_in_orgos():
          patch.object(cr, "update_list_item", new=AsyncMock()) as update:
         with pytest.raises(cr.HTTPException) as exc:
             await cr.reassign_control_owner("1", cr.ReassignControlOwner(owner_role="CEO"), user=USER)
-    assert exc.value.status_code == 422 and "Role Catalogue" in exc.value.detail
+    assert exc.value.status_code == 422 and "Org Roles" in exc.value.detail
     update.assert_not_called()
 
 

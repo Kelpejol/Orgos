@@ -445,9 +445,9 @@ async def reassign_record_owner(
         cur = (await get_list_item(_list_id(), _LIST_NAME, item_id)).get("fields", {}) or {}
         if cur.get("ObligationKey"):
             raise HTTPException(status_code=422, detail=(
-                "This obligation's owner is the executing role of control "
+                "This obligation's owner is the Control owner of control "
                 f"{cur.get('LinkedControlId')}, stated in its defining document. Change it there; "
-                "who holds the role is set in the Role Catalogue."))
+                "who holds the role is set in Org Roles."))
         await update_list_item(_list_id(), _LIST_NAME, item_id, {"OwnerRole": owner})
         updated = await get_list_item(_list_id(), _LIST_NAME, item_id)
         return _sp_to_record(updated)

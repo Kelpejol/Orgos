@@ -206,9 +206,9 @@ async def reassign_control_owner(
         current = _sp_to_control(await get_list_item(_cr_list_id(), _CR_LIST_NAME, item_id))
         if current["ControlId"]:
             raise HTTPException(status_code=422, detail=(
-                f"{current['ControlId']}'s accountable role is stated by "
+                f"{current['ControlId']}'s Control owner is stated by "
                 f"{current['SourceDocument'] or 'its defining document'}, so it changes there, "
-                "through Document Lifecycle. Who holds the role is set in the Role Catalogue."))
+                "through Document Lifecycle. Who holds the role is set in Org Roles."))
         # Only activate if the role actually resolves to someone.
         resolved = False
         try:
