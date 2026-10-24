@@ -152,7 +152,9 @@ function RoleActions({ f, roles = [], canCreate, canAlias, onRole, busy }) {
         </div>
       )}
       <div style={row}>
-        {canCreate ? (
+        {d.group ? (
+          <span style={{ color: "var(--color-text-secondary)" }}>This describes kinds of roles. Edit the document to name the actual roles.</span>
+        ) : canCreate ? (
           <button disabled={busy} style={btn(false, busy)} onClick={createRole}>Create role{d.placeholder ? "" : ` “${from}”`}</button>
         ) : (
           <span style={{ color: "var(--color-text-secondary)" }}>Only Compliance can create a role. Ask them to add “{from}”.</span>

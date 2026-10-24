@@ -344,24 +344,30 @@ def v07(s: Subject) -> Outcome:
         kinds = sorted({k for k, _ in entry["uses"]})
         places = list(dict.fromkeys(w for _, w in entry["uses"]))
         placeholder, several = role_matching.is_placeholder(text), role_matching.names_several(text)
-        suggestions = [] if several else book.suggest(text)
-        if placeholder:
+        group = role_matching.describes_a_group(text)
+        suggestions = [] if (several or group) else book.suggest(text)
+        if group:
+            message = (f"“{text}” describes a group of roles, not one role. Name each role that does the work, "
+                       "as it is in Org Roles.")
+        elif placeholder:
             message = (f"“{text}” is the name of a field, not a role. Name the role that holds it, "
                        "as it is in Org Roles.")
         elif several:
             message = f"“{text}” names more than one role. A control has exactly one {kinds[0].lower()}."
         else:
             message = f"“{text}” is not a role in Org Roles ({', '.join(kinds)})."
-        if suggestions:
+        if group:
+            fix = "Rewrite this row to name the actual roles (one row each), or remove it."
+        elif suggestions:
             fix = "Did you mean " + " or ".join(f"“{x.role.name}”" for x in suggestions) + "? Or create the role in Org Roles."
         else:
             fix = "Use a role that exists in Org Roles, or create this one."
         problems.append(Finding(message, ", ".join(places[:8]) + (f" +{len(places) - 8} more" if len(places) > 8 else ""), fix, {
             "kind": "role", "role": text, "kinds": kinds, "locations": places,
-            "placeholder": placeholder, "several": several,
+            "placeholder": placeholder, "several": several, "group": group,
             "suggestions": [x.as_dict() for x in suggestions],
         }))
-    note = "A Microsoft job title is never a role; Org Roles is the Role Register until the organogram is in."
+    note = ""
     if not len(book):
         note = "Org Roles has no roles yet, so every role named is reported. " + note
     return Outcome(problems=problems, note=note,
@@ -567,8 +573,8 @@ CHECKS: dict[str, Callable[[Subject], Outcome]] = {
 }
 
 NOT_BUILT_REASONS = {
-    "V05": "Needs the Role Register (built from the organogram), which does not exist yet.",
-    "V06": "Needs the Role Register (built from the organogram), which does not exist yet.",
+    "V05": "Needs the approval routes by domain (two-step First Pass and Final Approval), which Bobby has not yet decided how OrgOS should hold.",
+    "V06": "Needs the approval routes by domain (two-step First Pass and Final Approval), which Bobby has not yet decided how OrgOS should hold.",
     "V13": "Needs a careful rule set: drafting notes and markers can be found, but an individual's name cannot "
            "be told from other capitalised text reliably.",
     "V16": "Not built yet: reading each Layer 4 step's responsible role.",

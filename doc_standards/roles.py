@@ -159,6 +159,12 @@ def is_placeholder(text: str) -> bool:
     return norm(text) in PLACEHOLDERS
 
 
+def describes_a_group(text: str) -> bool:
+    """A phrase that describes kinds of roles rather than naming one ("Requester, approver and owner roles")."""
+    t = norm(text)
+    return t.endswith(" roles") or t.endswith(" role holders") or t in {"all staff", "everyone", "all employees", "all users"}
+
+
 def names_several(text: str) -> bool:
     """A value that lists more than one role. ';' separates roles; a role's own name may contain 'and' or '/'."""
     return ";" in (text or "")

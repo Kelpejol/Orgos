@@ -1274,17 +1274,20 @@ async def run_cdi_check(
     # ── Stage 2: Language quality — try AI, fall back to patterns ─────────────
     # Vague-role fixes (CDI-07) suggest a real owner — a Dragnet job title or
     # an OrgOS group (e.g. "Compliance team"); both are valid control owners.
+    # Org Roles is the role register, and a Microsoft job title is not authority for a role, so the
+    # suggestions come from Org Roles. Job titles are used only if Org Roles cannot be read at all.
     job_titles: list[str] = []
     try:
-        from graph.client import list_all_job_titles
-        job_titles = await list_all_job_titles()
-    except Exception as exc:
-        logger.debug(f"Job titles unavailable for CDI-07 ({exc})")
-    try:
         from groups.service import group_names
-        job_titles = list(await group_names()) + job_titles
+        job_titles = list(await group_names())
     except Exception as exc:
-        logger.debug(f"Groups unavailable for CDI-07 vocabulary ({exc})")
+        logger.debug(f"Org Roles unavailable for CDI-07 vocabulary ({exc})")
+    if not job_titles:
+        try:
+            from graph.client import list_all_job_titles
+            job_titles = await list_all_job_titles()
+        except Exception as exc:
+            logger.debug(f"Job titles unavailable for CDI-07 ({exc})")
     ai_result = await _call_ollama_language_checks(text, job_titles)
     used_ai = ai_result is not None
 

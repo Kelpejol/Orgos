@@ -99,3 +99,10 @@ def test_similarity_is_symmetric_enough_to_trust_and_bounded():
     for a, b in (("Info Sec Officer", "Information Security Officer"), ("HR Mgr", "HR Manager")):
         assert 0 <= similarity(a, b)[0] <= 100 and similarity(a, b)[0] > 50
     assert similarity("", "x")[0] == 0 and norm("A & B / C") == "a and b and c"
+
+
+def test_a_phrase_describing_kinds_of_roles_is_not_a_role_and_gets_no_suggestions():
+    from doc_standards.roles import describes_a_group
+    assert describes_a_group("Requester, approver, reviewer and owner roles")
+    assert not describes_a_group("Lead, Assessment Research, Psychometrics and AI")
+    assert not describes_a_group("Records Governance")

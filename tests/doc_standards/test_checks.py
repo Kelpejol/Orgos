@@ -50,7 +50,7 @@ def test_every_check_is_accounted_for_nothing_is_silently_missing():
 def test_a_check_that_is_not_built_says_so_and_says_what_it_needs():
     report, _ = run()
     v05 = status(report, "V05")
-    assert v05["status"] == "not_built" and "Role Register" in v05["summary"]
+    assert v05["status"] == "not_built" and "approval routes" in v05["summary"]
 
 
 def test_a_clean_result_is_never_presented_as_a_full_clearance():
