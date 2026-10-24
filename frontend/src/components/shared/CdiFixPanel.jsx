@@ -210,6 +210,19 @@ function FixCard({ f, decision, onChange }) {
             </select>
           )}
 
+          {/* a role that does not exist can be created in Org Roles (name filled in) */}
+          {f.check_id === "V07" && (
+            <button type="button"
+              onClick={() => {
+                try { sessionStorage.setItem("orgos.newRoleName", f.find || ""); } catch { /* opens empty */ }
+                window.dispatchEvent(new CustomEvent("orgos:navigate", { detail: { to: "org-roles" } }));
+              }}
+              style={{ marginTop: 8, padding: "5px 10px", fontSize: 11.5, fontWeight: 600, borderRadius: 6, cursor: "pointer",
+                border: "1.5px solid #C0C0C0", background: "transparent", color: "var(--color-text-primary)" }}>
+              Create role “{f.find}” in Org Roles
+            </button>
+          )}
+
           {/* editable replacement */}
           <div style={{ marginTop: 10, fontSize: 11, fontWeight: 700, color: "var(--color-text-tertiary)",
             textTransform: "uppercase", letterSpacing: "0.4px" }}>Replace with</div>

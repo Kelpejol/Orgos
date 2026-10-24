@@ -3078,6 +3078,9 @@ async def cdi_fix_plan(
                 "severity":      "warning" if _is_warning(f) else "error",
             })
 
+        if is_docx:
+            findings.extend(await _role_findings_for_fix_plan(doc))
+
         return {
             "document_id": item_id,
             "title":       doc.get("Title", ""),
@@ -3097,6 +3100,76 @@ async def cdi_fix_plan(
         raise
     except Exception as exc:
         _handle_error(exc, f"cdi-fix plan {item_id}")
+
+
+_ROLE_RULE = ("Every role a document names must be a role in Org Roles: a control's Control owner, the "
+              "Document owner, the approvers and any Roles table. (CDI V07.)")
+
+
+async def _role_findings_for_fix_plan(doc: dict) -> list[dict]:
+    """The roles this document names that Org Roles does not have (V07), as fixes in the same
+    list as the old checker's, so a role is fixed where the other problems are. Never raises:
+    if the role check can't run, the plan simply has no role findings."""
+    from groups import service as groups_service
+    try:
+        evaluation = await standard_gate.evaluate_item(doc)
+        if not evaluation.get("available"):
+            return []
+        v07 = next((r for r in evaluation["report"]["results"] if r["id"] == "V07"), None)
+        names = sorted({g["name"] for g in await groups_service.list_groups() if g.get("name")}, key=str.casefold)
+    except Exception as exc:
+        logger.warning(f"Role findings for the fix plan of {doc.get('id')} skipped: {exc}")
+        return []
+    out = []
+    for n, f in enumerate((v07 or {}).get("findings", [])):
+        d = f.get("data") or {}
+        if d.get("kind") != "role":
+            continue
+        suggested = [s["name"] for s in d.get("suggestions", [])]
+        group, placeholder = d.get("group"), d.get("placeholder")
+        out.append({
+            "fix_id": f"V07-role-{n}",
+            "check_id": "V07", "check_name": "Every role named exists in Org Roles",
+            "finding": f["message"], "anchor": f.get("where", ""),
+            "find": d["role"], "replace": suggested[0] if len(suggested) == 1 else "",
+            "proposed_fix": ("Name the actual role(s) in the document, then check again. "
+                             if group else f.get("fix", "")),
+            "needs_choice": True,
+            # The nearest roles that exist first, then every role: the author picks, nothing is invented.
+            "choices": list(dict.fromkeys([*suggested, *names])),
+            "fixable": "choice", "confidence": 0,
+            "locate_status": "located", "occurrences": len(d.get("locations", [])) or 1,
+            "contexts": [], "can_apply": not group,
+            "insert": None, "rule": _ROLE_RULE, "severity": "error",
+        })
+    return out
+
+
+def _apply_role_fixes(file_bytes: bytes, role_fixes: list, book) -> tuple[bytes, list]:
+    """Apply the V07 fixes one by one with the scoped, proven role edit. Each fix is judged alone:
+    one that cannot be made is reported, and the others still go ahead."""
+    from agents.cdi_checker.fixer import FixOutcome
+    from doc_standards.role_fix import RoleFixError, replace_role
+    outcomes = []
+    for f in role_fixes:
+        target = book.find(f.replace)
+        if target is None:
+            outcomes.append(FixOutcome(f.fix_id, "V07", "rejected",
+                                       f"“{f.replace}” is not a role in Org Roles. Choose one that exists."))
+            continue
+        try:
+            fix = replace_role(file_bytes, f.find, target.name)
+        except RoleFixError as exc:
+            outcomes.append(FixOutcome(f.fix_id, "V07", "verify_failed", str(exc)))
+            continue
+        if not fix.count:
+            outcomes.append(FixOutcome(f.fix_id, "V07", "skipped_not_found",
+                                       f"“{f.find}” was not found in a role field. Edit it in Word."))
+            continue
+        file_bytes = fix.data
+        outcomes.append(FixOutcome(f.fix_id, "V07", "applied", ", ".join(dict.fromkeys(fix.places)),
+                                   before=f.find, after=target.name, changed_texts=[target.name]))
+    return file_bytes, outcomes
 
 
 @router.post("/documents/{item_id}/cdi-fix/apply")
@@ -3129,8 +3202,15 @@ async def cdi_fix_apply(
         # fail for the same reason, try again — and leave the document carrying
         # every attempt. Rejected fixes are reported, never written.
         from agents.cdi_checker.service import validate_fix_content
+        role_fixes = [f for f in body.fixes if f.check_id == "V07"]
+        role_outcomes: list = []
+        if role_fixes:
+            from doc_standards import roles as role_matching
+            from groups import service as groups_service
+            book = role_matching.RoleBook.from_groups(await groups_service.list_groups())
+            file_bytes, role_outcomes = _apply_role_fixes(file_bytes, role_fixes, book)
         fixes, rejected = [], []
-        for f in body.fixes:
+        for f in (x for x in body.fixes if x.check_id != "V07"):
             spec = f.model_dump()
             if (spec.get("action") or "").lower() == "insert":
                 ins = spec.get("insert") or {}
@@ -3146,17 +3226,17 @@ async def cdi_fix_apply(
                        "rejected", reason)
             for spec, reason in rejected
         ]
-        if not fixes:
+        if not fixes and not any(o.status == "applied" for o in role_outcomes):
             return {
                 "document_id": item_id, "applied_count": 0,
-                "outcomes": [_outcome_dict(o) for o in rejected_outcomes],
+                "outcomes": [_outcome_dict(o) for o in role_outcomes + rejected_outcomes],
                 "preview": [], "wrote_to_sharepoint": False,
                 "cdi_status": doc.get("CDIStatus", ""),
                 "message": "Nothing was written — see the reason on each fix.",
             }
 
-        new_bytes, outcomes = apply_fixes(file_bytes, fixes)
-        outcomes = outcomes + rejected_outcomes
+        new_bytes, outcomes = apply_fixes(file_bytes, fixes) if fixes else (file_bytes, [])
+        outcomes = role_outcomes + outcomes + rejected_outcomes
 
         applied = [o for o in outcomes if o.status == "applied"]
         if not applied:
