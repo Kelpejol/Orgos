@@ -65,7 +65,10 @@ const TextCell = ({ value, muted }) => {
 
 export default function OrgRoles() {
   const [search, setSearch] = useState("");
-  const [tab, setTab] = useState("people");
+  const [tab, setTab] = useState(() => {
+    try { return sessionStorage.getItem("orgos.newRoleName") !== null ? "groups" : "people"; }
+    catch { return "people"; }
+  });
   const { data: users = [], isLoading, error, refetch } = useOrgRoles();
   const { data: ownership = {} } = useOwnershipSummary();
   const ownsFor = (role) => ownership[(role || "").trim().toLowerCase()] || null;
@@ -87,15 +90,15 @@ export default function OrgRoles() {
     <>
       <div style={{ marginBottom: 12 }}>
         <div style={{ fontSize: 17, fontWeight: 600, marginBottom: 3 }}>
-          Org roles &amp; groups
+          Org roles
         </div>
         <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>
-          People with their job title and department, and the groups you can assign as owners.
+          Roles and the people who hold them, alongside the people directory.
         </div>
       </div>
 
       <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
-        {[["people", "People"], ["groups", "Groups"]].map(([k, label]) => (
+        {[["people", "People"], ["groups", "Roles"]].map(([k, label]) => (
           <button key={k} onClick={() => setTab(k)} style={{
             padding: "7px 14px", fontSize: 12.5, fontWeight: 600, borderRadius: 8, cursor: "pointer",
             border: tab === k ? "1.5px solid var(--color-text-primary)" : "1.5px solid var(--color-border-tertiary)",
@@ -109,7 +112,7 @@ export default function OrgRoles() {
 
       {tab === "people" && (
         <>
-      <ReadOnlyBanner message="Org roles are read live from Entra ID. Assignment is managed exclusively in the Dragnet ERP admin panel." />
+      <ReadOnlyBanner message="People’s job titles, departments and access tags are read live from Entra ID and managed in the Dragnet ERP admin panel. Assign people to roles on the Roles tab." />
 
       <input
         type="text"

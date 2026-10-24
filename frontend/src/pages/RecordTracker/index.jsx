@@ -549,13 +549,13 @@ const RecordCard = ({ item, currentOid, isCompliance, onSubmit, onSubmitLink, on
           <span>
             {item.OwnerRole || "No owner"}
             {item.OwnerKind === "group" && (
-              <span title={`Group — ${(item.OwnerPeople || []).map(p => p.display_name).join(", ") || "no members"}`}
+              <span title={`Role — ${(item.OwnerPeople || []).map(p => p.display_name).join(", ") || "no members"}`}
                 style={{ marginLeft: 5, fontSize: 9, fontWeight: 700, color: "#3C3489",
                          background: "#EEEDFE", border: "0.5px solid #AFA9EC", borderRadius: 20,
-                         padding: "1px 6px" }}>GROUP</span>
+                         padding: "1px 6px" }}>ROLE</span>
             )}
             {item.OwnerResolved === false && item.OwnerRole && (
-              <span title="This role doesn't match any job title or group, so nobody holds it"
+              <span title="This role doesn't match any job title or registered role, so nobody holds it"
                 style={{ marginLeft: 5, fontSize: 9, fontWeight: 700, color: "#8A5A00",
                          background: "#FDF3E2", border: "0.5px solid #F0CE94", borderRadius: 20,
                          padding: "1px 6px" }}>UNASSIGNED</span>

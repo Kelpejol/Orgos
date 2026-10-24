@@ -22,12 +22,12 @@ export default function JobTitleInput({ value, onChange, placeholder, style }) {
         list={listId}
         value={value ?? ""}
         onChange={onChange}
-        placeholder={placeholder || "Start typing a job title or group…"}
+        placeholder={placeholder || "Start typing a role or job title…"}
         style={style}
       />
       <datalist id={listId}>
         {groups.map((g) => (
-          <option key={`g-${g}`} value={g} label={`${g} (group)`} />
+          <option key={`g-${g}`} value={g} label={`${g} (role)`} />
         ))}
         {titles.map((t) => (
           <option key={`t-${t}`} value={t} />

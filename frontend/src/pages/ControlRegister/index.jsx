@@ -118,10 +118,10 @@ export default function ControlRegister() {
                           background: "var(--color-background-secondary)",
                           border: "1px solid var(--color-border-tertiary)" }}>
               <div style={{ fontSize: 11, fontWeight: 600, color: "var(--color-text-secondary)", marginBottom: 4 }}>
-                New owner role (job title or group)
+                New owner role
               </div>
               <JobTitleInput value={newOwner} onChange={(e) => setNewOwner(e.target.value)}
-                placeholder={selected.OwnerRole || "Job title or group"}
+                placeholder={selected.OwnerRole || "Role or job title"}
                 style={{ width: "100%", padding: "8px 10px", fontSize: 12.5, borderRadius: 8,
                          border: "1.5px solid var(--color-border-tertiary)", boxSizing: "border-box",
                          background: "var(--color-background-primary)", color: "var(--color-text-primary)" }} />
@@ -170,7 +170,7 @@ export default function ControlRegister() {
           <div style={{ marginTop: 14, padding: "10px 12px", background: "#FCEBEB",
                         borderRadius: 8, fontSize: 12, color: "#791F1F",
                         border: "1px solid #F09595" }}>
-            This control is Blocked — the role "{selected.OwnerRole}" doesn't resolve to anyone. Set it to a real job title, or create a group with that name under Org roles → Groups, then reassign this control.
+            This control is Blocked — the role "{selected.OwnerRole}" doesn't resolve to anyone. Set it to a real job title, or create a role with that name under Org roles → Roles, then reassign this control.
           </div>
         )}
       </div>

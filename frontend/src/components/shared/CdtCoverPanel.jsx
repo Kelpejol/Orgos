@@ -518,7 +518,7 @@ export default function CdtCoverPanel({ docId, docCode, lifecycleApi, onClose })
                   suggestion={suggestions.distribution} applied={applied.includes("distribution")}
                   onAccept={accept("distribution")} />
                 <Field label="Version" value={cover.version} onChange={set("version")} />
-                <Field label="Owner (role or group)" value={cover.owner} onChange={set("owner")} roleInput
+                <Field label="Owner role" value={cover.owner} onChange={set("owner")} roleInput
                   suggestion={suggestions.owner} applied={applied.includes("owner")}
                   onAccept={accept("owner")} />
                 <div />

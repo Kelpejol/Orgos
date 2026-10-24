@@ -1,12 +1,12 @@
 // =============================================================================
-// GroupsPanel.jsx — manage OrgOS people groups (e.g. "Compliance Team").
+// GroupsPanel.jsx — manage OrgOS roles and the people who hold them.
 //
 // Compliance/Admin can create groups, add/remove people, and delete groups.
 // A group's name is usable as an owner in documents/controls/records, so any
 // member can act on it. Everyone can view; only Compliance/Admin can edit.
 // =============================================================================
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useGroups, useOwnershipSummary } from "../../hooks/useGrc.js";
 import { groupsApi } from "../../api/grcApi.js";
@@ -20,12 +20,14 @@ const btn = (bg, fg = "#fff", bd = "none") => ({
   border: bd, background: bg, color: fg, cursor: "pointer",
 });
 
-function MemberChip({ m, onRemove }) {
+function MemberChip({ m, onRemove, roles = [] }) {
   return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11.5,
+    <span title={roles.length ? `Roles held: ${roles.join(", ")}` : m.email}
+      style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11.5,
       background: "var(--color-background-secondary)", border: "1px solid var(--color-border-tertiary)",
       borderRadius: 20, padding: "3px 6px 3px 10px" }}>
       {m.display_name || m.email || m.oid}
+      {roles.length > 1 && <span style={{ color: "var(--color-text-secondary)" }}>· {roles.length} roles</span>}
       {onRemove && (
         <button onClick={onRemove} title="Remove"
           style={{ border: "none", background: "transparent", cursor: "pointer",
@@ -35,11 +37,12 @@ function MemberChip({ m, onRemove }) {
   );
 }
 
-function GroupCard({ group, canEdit, owns }) {
+function GroupCard({ group, canEdit, owns, rolesByPerson }) {
   const qc = useQueryClient();
   const { notify } = useAlert();
   const [busy, setBusy] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [adding, setAdding] = useState(false);
   const [form, setForm] = useState({ name: "", description: "", category: "", aliases: "" });
   const refresh = () => { qc.invalidateQueries({ queryKey: ["groups"] }); qc.invalidateQueries({ queryKey: ["group-names"] }); };
 
@@ -81,9 +84,9 @@ function GroupCard({ group, canEdit, owns }) {
     finally { setBusy(false); }
   };
   const del = async () => {
-    if (!window.confirm(`Delete the group "${group.name}"? Documents referencing it keep the name but it won't be a live group.`)) return;
+    if (!window.confirm(`Delete the role "${group.name}"? Documents referencing it keep the name but it won't be a live role.`)) return;
     setBusy(true);
-    try { await groupsApi.remove(group.id); refresh(); notify({ tone: "success", title: "Group deleted", message: group.name }); }
+    try { await groupsApi.remove(group.id); refresh(); notify({ tone: "success", title: "Role deleted", message: group.name }); }
     catch (e) { notify({ tone: "danger", title: "Delete failed", message: e.response?.data?.detail || e.message }); }
     finally { setBusy(false); }
   };
@@ -96,7 +99,7 @@ function GroupCard({ group, canEdit, owns }) {
     <div style={{ border: "1px solid var(--color-border-tertiary)", borderRadius: 12, padding: "14px 16px" }}>
       {editing ? (
         <div>
-          <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Group name" style={editInput} />
+          <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Role name" style={editInput} />
           <input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="Description" style={editInput} />
           <input value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} placeholder="Category" style={editInput} />
           <input value={form.aliases} onChange={(e) => setForm({ ...form, aliases: e.target.value })}
@@ -141,19 +144,22 @@ function GroupCard({ group, canEdit, owns }) {
 
       <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 12 }}>
         {group.members.length === 0 && (
-          <span style={{ fontSize: 12, color: "var(--color-text-tertiary)" }}>No members yet.</span>
+          <span style={{ fontSize: 12, color: "var(--color-text-tertiary)" }}>No one holds this role yet.</span>
         )}
         {group.members.map((m) => (
-          <MemberChip key={m.oid} m={m} onRemove={canEdit ? () => removeMember(m.oid) : null} />
+          <MemberChip key={m.oid} m={m} roles={rolesByPerson[m.oid] || []}
+            onRemove={canEdit && !busy ? () => removeMember(m.oid) : null} />
         ))}
       </div>
 
       {canEdit && (
         <div style={{ marginTop: 12 }}>
-          <div style={{ fontSize: 11, fontWeight: 600, color: "var(--color-text-secondary)", marginBottom: 4 }}>
-            Add someone
-          </div>
-          <UserSearchField onSelect={addMember} placeholder="Type a name or email to add…" />
+          <button onClick={() => setAdding(!adding)} disabled={busy} aria-expanded={adding}
+            style={btn("transparent", "var(--color-text-secondary)", "1.5px solid var(--color-border-tertiary)")}>
+            {adding ? "Cancel" : "Add person"}
+          </button>
+          {adding && !busy && <UserSearchField onSelect={addMember} label="Add person"
+            clearAfterSelect placeholder="Type a name or email to add…" />}
         </div>
       )}
     </div>
@@ -193,7 +199,7 @@ function CreateGroupForm({ onDone }) {
       await groupsApi.create({ name: name.trim(), description, category, aliases: aliasList, members });
       qc.invalidateQueries({ queryKey: ["groups"] });
       qc.invalidateQueries({ queryKey: ["group-names"] });
-      notify({ tone: "success", title: "Group created", message: name.trim() });
+      notify({ tone: "success", title: "Role created", message: name.trim() });
       onDone();
     } catch (e) {
       notify({ tone: "danger", title: "Create failed", message: e.response?.data?.detail || e.message });
@@ -203,9 +209,9 @@ function CreateGroupForm({ onDone }) {
   return (
     <div style={{ border: "1px solid var(--color-border-tertiary)", borderRadius: 12, padding: 16, marginBottom: 14,
       background: "var(--color-background-secondary)" }}>
-      <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>New group</div>
+      <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>New role</div>
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Group name (used in documents, e.g. Compliance Team)" style={inputStyle} />
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Role name (used in documents, e.g. Compliance Team)" style={inputStyle} />
         <input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Description (optional)" style={inputStyle} />
         <input value={category} onChange={(e) => setCategory(e.target.value)} placeholder="Category (optional, e.g. Compliance, Ops)" style={inputStyle} />
         <input value={aliases} onChange={(e) => setAliases(e.target.value)}
@@ -219,12 +225,12 @@ function CreateGroupForm({ onDone }) {
               ))}
             </div>
           )}
-          <UserSearchField onSelect={addMember} placeholder="Add people to this group…" />
+          <UserSearchField onSelect={addMember} label="Add person" clearAfterSelect placeholder="Add a person to this role…" />
         </div>
       </div>
       <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
         <button onClick={create} disabled={busy || !name.trim()}
-          style={btn(!name.trim() ? "#C9CCD1" : "#085041")}>{busy ? "Creating…" : "Create group"}</button>
+          style={btn(!name.trim() ? "#C9CCD1" : "#085041")}>{busy ? "Creating…" : "Create role"}</button>
         <button onClick={onDone} style={btn("transparent", "var(--color-text-secondary)", "1.5px solid var(--color-border-tertiary)")}>Cancel</button>
       </div>
     </div>
@@ -235,8 +241,17 @@ export default function GroupsPanel() {
   const { isCompliance } = useCurrentUserRole();
   const { data: ownership = {} } = useOwnershipSummary();
   const { data: groups = [], isLoading, error, refetch } = useGroups();
+  const rolesByPerson = useMemo(() => {
+    const roles = {};
+    for (const group of groups) {
+      for (const member of group.members || []) {
+        if (member.oid) (roles[member.oid] ||= []).push(group.name);
+      }
+    }
+    return roles;
+  }, [groups]);
   const [creating, setCreating] = useState(() => {
-    try { return !!sessionStorage.getItem(PREFILL_KEY); } catch { return false; }
+    try { return sessionStorage.getItem(PREFILL_KEY) !== null; } catch { return false; }
   });
 
   const notProvisioned = error && (error.response?.status === 503 || /not exist|provision/i.test(error.message || ""));
@@ -245,37 +260,38 @@ export default function GroupsPanel() {
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, gap: 12 }}>
         <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>
-          Groups classify people (e.g. a Compliance Team). Use a group name as an owner in a document and any member can act on it.
+          A role is held by one or more people. Use its name as an owner in a document and any member can act on it. A person can hold several roles.
         </div>
         {isCompliance && !creating && !notProvisioned && (
           <button onClick={() => setCreating(true)} style={btn("var(--color-text-primary)", "var(--color-background-primary)")}>
-            + New group
+            + New role
           </button>
         )}
       </div>
 
       {creating && <CreateGroupForm onDone={() => setCreating(false)} />}
 
-      {isLoading && <LoadingState message="Loading groups…" />}
+      {isLoading && <LoadingState message="Loading roles…" />}
 
       {notProvisioned && (
         <div style={{ fontSize: 12.5, color: "#8A5A00", background: "#FDF3E2", border: "1px solid #F0CE94",
           borderRadius: 10, padding: "12px 14px", lineHeight: 1.6 }}>
-          <b>Groups aren't set up yet.</b> An admin needs to create a SharePoint list named exactly
+          <b>Roles aren't set up yet.</b> An admin needs to create a SharePoint list named exactly
           <b> “OrgOS Groups”</b> in the OrgOS site once (OrgOS can't create lists itself). The columns
-          are added automatically after that — then groups work here with no further setup.
+          are added automatically after that — then roles work here with no further setup.
         </div>
       )}
 
       {error && !notProvisioned && <ErrorState error={error} onRetry={refetch} />}
 
       {!isLoading && !error && groups.length === 0 && (
-        <EmptyState message={isCompliance ? "No groups yet. Create one to get started." : "No groups have been created yet."} />
+        <EmptyState message={isCompliance ? "No roles yet. Create one to get started." : "No roles have been created yet."} />
       )}
 
       {groups.length > 0 && (
         <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
           {groups.map((g) => <GroupCard key={g.id} group={g} canEdit={isCompliance}
+            rolesByPerson={rolesByPerson}
             owns={ownership[(g.name || '').trim().toLowerCase()]} />)}
         </div>
       )}

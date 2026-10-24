@@ -14,7 +14,7 @@
 import { useState } from "react";
 
 const KINDS = {
-  group:      { label: "GROUP",      fg: "#3C3489", bg: "#EEEDFE", bd: "#AFA9EC" },
+  group:      { label: "ROLE",      fg: "#3C3489", bg: "#EEEDFE", bd: "#AFA9EC" },
   job_title:  { label: "JOB TITLE",  fg: "#0C447C", bg: "#E6F1FB", bd: "#85B7EB" },
   unresolved: { label: "UNASSIGNED", fg: "#8A5A00", bg: "#FDF3E2", bd: "#F0CE94" },
 };
@@ -39,7 +39,7 @@ export default function OwnerDisplay({ item, compact = false }) {
         <span
           title={
             kind === "unresolved"
-              ? "This role doesn't match any job title or group — nobody holds it"
+              ? "This role doesn't match any job title or registered role — nobody holds it"
               : `${people.length} ${people.length === 1 ? "person" : "people"} hold this role`
           }
           style={{ fontSize: 9, fontWeight: 700, color: k.fg, background: k.bg,
@@ -79,8 +79,8 @@ export default function OwnerDisplay({ item, compact = false }) {
 
       {!compact && kind === "unresolved" && (
         <span style={{ fontSize: 10.5, color: "#8A5A00" }}>
-          Nobody holds this role — set a real job title, or create a group with this
-          name under Org roles → Groups.
+          Nobody holds this role — set a real job title, or create a role with this
+          name under Org roles → Roles.
         </span>
       )}
     </span>
