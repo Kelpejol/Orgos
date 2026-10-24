@@ -2493,6 +2493,17 @@ async def _editable_item(item_id: str, user: CurrentUser) -> dict:
     return fields
 
 
+def _is_docx_bytes(data: bytes) -> bool:
+    """True if these bytes are a Word (.docx) package, whatever the file was called."""
+    import io
+    import zipfile
+    try:
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            return "word/document.xml" in z.namelist()
+    except (zipfile.BadZipFile, ValueError):
+        return False
+
+
 async def _ensure_working_copy(item_id: str, fields: dict, user: CurrentUser) -> tuple[str, str]:
     """
     The URL and file name of this item's OWN working copy, making it on first use.
@@ -2502,12 +2513,19 @@ async def _ensure_working_copy(item_id: str, fields: dict, user: CurrentUser) ->
     """
     meta = await sharepoint_item_metadata(fields["SharePointFileUrl"])
     name = meta.get("name") or f"{fields.get('DocumentCode') or item_id}.docx"
+    data = None
     if not name.lower().endswith(".docx"):
-        raise HTTPException(status_code=422, detail=(
-            f"'{name}' is not a Word document, so it can't be edited here. Upload a .docx version."))
-    if _is_working_copy(meta, item_id):
+        # A file stored under a name with no extension (e.g. "octet-stream") is still a Word document
+        # if its content is one: name the working copy properly rather than refuse the author.
+        data, _ = await download_file_from_sharepoint(fields["SharePointFileUrl"])
+        if not _is_docx_bytes(data):
+            raise HTTPException(status_code=422, detail=(
+                f"'{name}' is not a Word document, so it can't be edited here. Upload a .docx version."))
+        name = f"{fields.get('DocumentCode') or item_id}.docx"
+    elif _is_working_copy(meta, item_id):
         return meta.get("webUrl") or fields["SharePointFileUrl"], name
-    data, _ = await download_file_from_sharepoint(fields["SharePointFileUrl"])
+    if data is None:
+        data, _ = await download_file_from_sharepoint(fields["SharePointFileUrl"])
     working = await _upload_to_sharepoint(item_id, name, data)
     await update_list_item(_get_list_id(), _LIST_NAME, item_id, {"SharePointFileUrl": working})
     await _audit_lifecycle_action({**fields, "id": item_id}, user, "Working copy created",
@@ -3742,6 +3760,11 @@ Return only the JSON object, no other text."""
 async def _upload_to_sharepoint(
     item_id: str, filename: str, file_bytes: bytes
 ) -> str:
+    # A name is a name: a slash in it (e.g. a content type passed by mistake) would make a phantom
+    # sub-folder and a file with no extension, which cannot be opened in Word.
+    filename = filename.replace("\\", "/").rsplit("/", 1)[-1].strip() or f"document_{item_id}.docx"
+    if "." not in filename and _is_docx_bytes(file_bytes):
+        filename += ".docx"
     token   = await get_graph_access_token()
     headers = {
         "Authorization": f"Bearer {token}",
