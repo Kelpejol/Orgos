@@ -36,6 +36,7 @@ from agents.extractor.ollama_client import (
     run_extraction,
     DocumentType,
     NON_EXTRACTION_TYPES,
+    require_legacy_extraction,
 )
 from agents.extractor.service import (
     extract_text_from_pdf,
@@ -431,6 +432,13 @@ async def bulk_extract(
             doc_type    = classify_document(filename, doc_code, folder_path)
 
             prefix = f"[{i}/{len(remaining)}]"
+
+            try:
+                require_legacy_extraction(doc_type, doc_code, filename, folder_path)
+            except ValueError as exc:
+                print(f"  {prefix} REFUSED {filename}: {exc}")
+                batch_skipped += 1
+                continue
 
             if doc_type in NON_EXTRACTION_TYPES or doc_type == DocumentType.UNCLASSIFIED:
                 reason = "non-extraction target" if doc_type in NON_EXTRACTION_TYPES else "unclassified"

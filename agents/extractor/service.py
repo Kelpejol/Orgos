@@ -23,6 +23,7 @@ from agents.extractor.ollama_client import (
     NON_EXTRACTION_TYPES,
     classify_document,
     run_extraction,
+    require_legacy_extraction,
 )
 from agents.extractor.schemas import ExtractionResponse
 from config import settings
@@ -412,6 +413,9 @@ def _validate_items(
         risk   = (raw.get("risk")   or raw.get("risk_statement")      or "").strip()
         role   = (raw.get("role")   or raw.get("proposed_owner_role") or "").strip()
         clause = (raw.get("clause") or raw.get("iso_clause")          or "").strip()
+        severity = raw.get("severity") or raw.get("o") or role
+        if doc_type == DocumentType.AUDIT and role in ("Critical", "Major", "Minor"):
+            role = ""
 
         if not stmt or len(stmt) < 15:
             logger.debug(f"{doc_code}: skipped empty item")
@@ -480,7 +484,7 @@ def _validate_items(
         if doc_type == DocumentType.AUDIT:
             item["finding_statement"]           = stmt
             item["finding_type"]               = "Finding"
-            item["severity"]                   = raw.get("o", "Minor") if raw.get("o") in ("Critical", "Major", "Minor") else "Minor"
+            item["severity"]                   = severity if severity in ("Critical", "Major", "Minor") else "Minor"
             item["gap_type"]                   = "Unknown"
             item["remediation_required"]       = risk[:500]
             item["triggers_document_lifecycle"] = False
@@ -749,6 +753,7 @@ async def run_extraction_from_text(
     document_type_override: Optional[str] = None,
     web_url: str = "",
 ) -> ExtractionResponse:
+    require_legacy_extraction(document_type_override, doc_code, folder_path=folder_path)
     if document_type_override:
         try:
             doc_type = DocumentType(document_type_override)
@@ -829,6 +834,7 @@ async def run_extraction_from_file(
     web_url: str = "",
     document_type_override: Optional[str] = None,
 ) -> ExtractionResponse:
+    require_legacy_extraction(document_type_override, doc_code, filename, folder_path)
     fname = filename.lower()
     if fname.endswith(".pdf"):
         text = await extract_text_from_pdf(file_bytes)

@@ -103,6 +103,12 @@ async def extract_from_sharepoint(
     The file never needs to leave SharePoint — the backend fetches it
     directly and processes it locally.
     """
+    from agents.extractor.ollama_client import require_legacy_extraction
+
+    try:
+        require_legacy_extraction(doc_code=request.source_document_code)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
     try:
         file_bytes, filename = await sp_service.get_file_bytes(item_id)
     except GraphAPIError as exc:

@@ -21,7 +21,7 @@ import { useCurrentUserRole } from "../../hooks/useCurrentUserRole.js";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useAlert } from "../../components/shared/AlertModal.jsx";
 import apiClient from "../../api/grcApi.js";
-import { DefinitionPanel, DocumentBatches } from "../../components/shared/ControlDefinitionReview.jsx";
+import { AcceptanceWarning, DefinitionPanel, DocumentBatches } from "../../components/shared/ControlDefinitionReview.jsx";
 
 // =============================================================================
 //  API calls
@@ -179,6 +179,8 @@ const DecisionPanel = ({ item, onDecide, isPending }) => {
   const [reviewerMode,  setReviewerMode]  = useState(false);
   const [reviewer,      setReviewer]      = useState(null);
   const { notify } = useAlert();
+  const unavailable = decision => isPending ||
+    (!!item.AcceptanceRefusal && ["Accept", "Edit and Accept"].includes(decision));
 
   const handleDecide = async (decisionKey) => {
     if (!rationale.trim()) {
@@ -291,22 +293,23 @@ const DecisionPanel = ({ item, onDecide, isPending }) => {
             <button
               key={d.key}
               onClick={() => handleDecide(d.key)}
-              disabled={isPending}
+              disabled={unavailable(d.key)}
+              title={["Accept", "Edit and Accept"].includes(d.key) ? item.AcceptanceRefusal || undefined : undefined}
               style={{
                 padding: "10px 12px",
                 fontSize: 12,
                 borderRadius: 8,
-                cursor: isPending ? "not-allowed" : "pointer",
+                cursor: unavailable(d.key) ? "not-allowed" : "pointer",
                 fontWeight: d.primary || d.danger ? 600 : 400,
                 border: d.primary || d.danger ? "none" : "1.5px solid #C0C0C0",
-                background: isPending
+                background: unavailable(d.key)
                   ? "#E8E8E8"
                   : d.primary
                     ? "#1D9E75"
                     : d.danger
                       ? "#A32D2D"
                       : "var(--color-background-primary)",
-                color: isPending
+                color: unavailable(d.key)
                   ? "#999"
                   : d.primary || d.danger
                     ? "#fff"
@@ -458,6 +461,8 @@ const QueueCard = ({ item, isCompliance, onDecide, isPending }) => {
         >
           {primaryText}
         </div>
+
+        <AcceptanceWarning item={item} />
 
         {/* Risk / reason + confidence */}
         <div

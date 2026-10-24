@@ -35,6 +35,8 @@ from graph.client import (
 )
 from graph.exceptions import GraphAPIError, GraphNotFoundError
 
+from review_queue.acceptance import acceptance_refusal, definition_refusal, legacy_accept_plan, legacy_accept_preview
+
 logger = logging.getLogger(__name__)
 
 
@@ -146,7 +148,7 @@ def _cascade_failed_http(err: "CascadeError") -> HTTPException:
 
 def _sp_to_item(item: dict) -> dict:
     f = item.get("fields", {})
-    return {
+    mapped = {
         "id":                       str(item["id"]),
         "Title":                    f.get("Title", ""),
         "ItemType":                 f.get("ItemType", ""),
@@ -194,6 +196,13 @@ def _sp_to_item(item: dict) -> dict:
         "Candidate":                _json_field(f, "CandidateJson"),
         "Diff":                     _json_field(f, "DiffJson") or [],
     }
+    mapped["AcceptanceRefusal"] = acceptance_refusal(mapped)
+    if not mapped.get("ControlId") and mapped["ItemType"] in ("", "Extraction"):
+        mapped["AcceptPreview"] = (
+            {"blocked": True, "blocked_reason": mapped["AcceptanceRefusal"]}
+            if mapped["AcceptanceRefusal"] else legacy_accept_preview(legacy_accept_plan(mapped))
+        )
+    return mapped
 
 
 def _json_field(fields: dict, column: str):
@@ -261,9 +270,7 @@ ZONE1_DECISIONS = {
 _DECIDABLE_STATUSES = {"", "Pending Review", "Pending Second Review", "Blocked"}
 
 
-class Zone1DecideBody(BaseModel):
-    decision:          str
-    rationale:         str
+class Zone1Overrides(BaseModel):
     # Edit and Accept overrides
     control_statement: Optional[str] = None
     control_type:      Optional[str] = None
@@ -278,6 +285,11 @@ class Zone1DecideBody(BaseModel):
     evidence_validation_criteria: Optional[str] = None
 
 
+class Zone1DecideBody(Zone1Overrides):
+    decision: str
+    rationale: str
+
+
 async def _zone1_accept_cascade(item: dict, user: CurrentUser, overrides: dict) -> str:
     """
     Accept cascade — creates:
@@ -288,26 +300,18 @@ async def _zone1_accept_cascade(item: dict, user: CurrentUser, overrides: dict) 
     """
     created = []
 
-    control_stmt = overrides.get("control_statement") or item.get("ControlStatement", "")
-    control_type = overrides.get("control_type")      or item.get("ControlType", "")
-    owner_role   = overrides.get("proposed_owner")    or item.get("ProposedOwnerRole", "")
-    iso_clause   = overrides.get("iso_clause")        or item.get("ISOClause", "")
-    evidence_type= overrides.get("evidence_type")     or item.get("EvidenceType", "")
-    evd_desc     = overrides.get("evidence_description") or item.get("EvidenceDescription", "")
+    refusal = acceptance_refusal(item)
+    if refusal:
+        raise HTTPException(status_code=422, detail=refusal)
+    plan = legacy_accept_plan(item, overrides)
+    control_stmt = plan["control"]["ControlStatement"]
+    control_type = plan["control"]["ControlType"]
+    iso_clause = plan["control"]["ISOClause"]
 
     # 1. Control Register — required step; failure aborts the cascade
     try:
         cr_fields = {
-            "Title":            control_stmt[:255],
-            "ControlStatement": control_stmt,
-            "ControlType":      control_type,
-            "OwnerRole":        owner_role,
-            "OwnerEntraId":     "",
-            "ISOClause":        iso_clause,
-            "SourceDocument":   item.get("SourceDocumentCode", ""),
-            "SourceClause":     item.get("SourceClause", ""),
-            "RiskImplication":  item.get("RiskStatement", "")[:500],
-            "Status":           "Active" if owner_role else "Blocked",
+            **plan["control"],
             "ConfirmedByEntraId": user.oid,
             "ConfirmedDate":    date.today().isoformat(),
             "DecisionRationale": overrides.get("rationale", ""),
@@ -321,28 +325,9 @@ async def _zone1_accept_cascade(item: dict, user: CurrentUser, overrides: dict) 
 
     # 2. Record Tracker — only if evidence is defined
     ev_id = None
-    evidence_undefined = item.get("EvidenceUndefined")
-    if isinstance(evidence_undefined, str):
-        evidence_undefined = evidence_undefined.lower() == "true"
-    evidence_undefined = bool(evidence_undefined)
-    if evidence_type and evidence_undefined and item.get("EvidenceType"):
-        evidence_undefined = False
-
-    if evidence_type and not evidence_undefined:
+    if plan["record"] is not None:
         try:
-            ev_fields = {
-                "Title":               evd_desc[:255] if evd_desc else f"Evidence for: {control_stmt[:200]}",
-                "EvidenceDescription": evd_desc,
-                "EvidenceType":        evidence_type,
-                "SourceSystem":        overrides.get("evidence_source_system") or item.get("EvidenceSourceSystem", ""),
-                "Frequency":           overrides.get("evidence_frequency")     or item.get("EvidenceFrequency", ""),
-                "CollectionMethod":    overrides.get("evidence_collection_method") or item.get("EvidenceCollectionMethod", ""),
-                "OwnerRole":           overrides.get("evidence_owner_role")    or item.get("EvidenceOwnerRole", owner_role),
-                "ValidationCriteria":  overrides.get("evidence_validation_criteria") or item.get("EvidenceValidationCriteria", ""),
-                "Status":              "Pending",
-                "LinkedControlId":     cr_id or "",
-                "SourceDocument":      item.get("SourceDocumentCode", ""),
-            }
+            ev_fields = {**plan["record"], "LinkedControlId": cr_id or ""}
             ev_item = await create_list_item(_record_id(), _RECORD_LIST, ev_fields)
             ev_id   = str(ev_item["id"])
             created.append(f"Record Tracker: {ev_id}")
@@ -422,6 +407,10 @@ async def _definition_accept_cascade(item: dict, user: CurrentUser, rationale: s
     candidate = item.get("Candidate")
     if not candidate or candidate.get("control_id") != item.get("ControlId"):
         raise CascadeError("Read definition", [], ValueError("the queue item's definition is unreadable"))
+
+    refusal = definition_refusal(item)
+    if refusal:
+        raise HTTPException(status_code=422, detail=refusal)
 
     created: list[str] = []
     try:
@@ -1137,6 +1126,10 @@ async def _definition_impact(item: dict, decision: str, impact: dict) -> dict:
         impact["blocked_reason"] = (f"{cid}'s wording comes from {item.get('SourceDocumentCode') or 'its document'}; "
                                     "change it there through Document Lifecycle, not here.")
         return impact
+    refusal = definition_refusal(item)
+    if refusal:
+        impact.update(blocked=True, blocked_reason=refusal)
+        return impact
     candidate = item.get("Candidate") or {}
     if candidate.get("control_id") != cid:
         impact["blocked"] = True
@@ -1176,7 +1169,7 @@ async def _definition_impact(item: dict, decision: str, impact: dict) -> dict:
     return impact
 
 
-async def _zone1_impact(item: dict, decision: str, impact: dict) -> dict:
+async def _zone1_impact(item: dict, decision: str, impact: dict, overrides: dict | None = None) -> dict:
     status_map = {
         "Accept":                "Accepted",
         "Edit and Accept":       "Accepted",
@@ -1191,48 +1184,23 @@ async def _zone1_impact(item: dict, decision: str, impact: dict) -> dict:
         return await _definition_impact(item, decision, impact)
 
     if decision in ("Accept", "Edit and Accept"):
-        control_stmt = item.get("ControlStatement", "")
-        if not control_stmt:
-            impact["blocked"] = True
-            impact["blocked_reason"] = "Cannot accept — the queue item has no control statement."
+        refusal = acceptance_refusal(item)
+        if refusal:
+            impact.update(blocked=True, blocked_reason=refusal)
             return impact
-
-        owner_role = item.get("ProposedOwnerRole", "")
-        control_state = "Active" if owner_role else "Blocked"
-        impact["creates"].append({
-            "register": "Control Register",
-            "detail": (
-                f"{item.get('ControlType') or 'Control'} — “{control_stmt[:140]}"
-                f"{'…' if len(control_stmt) > 140 else ''}”, Control owner: {owner_role or 'Unknown'}, "
-                f"status: {control_state}"
-            ),
-        })
-
-        evidence_type = item.get("EvidenceType", "")
-        if evidence_type:
-            impact["creates"].append({
-                "register": "Record Tracker",
-                "detail": (
-                    f"{evidence_type} record — {item.get('EvidenceDescription', '')[:120] or 'per Evidence Taxonomy'}, "
-                    f"frequency: {item.get('EvidenceFrequency') or 'not set'}, status: Pending"
-                ),
-            })
-        else:
-            impact["warnings"].append(
-                "No evidence type is defined — no Record Tracker entry will be created. "
-                "The control chain will be incomplete until evidence is designed."
-            )
-
-        impact["creates"].append({
-            "register": "Audit Log",
-            "detail": "Decision record — reviewer, rationale, cascade result.",
-        })
+        plan = legacy_accept_plan(item, overrides)
+        if not plan["control"]["ControlStatement"]:
+            impact.update(blocked=True, blocked_reason="Cannot accept — the queue item has no control statement.")
+            return impact
+        preview = legacy_accept_preview(plan)
+        impact["creates"].extend(preview["creates"])
+        impact["warnings"].extend(preview["warnings"])
         impact["updates"].append({
             "register": "AI Review Queue",
             "detail": f"Item → {new_status}.",
         })
 
-        iso_clause = item.get("ISOClause", "")
+        iso_clause = plan["control"]["ISOClause"]
         if iso_clause:
             impact["updates"].append({
                 "register": "Standards Map",
@@ -1240,9 +1208,6 @@ async def _zone1_impact(item: dict, decision: str, impact: dict) -> dict:
             })
         else:
             impact["warnings"].append("No ISO clause mapped — the control will show as Unmapped on the Standards Map.")
-
-        if not owner_role:
-            impact["warnings"].append("No Control owner proposed — the control will be created as Blocked (unassigned owner).")
 
         impact["summary"] = (
             f"Accepting creates {len(impact['creates'])} record(s) and updates the queue item."
@@ -1369,6 +1334,7 @@ async def decision_impact(
     decision: str,
     linked_doc_code: Optional[str] = None,
     canonical_name:  Optional[str] = None,
+    overrides: Zone1Overrides = Depends(),
     user: CurrentUser = Depends(get_current_user),
 ) -> dict:
     """
@@ -1397,7 +1363,7 @@ async def decision_impact(
             )
 
         if zone == "1":
-            return await _zone1_impact(item, decision, impact)
+            return await _zone1_impact(item, decision, impact, overrides.model_dump())
         if zone == "2":
             return await _zone2_impact(item, decision, impact, linked_doc_code)
         return await _zone3_impact(item, decision, impact, canonical_name)
@@ -1450,8 +1416,11 @@ async def accept_document_definitions(
             raise HTTPException(status_code=404, detail=(
                 f"No waiting control definitions from {body.document}"
                 + ("" if body.include_changed else " (changed ones are reviewed one by one)") + "."))
-        owners = await get_ownership_index()
-        rows = await get_list_items(_cr_id(), _CR_LIST)
+        refused = [{"control_id": i["ControlId"], "reason": definition_refusal(i)}
+                   for i in items if definition_refusal(i)]
+        eligible = [i for i in items if not definition_refusal(i)]
+        owners = await get_ownership_index() if eligible else None
+        rows = await get_list_items(_cr_id(), _CR_LIST) if eligible else []
     except HTTPException:
         raise
     except Exception as exc:
@@ -1478,7 +1447,7 @@ async def accept_document_definitions(
         if "Status Blocked" in result:
             blocked.append(item["ControlId"])
 
-    failures = await run_writes([(i["ControlId"], lambda i=i: accept(i)) for i in items])
+    failures = await run_writes([(i["ControlId"], lambda i=i: accept(i)) for i in eligible])
 
     evidence = {}
     if accepted:
@@ -1493,9 +1462,11 @@ async def accept_document_definitions(
         "accepted": sorted(accepted),
         "blocked": sorted(blocked),
         "failed": failures,
+        "refused": refused,
         "evidence_obligations_created": evidence.get("create", 0),
         "message": (f"Accepted {len(accepted)} of {len(items)} control(s) from {body.document}"
                     + (f"; {len(blocked)} recorded as Blocked (role not recognised)" if blocked else "")
+                    + (f"; {len(refused)} refused: " + " ".join(r["reason"] for r in refused) if refused else "")
                     + (f"; {len(failures)} failed and were marked Blocked for retry" if failures else "")
                     + (f"; ⚠ {len(evidence['failures'])} evidence obligation write(s) failed — "
                        f"{evidence['failures'][0][:200]}" if evidence.get("failures") else "")

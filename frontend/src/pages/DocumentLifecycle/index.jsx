@@ -2585,7 +2585,7 @@ const ApproveConfirmModal = ({ doc, onClose, onDone }) => {
 //  Main component
 // =============================================================================
 
-export default function DocumentLifecycle() {
+export default function DocumentLifecycle({ focusDocumentCode = "", onClearFocus } = {}) {
   const [showForm,          setShowForm]          = useState(false);
   const [showRevise,        setShowRevise]        = useState(false);
   const [detailsDoc,        setDetailsDoc]        = useState(null);
@@ -2596,6 +2596,9 @@ export default function DocumentLifecycle() {
 
   const { oid: currentUserOid } = useCurrentUserRole();
   const { data: docs = [], isLoading, error, refetch } = useLifecycleDocs();
+  const focusedDocs = focusDocumentCode
+    ? docs.filter(d => d.DocumentCode?.trim().toLowerCase() === focusDocumentCode.trim().toLowerCase())
+    : docs;
   const qc = useQueryClient();
 
   const handleReassign = async (id, ownerOid, ownerName) => {
@@ -2651,6 +2654,16 @@ export default function DocumentLifecycle() {
         </div>
       </div>
 
+      {focusDocumentCode && (
+        <div style={{ padding: "10px 12px", background: "#F4F9FE", border: "1px solid #85B7EB",
+                      borderRadius: 8, marginBottom: 14, fontSize: 12, lineHeight: 1.5 }}>
+          Role spelling in <strong>{focusDocumentCode}</strong>: open the document's Document standard panel
+          to use “Use this role” / “Create role”, or choose “Fix CDI issues” on its Review card.
+          {focusedDocs.length === 0 && " This document has no lifecycle entry here. Use + Revise existing to start its revision."}
+          <button onClick={onClearFocus} style={{ marginLeft: 10, cursor: "pointer" }}>Show all documents</button>
+        </div>
+      )}
+
       {/* Revise existing — pick an Active register document, DINT §5.3.2 */}
       <ReviseDocumentModal
         open={showRevise}
@@ -2674,7 +2687,7 @@ export default function DocumentLifecycle() {
       ) : (
         <div style={{ display: "flex", gap: 12 }}>
           {STAGES.map(stage => {
-            const stageDocs = docs
+            const stageDocs = focusedDocs
               .filter(d => d.Stage === stage.key)
               .sort(sortNewestFirst);
             return (

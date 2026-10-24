@@ -91,7 +91,93 @@ test("extraction chain preview names the Control owner and preserves definition 
   const definition = render(ChainPreview, { item: { ControlId: "SWEEP-01", Candidate: { evidence: [{ record_id: "REC-0001" }] } } });
   assert.match(definition, /Control owner is recognised/);
   assert.match(definition, /an obligation for REC-0001/);
-  const legacy = render(ChainPreview, { item: { ProposedOwnerRole: "Review Lead" } });
+  const legacy = render(ChainPreview, { item: { ProposedOwnerRole: "Review Lead", AcceptPreview: {
+    creates: [{ register: "Control Register", detail: "Control owner: Review Lead" }],
+    warnings: ["No Record Tracker entry will be created."],
+  } } });
   assert.match(legacy, /Control owner: Review Lead/);
-  assert.match(legacy, /No record entry/);
+  assert.match(legacy, /No Record Tracker entry/);
+});
+
+test("evidence chain renders the backend plan even when the description is empty", async () => {
+  const { ChainPreview } = await component("pages/ExtractionReview/index.jsx", ["ChainPreview"]);
+  const html = render(ChainPreview, { item: { EvidenceType: "Review", EvidenceDescription: "", AcceptPreview: {
+    creates: [{ register: "Record Tracker", detail: "Review record — Evidence for: Review access, status: Pending" }],
+    warnings: [],
+  } } });
+  assert.match(html, /Record Tracker/);
+  assert.match(html, /Evidence for: Review access/);
+  assert.doesNotMatch(html, /No record entry/);
+});
+
+const refused = {
+  id: "TST-01", ControlId: "TST-01", ItemType: "Extraction", ChangeKind: "New",
+  SourceDocumentCode: "DRG-ISMS-STD-TST", ReviewStatus: "Pending Review",
+  AcceptanceRefusal: "Control TST-01 writes Control owner: Review Lead; Operations Lead. The document author must revise the document to name exactly one role.",
+};
+
+for (const [path, name] of [["pages/ExtractionReview/index.jsx", "ExtractionCard"], ["pages/AIReviewQueue/index.jsx", "QueueCard"]]) {
+  test(`${name} shows the refusal before expanding the card`, async () => {
+    const module = await component(path, [name]);
+    const html = render(module[name], { item: refused, isCompliance: true });
+    assert.match(html, /role="alert"/);
+    assert.match(html, /TST-01 writes Control owner/);
+    assert.match(html, /document author must revise/);
+  });
+  test(`${name} disables Accept and explains the refusal`, async () => {
+    const { DecisionPanel } = await component(path, ["DecisionPanel"]);
+    const html = render(DecisionPanel, { item: refused });
+    assert.match(html, /<button[^>]*disabled=""[^>]*title="Control TST-01 writes Control owner/);
+    assert.match(html, /Reject/);
+  });
+}
+
+test("bulk review displays refusal reasons and offers only eligible controls", async () => {
+  const { DocumentBatches } = await component("components/shared/ControlDefinitionReview.jsx");
+  let html = render(DocumentBatches, { items: [refused, { ...refused, id: "TST-02", ControlId: "TST-02", AcceptanceRefusal: "" }] });
+  assert.match(html, /Accept 1 eligible/);
+  assert.match(html, /document author must revise/);
+  html = render(DocumentBatches, { items: [refused] });
+  assert.match(html, /<button disabled="" title="All controls require a document revision/);
+});
+
+test("assignment role spelling link opens the existing document flow with its source code", async () => {
+  const { RoleDocumentLink } = await component("pages/AssignmentOwnership/index.jsx");
+  const html = render(RoleDocumentLink, { item: { SourceDocumentCode: "DRG-ISMS-STD-TST" } });
+  assert.match(html, /Use this role/);
+  assert.match(html, /Create role/);
+  assert.match(html, /Fix CDI issues/);
+  assert.doesNotMatch(html, /Add person|Grant membership/);
+  const element = RoleDocumentLink({ item: { SourceDocumentCode: "DRG-ISMS-STD-TST" } });
+  const button = element.props.children.find(child => child?.type === "button");
+  const previousWindow = globalThis.window, previousEvent = globalThis.CustomEvent;
+  let event;
+  try {
+    globalThis.window = { dispatchEvent(value) { event = value; } };
+    globalThis.CustomEvent = class { constructor(type, options) { this.type = type; this.detail = options.detail; } };
+    button.props.onClick();
+    assert.equal(event.type, "orgos:navigate");
+    assert.deepEqual(event.detail, { to: "lifecycle", documentCode: "DRG-ISMS-STD-TST" });
+  } finally {
+    globalThis.window = previousWindow;
+    globalThis.CustomEvent = previousEvent;
+  }
+});
+
+test("assignment keeps document-gap, JD, conflict and library decisions", async () => {
+  const module = await component("pages/AssignmentOwnership/index.jsx", ["JDToDocDecisions", "DocToJDDecisions", "ConflictDecisions", "LIBRARY_FINDINGS"]);
+  assert.ok(module.JDToDocDecisions.some(d => d.key === "Create new document"));
+  assert.ok(module.DocToJDDecisions.some(d => d.key === "Add to existing JD"));
+  assert.ok(module.ConflictDecisions.some(d => d.key === "Select governing document"));
+  assert.equal(Object.keys(module.LIBRARY_FINDINGS).length, 5);
+});
+
+test("document role link retains the source code and explains how to revise an absent document", async () => {
+  const { default: Lifecycle } = await component("pages/DocumentLifecycle/index.jsx");
+  const html = render(Lifecycle, { focusDocumentCode: "DRG-ISMS-STD-TST", onClearFocus() {} });
+  assert.match(html, /DRG-ISMS-STD-TST/);
+  assert.match(html, /Use this role/);
+  assert.match(html, /Fix CDI issues/);
+  assert.match(html, /no lifecycle entry here/);
+  assert.match(html, /Show all documents/);
 });

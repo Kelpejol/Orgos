@@ -409,6 +409,19 @@ const DecisionPanel = ({ item, decisions, onDecide, isPending }) => {
 //  Orphan card
 // =============================================================================
 
+export const RoleDocumentLink = ({ item }) => item.SourceDocumentCode ? (
+  <div style={{ padding: "8px 14px", fontSize: 11, background: "#F4F9FE", lineHeight: 1.5 }}>
+    If this is a role spelling issue, fix <strong>{item.SourceDocumentCode}</strong> through its
+    Document standard panel: use “Use this role” or “Create role”, or “Fix CDI issues”.
+    <button onClick={() => window.dispatchEvent(new CustomEvent("orgos:navigate", {
+      detail: { to: "lifecycle", documentCode: item.SourceDocumentCode },
+    }))} style={{ display: "block", marginTop: 5, cursor: "pointer", color: "#0C447C",
+                 background: "transparent", border: "1px solid #85B7EB", borderRadius: 5, padding: "5px 8px" }}>
+      Fix role spelling in document
+    </button>
+  </div>
+) : null;
+
 const OrphanCard = ({ item, isCompliance, onDecide, isPending }) => {
   const [expanded, setExpanded] = useState(false);
   const isDecided = item.ReviewStatus && item.ReviewStatus !== "Pending Review";
@@ -473,6 +486,8 @@ const OrphanCard = ({ item, isCompliance, onDecide, isPending }) => {
           {item.SourceDocumentCode}{item.SourceClause ? ` · ${item.SourceClause}` : ""}
         </div>
       </div>
+
+      {!isDecided && <RoleDocumentLink item={item} />}
 
       {expanded && (
         <div style={{ borderTop: `1px solid ${borderColor}`, padding: "12px 14px" }}>

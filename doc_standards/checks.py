@@ -339,11 +339,11 @@ def v07(s: Subject) -> Outcome:
     problems = []
     for entry in named.values():
         text = entry["text"]
-        if book.find(text):
+        placeholder, several = role_matching.is_placeholder(text), role_matching.names_several(text)
+        if not (placeholder or several) and book.find(text):
             continue
         kinds = sorted({k for k, _ in entry["uses"]})
         places = list(dict.fromkeys(w for _, w in entry["uses"]))
-        placeholder, several = role_matching.is_placeholder(text), role_matching.names_several(text)
         group = role_matching.describes_a_group(text)
         suggestions = [] if (several or group) else book.suggest(text)
         if group:

@@ -8,6 +8,7 @@
 
 import json
 import logging
+import re
 from enum import Enum
 from typing import Optional
 
@@ -62,6 +63,8 @@ CODE_PREFIX_MAP = {
     "-POL-PRO-": DocumentType.POLICY,
     "-POL-":     DocumentType.POLICY,
     "-PRO-":     DocumentType.POLICY,
+    "-STD-":     DocumentType.POLICY,
+    "-SOP-":     DocumentType.POLICY,
     "DRG-JD-":   DocumentType.JD,
     "-JD-":      DocumentType.JD,
     "-SLA-":     DocumentType.CONTRACT,
@@ -93,13 +96,30 @@ def classify_document(
     fname = filename.lower()
     if any(k in fname for k in ["job description", " jd ", "_jd_", "-jd-"]):
         return DocumentType.JD
-    if any(k in fname for k in ["contract", "agreement", "nda", "sla"]):
+    if any(k in fname for k in ["contract", "agreement", "sla"]) or re.search(r"\bnda\b", fname):
         return DocumentType.CONTRACT
     if any(k in fname for k in ["policy", "procedure", "sop"]):
         return DocumentType.POLICY
     if any(k in fname for k in ["audit", "finding", "risk assessment"]):
         return DocumentType.AUDIT
+    if re.search(r"\bstandard\b", fname):
+        return DocumentType.POLICY
     return DocumentType.UNCLASSIFIED
+
+
+CONTROLLED_DOCUMENT_MESSAGE = (
+    "Controls of controlled policies and standards enter only through Document Lifecycle approval "
+    "and the approved-library path. The legacy extractor is for contracts, regulatory documents, "
+    "job descriptions and audits."
+)
+
+
+def require_legacy_extraction(document_type=None, doc_code="", filename="", folder_path=None) -> None:
+    controlled = document_type in (DocumentType.POLICY, "Standard")
+    controlled = controlled or bool(re.search(r"(?:^|-)(?:POL|PRO|STD|SOP)(?:-|$)", doc_code.upper()))
+    controlled = controlled or classify_document(filename, doc_code, folder_path) == DocumentType.POLICY
+    if controlled:
+        raise ValueError(CONTROLLED_DOCUMENT_MESSAGE)
 
 
 # =============================================================================
@@ -258,6 +278,7 @@ async def run_extraction(
     document_type: DocumentType = DocumentType.POLICY,
     job_titles: Optional[list[str]] = None,
 ) -> list[dict]:
+    require_legacy_extraction(document_type, doc_code)
     if document_type in NON_EXTRACTION_TYPES:
         return []
 
@@ -301,7 +322,7 @@ async def run_extraction(
             logger.warning(f"{label}: LLM unavailable: {exc}")
             continue
         ok_chunks += 1
-        items = _parse_response(raw, label)  # returns [] on empty/malformed
+        items = _parse_response(raw, label, document_type)  # returns [] on empty/malformed
         # Dedup by statement text (guards against overlap/repeats across chunks).
         for it in items:
             key = (it.get("statement") or "").strip().lower()
@@ -325,7 +346,7 @@ async def run_extraction(
     return all_items
 
 
-def _parse_response(raw: str, doc_code: str) -> list[dict]:
+def _parse_response(raw: str, doc_code: str, document_type: DocumentType | None = None) -> list[dict]:
     # Strip DeepSeek R1 thinking blocks before parsing
     # import re
     # cleaned = re.sub(r"<think>.*?</think>", "", raw, flags=re.DOTALL).strip()
@@ -372,18 +393,23 @@ def _parse_response(raw: str, doc_code: str) -> list[dict]:
         stmt = item.get("s") or item.get("control_statement") or item.get("responsibility_statement") or ""
         risk = item.get("r") or item.get("risk_statement") or ""
         role = item.get("o") or item.get("proposed_owner_role") or ""
+        if document_type == DocumentType.AUDIT:
+            role = item.get("proposed_owner_role") or ""
         clause = item.get("c") or item.get("iso_clause") or ""
 
         # Skip empty items
         if not stmt or len(stmt.strip()) < 10:
             continue
 
-        normalised.append({
+        normalised_item = {
             "statement": stmt.strip(),
             "risk":      risk.strip(),
             "role":      role.strip(),
             "clause":    clause.strip() if clause else "",
-        })
+        }
+        if document_type == DocumentType.AUDIT:
+            normalised_item["severity"] = item.get("o") or item.get("severity") or "Minor"
+        normalised.append(normalised_item)
 
     logger.info(f"{doc_code}: {len(normalised)} items parsed")
     return normalised

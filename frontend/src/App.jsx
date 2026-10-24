@@ -325,14 +325,19 @@ const ROUTE_NAMES = {
 // ── Main app shell (all state-nav screens) ───────────────────────────────────
 function OrgOSShell() {
   const [nav, setNav] = useState("workhub");
+  const [documentFocus, setDocumentFocus] = useState("");
 
   const { isCompliance } = useCurrentUserRole();
 
-  const go = (id) => setNav(id);
+  const go = (id) => { setDocumentFocus(""); setNav(id); };
 
   // Other screens can send the user somewhere (e.g. a check's "Create role" opens Org Roles).
   useEffect(() => {
-    const onNavigate = (e) => e.detail?.to && setNav(e.detail.to);
+    const onNavigate = (e) => {
+      if (!e.detail?.to) return;
+      setDocumentFocus(e.detail.documentCode || "");
+      setNav(e.detail.to);
+    };
     window.addEventListener("orgos:navigate", onNavigate);
     return () => window.removeEventListener("orgos:navigate", onNavigate);
   }, []);
@@ -359,7 +364,7 @@ function OrgOSShell() {
       case "contract":
         return <ContractRegister />;
       case "lifecycle":
-        return <DocumentLifecycle />;
+        return <DocumentLifecycle focusDocumentCode={documentFocus} onClearFocus={() => setDocumentFocus("")} />;
       case "extraction":
         return <ExtractionReview />;
       case "assignment":

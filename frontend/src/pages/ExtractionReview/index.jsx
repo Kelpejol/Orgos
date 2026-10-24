@@ -18,9 +18,9 @@ import { LoadingState, ErrorState, EmptyState } from "../../components/shared/Lo
 import UserSearchField from "../../components/shared/UserSearchField.jsx";
 import JobTitleInput from "../../components/shared/JobTitleInput.jsx";
 import { useAlert } from "../../components/shared/AlertModal.jsx";
-import { CascadeImpactModal } from "../../components/shared/CascadeImpactModal.jsx";
+import { CascadeImpactModal, CascadeImpactPreview } from "../../components/shared/CascadeImpactModal.jsx";
 import apiClient from "../../api/grcApi.js";
-import { DefinitionPanel, DocumentBatches, isDefinition } from "../../components/shared/ControlDefinitionReview.jsx";
+import { AcceptanceWarning, DefinitionPanel, DocumentBatches, isDefinition } from "../../components/shared/ControlDefinitionReview.jsx";
 
 const EVIDENCE_TYPES = [
   ["", "Select evidence type"],
@@ -157,7 +157,8 @@ const ConfidenceDot = ({ score }) => {
 //  Chain preview — shows what Accept will create
 // =============================================================================
 
-const ChainPreview = ({ item }) => {
+const ChainPreview = ({ item, edits }) => {
+  if (item.AcceptanceRefusal) return <AcceptanceWarning item={item} />;
   if (isDefinition(item)) {
     const records = (item.Candidate?.evidence || []).filter(e => e.record_id).map(e => e.record_id);
     return (
@@ -173,34 +174,14 @@ const ChainPreview = ({ item }) => {
       </div>
     );
   }
-  const hasEvidence = item.EvidenceType && item.EvidenceDescription;
   return (
-    <div style={{
-      padding: "10px 12px", background: "#E6F1FB",
-      borderRadius: 8, marginBottom: 12,
-      border: "0.5px solid #85B7EB",
-    }}>
-      <div style={{ fontSize: 11, fontWeight: 600, color: "#0C447C", marginBottom: 6 }}>
-        If accepted, this creates:
-      </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-        <div style={{ fontSize: 11, color: "#0C447C" }}>
-          → Control Register entry — {item.ControlType ? `${item.ControlType} · ` : ""}{item.ISOClause || "No clause"} · Control owner: {item.ProposedOwnerRole || "Unresolved"}
-        </div>
-        {hasEvidence && (
-          <div style={{ fontSize: 11, color: "#0C447C" }}>
-            → Record Tracker entry — {item.EvidenceType} · {item.EvidenceFrequency || "frequency TBD"} · From: {item.EvidenceSourceSystem || "source TBD"}
-          </div>
-        )}
-        {!hasEvidence && (
-          <div style={{ fontSize: 11, color: "#BA7517" }}>
-            → No record entry — evidence fields undefined on this item
-          </div>
-        )}
-        <div style={{ fontSize: 11, color: "#0C447C" }}>
-          → Audit log record — your identity, timestamp, rationale
-        </div>
-      </div>
+    <div style={{ marginBottom: 12 }}>
+      <div style={{ fontSize: 11, fontWeight: 600, marginBottom: 6 }}>If accepted, this creates:</div>
+      <CascadeImpactPreview
+        impact={edits ? undefined : item.AcceptPreview}
+        impactUrl={edits ? `/api/v1/queue/items/${item.id}/impact` : undefined}
+        impactParams={edits ? { zone: "1", decision: "Edit and Accept", ...edits } : undefined}
+      />
     </div>
   );
 };
@@ -275,6 +256,7 @@ const DecisionPanel = ({ item, onDecide, onRequestSecondReview, isPending }) => 
   }, [editMode, item]);
 
   const ratOk = rationale.trim().length >= 10;
+  const cannotAccept = !ratOk || isPending || !!item.AcceptanceRefusal;
 
   const handleAction = async (action) => {
     if (!ratOk) return;
@@ -333,6 +315,7 @@ const DecisionPanel = ({ item, onDecide, onRequestSecondReview, isPending }) => 
 
   return (
     <div style={{ marginTop: 12 }}>
+      <ChainPreview item={item} edits={editMode ? edits : undefined} />
       {isDefinition(item) && (
         <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginBottom: 10 }}>
           This wording comes from {item.SourceDocumentCode || "its defining document"}. To change it,
@@ -476,11 +459,12 @@ const DecisionPanel = ({ item, onDecide, onRequestSecondReview, isPending }) => 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
         <button
           onClick={() => handleAction("accept")}
-          disabled={!ratOk || isPending}
+          disabled={cannotAccept}
+          title={item.AcceptanceRefusal || undefined}
           style={{ padding: "10px", fontSize: 12, borderRadius: 8, border: "none",
-                   background: !ratOk || isPending ? "#E8E8E8" : "#1D9E75",
-                   color: !ratOk || isPending ? "#999" : "#fff",
-                   cursor: !ratOk || isPending ? "not-allowed" : "pointer",
+                   background: cannotAccept ? "#E8E8E8" : "#1D9E75",
+                   color: cannotAccept ? "#999" : "#fff",
+                   cursor: cannotAccept ? "not-allowed" : "pointer",
                    fontWeight: 600, gridColumn: editMode ? "1 / 3" : "1" }}
         >
           {activeAction === "accept" ? "Creating records..." : editMode ? "Edit & Accept →" : "Accept →"}
@@ -539,7 +523,7 @@ const DecisionPanel = ({ item, onDecide, onRequestSecondReview, isPending }) => 
         title={confirmTitles[confirmAction] || "Confirm decision"}
         subtitle={`${item.SourceDocumentCode || "Queue item"}${item.SourceClause ? ` · ${item.SourceClause}` : ""}`}
         impactUrl={`/api/v1/queue/items/${item.id}/impact`}
-        impactParams={{ zone: "1", decision: impactDecision }}
+        impactParams={{ zone: "1", decision: impactDecision, ...(editMode ? edits : {}) }}
         initialRationale={rationale}
         confirmLabel={
           confirmAction === "accept"
@@ -773,6 +757,8 @@ const ExtractionCard = ({ item, isCompliance, onDecide, onRequestSecondReview, i
         </div>
 
 
+        <AcceptanceWarning item={item} />
+
         {/* Risk + confidence */}
         <div style={{ display: "flex", justifyContent: "space-between",
                       alignItems: "center", gap: 12 }}>
@@ -839,7 +825,6 @@ const ExtractionCard = ({ item, isCompliance, onDecide, onRequestSecondReview, i
             </div>
           ) : isCompliance ? (
             <>
-              <ChainPreview item={item} />
               <DecisionPanel
                 item={item}
                 onDecide={(action, rationale, edits) => onDecide(item.id, action, rationale, edits)}

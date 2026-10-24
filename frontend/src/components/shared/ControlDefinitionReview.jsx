@@ -18,6 +18,13 @@ const acceptDocument = (document, rationale) =>
 
 export const isDefinition = (item) => Boolean(item?.ControlId) && !item?.ResolutionKey;
 
+export const AcceptanceWarning = ({ item }) => item.AcceptanceRefusal ? (
+  <div role="alert" style={{ padding: "8px 10px", background: "#FCEBEB", borderRadius: 6,
+                            fontSize: 12, color: "#791F1F", margin: "8px 0" }}>
+    {item.AcceptanceRefusal}
+  </div>
+) : null;
+
 // =============================================================================
 //  Control definition — items raised by the library sync, keyed by Control ID.
 //  Read from the defining document, not inferred, so there is no confidence
@@ -101,7 +108,7 @@ export const DefinitionPanel = ({ item }) => {
         <DefRow l="Records" v={c.evidence.filter((e) => e.record_id)
           .map((e) => `${e.record_id}${e.name ? ` ${e.name}` : ""}`).join("; ")} />
       )}
-      {c.responsibility_ambiguous && (
+      {c.responsibility_ambiguous && !item.AcceptanceRefusal && (
         <div style={{ padding: "8px 10px", background: "#FAEEDA", borderRadius: 6,
                       fontSize: 11, color: "#633806", marginTop: 8 }}>
           The older responsibility line “{c.responsibility_as_written}” could be one role or two.
@@ -112,7 +119,7 @@ export const DefinitionPanel = ({ item }) => {
       {item.DeficiencyReason && (
         <div style={{ padding: "8px 10px", background: "#FCEBEB", borderRadius: 6,
                       fontSize: 11, color: "#791F1F", marginTop: 8 }}>
-          {item.DeficiencyReason} Fix it in the document; accepting records the control as stated.
+          {item.DeficiencyReason} Fix it in the document. {item.AcceptanceRefusal ? "Acceptance is refused until revised." : "Accepting records the control as stated."}
         </div>
       )}
     </div>
@@ -147,7 +154,7 @@ export const DocumentBatches = ({ items }) => {
     setBusy(true);
     try {
       const r = await acceptDocument(doc, rationale.trim());
-      notify({ tone: r.failed?.length ? "warning" : "success", title: "Controls accepted", message: r.message });
+      notify({ tone: r.failed?.length || r.refused?.length ? "warning" : "success", title: "Controls accepted", message: r.message });
       setOpen(null);
       setRationale("");
     } catch (err) {
@@ -167,47 +174,54 @@ export const DocumentBatches = ({ items }) => {
       </div>
       <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginBottom: 8 }}>
         Read a document's controls below, then accept them together with one rationale. Each is
-        still recorded individually. Changed controls are reviewed one by one.
+        still recorded individually. Refused controls stay pending for the document author to revise.
+        Changed controls are reviewed one by one.
       </div>
-      {groups.map(([doc, list]) => (
-        <div key={doc} style={{ padding: "7px 0", borderTop: "0.5px solid #D4E8FA" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
-            <span style={{ fontSize: 12 }}>
-              <strong>{doc || "Document without a code"}</strong>
-              <span style={{ color: "var(--color-text-tertiary)" }}> · {list.length} new</span>
-            </span>
-            {open !== doc && (
-              <button onClick={() => { setOpen(doc); setRationale(""); }}
-                style={{ padding: "4px 10px", fontSize: 11, borderRadius: 6, cursor: "pointer",
-                         border: "1px solid #0C447C", background: "transparent", color: "#0C447C" }}>
-                Accept all {list.length}
-              </button>
+      {groups.map(([doc, list]) => {
+        const eligible = list.filter(i => !i.AcceptanceRefusal).length;
+        const cannotAccept = busy || rationale.trim().length < 10 || !eligible;
+        return (
+          <div key={doc} style={{ padding: "7px 0", borderTop: "0.5px solid #D4E8FA" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 12 }}>
+                <strong>{doc || "Document without a code"}</strong>
+                <span style={{ color: "var(--color-text-tertiary)" }}> · {list.length} new</span>
+              </span>
+              {open !== doc && (
+                <button disabled={!eligible} title={!eligible ? "All controls require a document revision before acceptance" : undefined}
+                  onClick={() => { setOpen(doc); setRationale(""); }}
+                  style={{ padding: "4px 10px", fontSize: 11, borderRadius: 6, cursor: "pointer",
+                           border: "1px solid #0C447C", background: "transparent", color: "#0C447C" }}>
+                  Accept {eligible} eligible
+                </button>
+              )}
+            </div>
+            {list.filter(i => i.AcceptanceRefusal).map(i => <AcceptanceWarning key={i.id} item={i} />)}
+            {open === doc && (
+              <div style={{ marginTop: 8 }}>
+                <textarea value={rationale} onChange={(e) => setRationale(e.target.value)} rows={2}
+                  placeholder={`Why these ${eligible} controls are right as stated (e.g. "Matches the approved Standard, v06")`}
+                  style={{ width: "100%", fontSize: 12, padding: "8px 10px", borderRadius: 8, boxSizing: "border-box",
+                           border: "1.5px solid #C0C0C0", fontFamily: "var(--font-sans)", resize: "vertical" }} />
+                <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+                  <button disabled={cannotAccept} onClick={() => accept(doc)}
+                    style={{ padding: "7px 14px", fontSize: 12, fontWeight: 600, borderRadius: 8, border: "none",
+                             background: cannotAccept ? "#E8E8E8" : "#1D9E75",
+                             color: cannotAccept ? "#999" : "#fff",
+                             cursor: cannotAccept ? "not-allowed" : "pointer" }}>
+                    {busy ? `Accepting ${eligible}…` : `Accept ${eligible} controls`}
+                  </button>
+                  <button onClick={() => setOpen(null)} disabled={busy}
+                    style={{ padding: "7px 12px", fontSize: 12, borderRadius: 8, border: "1.5px solid #C0C0C0",
+                             background: "transparent", color: "var(--color-text-secondary)", cursor: "pointer" }}>
+                    Cancel
+                  </button>
+                </div>
+              </div>
             )}
           </div>
-          {open === doc && (
-            <div style={{ marginTop: 8 }}>
-              <textarea value={rationale} onChange={(e) => setRationale(e.target.value)} rows={2}
-                placeholder={`Why these ${list.length} controls are right as stated (e.g. "Matches the approved Standard, v06")`}
-                style={{ width: "100%", fontSize: 12, padding: "8px 10px", borderRadius: 8, boxSizing: "border-box",
-                         border: "1.5px solid #C0C0C0", fontFamily: "var(--font-sans)", resize: "vertical" }} />
-              <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
-                <button disabled={busy || !rationale.trim()} onClick={() => accept(doc)}
-                  style={{ padding: "7px 14px", fontSize: 12, fontWeight: 600, borderRadius: 8, border: "none",
-                           background: busy || !rationale.trim() ? "#E8E8E8" : "#1D9E75",
-                           color: busy || !rationale.trim() ? "#999" : "#fff",
-                           cursor: busy || !rationale.trim() ? "not-allowed" : "pointer" }}>
-                  {busy ? `Accepting ${list.length}…` : `Accept ${list.length} controls`}
-                </button>
-                <button onClick={() => setOpen(null)} disabled={busy}
-                  style={{ padding: "7px 12px", fontSize: 12, borderRadius: 8, border: "1.5px solid #C0C0C0",
-                           background: "transparent", color: "var(--color-text-secondary)", cursor: "pointer" }}>
-                  Cancel
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 };
