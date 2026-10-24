@@ -1273,18 +1273,20 @@ const LifecycleCard = ({
       // Surface the CDI result immediately from the upload response
       if (updated?.CDIStatus) {
         let failCount   = 0;
+        let warnCount   = 0;
         let errorDetail = "";
         if (updated.CDIFailures) {
           try {
             const parsed = JSON.parse(updated.CDIFailures);
-            failCount = parsed.length;
+            warnCount = parsed.filter(f => f.severity === "warning").length;
+            failCount = parsed.length - warnCount;
             // For Error status, grab the human-readable reason from the first entry
             if (updated.CDIStatus === "Error" && parsed[0]?.detail) {
               errorDetail = parsed[0].detail;
             }
           } catch { failCount = 1; }
         }
-        setUploadCdiResult({ status: updated.CDIStatus, failCount, errorDetail });
+        setUploadCdiResult({ status: updated.CDIStatus, failCount, warnCount, errorDetail });
       }
       qc.invalidateQueries({ queryKey: ["lifecycle"] });
     } catch (err) {
@@ -1298,15 +1300,16 @@ const LifecycleCard = ({
   // ── Edit in Word for the web — then re-check (CDI runs on the saved file) ──
   const showCdiResult = (updated) => {
     if (!updated?.CDIStatus) return;
-    let failCount = 0, errorDetail = "";
+    let failCount = 0, warnCount = 0, errorDetail = "";
     if (updated.CDIFailures) {
       try {
         const parsed = JSON.parse(updated.CDIFailures);
-        failCount = parsed.length;
+        warnCount = parsed.filter(f => f.severity === "warning").length;
+        failCount = parsed.length - warnCount;
         if (updated.CDIStatus === "Error" && parsed[0]?.detail) errorDetail = parsed[0].detail;
       } catch { failCount = 1; }
     }
-    setUploadCdiResult({ status: updated.CDIStatus, failCount, errorDetail });
+    setUploadCdiResult({ status: updated.CDIStatus, failCount, warnCount, errorDetail });
   };
 
   const handleEditInWord = async () => {
@@ -1533,7 +1536,7 @@ const LifecycleCard = ({
         }}>
           <span>
             CDI check: <strong>{uploadCdiResult.status}</strong>
-            {uploadCdiResult.status === "Failed" && ` — ${uploadCdiResult.failCount} issue${uploadCdiResult.failCount !== 1 ? "s" : ""} to fix`}
+            {uploadCdiResult.status === "Failed" && ` — ${uploadCdiResult.failCount} to fix${uploadCdiResult.warnCount ? `, ${uploadCdiResult.warnCount} warning${uploadCdiResult.warnCount !== 1 ? "s" : ""}` : ""}`}
             {uploadCdiResult.status === "Passed" && " — document meets all CDI standards"}
             {uploadCdiResult.status === "Error"  && ` — ${uploadCdiResult.errorDetail || "check could not run"}`}
           </span>

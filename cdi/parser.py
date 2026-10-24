@@ -982,7 +982,11 @@ def _parse_roles(content: DocumentContent, sections: list[str]) -> list[RoleDuty
         hdr = _header_row(table)
         if len(hdr) < 2 or hdr[0] not in ("role", "roles"):
             continue
-        if not (hdr[1].startswith("dut") or "responsib" in hdr[1]):
+        duties = hdr[1].startswith("dut") or "responsib" in hdr[1]
+        # A sign-off block ("Role | Name | Signature | Date") names the roles that sign; a
+        # "Role | Access level" table describes system roles and is not read as roles.
+        sign_off = hdr[1] in ("name", "signatory", "signed by", "holder") or hdr[1].startswith("signat")
+        if not (duties or sign_off):
             continue
         for row in table.rows[1:]:
             cells = _cells(row)

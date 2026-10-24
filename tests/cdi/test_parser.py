@@ -471,3 +471,13 @@ def test_a_header_row_labelled_with_the_standard_is_read_as_the_standards_the_do
              ["ISO 27001:2022 Annex A", "A.8.20, A.8.21"]])
     h = parse_document(b.bytes(), "Net Standard.docx").header
     assert {(r.standard, r.clause) for r in h.standards} == {("ISO 27001", "A.8.20"), ("ISO 27001", "A.8.21")}
+
+
+def test_a_sign_off_table_names_roles_but_an_access_level_table_does_not():
+    from tests.cdi.builders import DocBuilder
+    from cdi.parser import parse_document
+    b = DocBuilder()
+    b.table([["Role", "Name", "Signature", "Date"], ["Head of IT", "A Person", "", ""]])
+    b.table([["Role", "Access level"], ["Viewer", "Read"]])
+    roles = [r.role for r in parse_document(b.bytes(), "Form.docx").roles]
+    assert roles == ["Head of IT"]
