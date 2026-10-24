@@ -299,6 +299,14 @@ def _type_from_layer(layer: str) -> str:
     return next((code for word, code in _LAYER_TYPES if word in text), "")
 
 
+_STANDARD_LABEL = re.compile(r"(iso\b|ndp[ar]\b|nigeria data protection)")
+
+
+def _is_standard_label(label: str) -> bool:
+    """A header row whose label IS a standard ("ISO 27001:2022 Annex A | A.8.20, A.8.21")."""
+    return bool(_STANDARD_LABEL.match(norm(label)))
+
+
 def _header_tables(content: DocumentContent) -> list[tuple[str, list[tuple[str, str]]]]:
     """
     Tables that are label/value control blocks, as (source, pairs).
@@ -332,7 +340,7 @@ def _header_tables(content: DocumentContent) -> list[tuple[str, list[tuple[str, 
             cells = _cells(row)
             if cells and any(cells) and not (r == 0 and caption):    # a caption row is not a fact row
                 non_empty_rows += 1
-            if cells and norm(cells[0]) in _HEADER_LABELS:
+            if cells and (norm(cells[0]) in _HEADER_LABELS or _is_standard_label(cells[0])):
                 pairs.append((cells[0], " ".join(cells[1:]).strip()))
         # A control block states at least four facts. A smaller table counts only
         # when EVERY row is a known header fact — which is what is left of a
@@ -350,9 +358,13 @@ def _parse_header(content: DocumentContent, filename: str, findings: list[Findin
     candidates: dict[str, list[tuple[str, str]]] = {}   # key → [(source, value)]
     raw: dict[str, str] = {}
 
+    standard_rows: list[str] = []      # a row whose LABEL is the standard: "ISO 27001:2022 Annex A | A.8.20, A.8.21"
+
     def offer(label: str, value: str, source: str) -> None:
         key = _HEADER_LABELS.get(norm(label))
         if key is None:
+            if value.strip() and _is_standard_label(label):
+                standard_rows.append(f"{label.strip()} {value.strip()}")
             return
         raw.setdefault(f"{source}: {label.strip()}", value)
         candidates.setdefault(key, []).append((source, value.strip()))
@@ -455,6 +467,9 @@ def _parse_header(content: DocumentContent, filename: str, findings: list[Findin
     header.classification, header.distribution = classification, distribution
 
     header.standards_as_written = choose("standards")
+    if not header.standards_as_written and standard_rows:
+        header.sources["standards"] = "standard rows"
+        header.standards_as_written = "; ".join(standard_rows)
     header.standards, bad = parse_mapping(header.standards_as_written)
     if bad:
         findings.append(Finding(

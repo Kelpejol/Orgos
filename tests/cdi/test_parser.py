@@ -460,3 +460,14 @@ def test_a_policy_listing_controls_authorises_them():
     doc = parse(b)
     assert doc.role is DocumentRole.AUTHORITY
     assert doc.header.controls_implemented == ["CM-01", "CM-02", "CM-03"]
+
+
+def test_a_header_row_labelled_with_the_standard_is_read_as_the_standards_the_document_states():
+    from tests.cdi.builders import DocBuilder
+    from cdi.parser import parse_document
+    b = DocBuilder()
+    b.table([["Document Code", "DRG-ISMS-STD-NET"], ["Document Title", "Net Standard"],
+             ["Document Type / Layer", "Standard (Layer 3)"], ["Domain", "d"], ["Owner", "Head of IT"],
+             ["ISO 27001:2022 Annex A", "A.8.20, A.8.21"]])
+    h = parse_document(b.bytes(), "Net Standard.docx").header
+    assert {(r.standard, r.clause) for r in h.standards} == {("ISO 27001", "A.8.20"), ("ISO 27001", "A.8.21")}

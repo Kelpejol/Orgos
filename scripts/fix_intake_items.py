@@ -22,6 +22,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 INTAKE_TRIGGERS = {"SharePoint Intake", "CDI Fix"}
+PLACEHOLDER_STANDARDS = "ISO 27001, ISO 9001, NDPA"      # scripts/patch_bare_lifecycle_items.py's blanket default
 
 
 async def run(apply: bool) -> int:
@@ -55,7 +56,12 @@ async def run(apply: bool) -> int:
                     "Department": c.department, "Title": c.title}
             if c.standards:
                 want["StandardsMapping"] = c.standards
-            diff = {k: v for k, v in want.items() if (f.get(k) or "") != v and (v or k == "DocumentCode")}
+            elif (f.get("StandardsMapping") or "").strip() == PLACEHOLDER_STANDARDS:
+                # The blanket default an old patch script wrote on items with no standards. The document
+                # states none, so none is the truth; left in place it would flow into the Document Register.
+                want["StandardsMapping"] = ""
+            diff = {k: v for k, v in want.items()
+                    if (f.get(k) or "") != v and (v or k in ("DocumentCode", "StandardsMapping"))}
             if diff:
                 changes.append((str(item["id"]), f.get("Title") or name, {k: (f.get(k) or "", v) for k, v in diff.items()}))
 
