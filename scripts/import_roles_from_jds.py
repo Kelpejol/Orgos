@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import re
 import shutil
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path, PurePosixPath
 from tempfile import TemporaryDirectory
 from zipfile import ZipFile
@@ -128,6 +129,22 @@ def parse_job_description(pdf: str, text: str, layout: str = "") -> JobDescripti
                           department, reports_to)
 
 
+NAMES_FILE = Path(__file__).with_name("jd_role_names.json")
+
+
+def load_name_overrides(path: Path = NAMES_FILE) -> dict[str, str]:
+    """PDF path in the ZIP -> the role name to create (where the PDF's own title is not the name to use)."""
+    if not path.exists():
+        return {}
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return {k: " ".join(v.split()) for k, v in data.items() if not k.startswith("_") and (v or "").strip()}
+
+
+def apply_name_overrides(descriptions: list[JobDescription], overrides: dict[str, str]) -> list[JobDescription]:
+    return [replace(jd, title=overrides[jd.pdf], source="renamed") if jd.pdf in overrides else jd
+            for jd in descriptions]
+
+
 def read_job_descriptions(zip_path: Path) -> list[JobDescription]:
     descriptions = []
     with TemporaryDirectory(prefix="orgos-jds-") as temp, ZipFile(zip_path) as archive:
@@ -246,6 +263,11 @@ async def _run(args: argparse.Namespace) -> None:
     descriptions = await asyncio.to_thread(read_job_descriptions, args.zip_path)
     if not descriptions:
         raise ValueError("The ZIP contains no PDFs.")
+    overrides = load_name_overrides()
+    unused = sorted(set(overrides) - {jd.pdf for jd in descriptions})
+    for pdf in unused:
+        print(f"Note: jd_role_names.json names {pdf}, which is not in this ZIP.")
+    descriptions = apply_name_overrides(descriptions, overrides)
     await graph_client.startup()
     try:
         await import_roles(descriptions, apply=args.apply)

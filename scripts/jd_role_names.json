@@ -1,0 +1,10 @@
+{
+  "_about": "The role name to create for a job description when the title written in the PDF is not the name to use. Key: the PDF's path in the ZIP. Value: the final role name. Spellings fixed, and names matched to how the CDI documents write them (the CDI uses 'Information Security Officer').",
+  "Job Descriptions/IT Executive - Information Security Officer.pdf": "Information Security Officer",
+  "Job Descriptions/Compliance Executive Intern.pdf": "Compliance Executive Intern",
+  "Job Descriptions/Compliance and Process Excellence Executive.pdf": "Compliance and Process Excellence Executive",
+  "Job Descriptions/Sales and Liaison Senior Executive.pdf": "Sales and Liaison Senior Executive",
+  "Job Descriptions/Global Test Standards Administrator.pdf": "Global Test Standards Administrator",
+  "Job Descriptions/Test Centre Assistant Manager.pdf": "Test Centre Assistant Manager",
+  "Job Descriptions/Head of Verification Operations.pdf": "Head of Verification Operations"
+}

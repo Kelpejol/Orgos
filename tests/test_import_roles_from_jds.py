@@ -259,3 +259,21 @@ def test_cli_rejects_empty_zip_before_graph_reads(tmp_path, monkeypatch):
     monkeypatch.setattr(importer.graph_client, "startup", startup)
     assert importer.main([str(path)]) == 1
     startup.assert_not_awaited()
+
+
+def test_a_listed_pdf_gets_the_name_from_the_rename_list_and_others_are_untouched(tmp_path):
+    import json
+    from scripts.import_roles_from_jds import JobDescription, apply_name_overrides, load_name_overrides
+    names = tmp_path / "names.json"
+    names.write_text(json.dumps({"_about": "x", "A.pdf": "  Proper   Name "}), encoding="utf-8")
+    overrides = load_name_overrides(names)
+    assert overrides == {"A.pdf": "Proper Name"}              # notes skipped, spacing tidied
+    out = apply_name_overrides([JobDescription("A.pdf", "Prper Name", "PDF text"),
+                                JobDescription("B.pdf", "Other", "PDF text")], overrides)
+    assert (out[0].title, out[0].source) == ("Proper Name", "renamed") and out[1].title == "Other"
+
+
+def test_the_shipped_rename_list_is_valid():
+    from scripts.import_roles_from_jds import load_name_overrides
+    assert load_name_overrides().get("Job Descriptions/IT Executive - Information Security Officer.pdf") \
+        == "Information Security Officer"
