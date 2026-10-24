@@ -1,11 +1,13 @@
 // =============================================================================
 // pages/ExtractionReview/index.jsx
 // Zone 1 — Extraction Review
-// Reviews controls and evidence extracted from policies and contracts.
-// Accept triggers full cascade: Control Register + Record Tracker + Audit Log.
+// Reviews document-stated control definitions and legacy AI extraction proposals.
+// Definition acceptance reconciles the Control Register and evidence obligations;
+// legacy proposals retain their Control Register / Record Tracker / Audit Log cascade.
 // Per DRG-QI-REF-DINT-01-26 Section 4.1
 // =============================================================================
 
+import { reviewOutcomeLabel } from "../../components/shared/reviewWording.js";
 import { useState, useMemo, useEffect } from "react";
 import { useCurrentUserRole } from "../../hooks/useCurrentUserRole.js";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -183,7 +185,7 @@ const ChainPreview = ({ item }) => {
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
         <div style={{ fontSize: 11, color: "#0C447C" }}>
-          → Control Register entry — {item.ControlType ? `${item.ControlType} · ` : ""}{item.ISOClause || "No clause"} · Owner: {item.ProposedOwnerRole || "Unresolved"}
+          → Control Register entry — {item.ControlType ? `${item.ControlType} · ` : ""}{item.ISOClause || "No clause"} · Control owner: {item.ProposedOwnerRole || "Unresolved"}
         </div>
         {hasEvidence && (
           <div style={{ fontSize: 11, color: "#0C447C" }}>
@@ -232,7 +234,7 @@ const EvidencePanel = ({ item }) => {
           {item.EvidenceFormat && <Field l="Format"       v={item.EvidenceFormat} />}
           {item.EvidenceFrequency && <Field l="Frequency"    v={item.EvidenceFrequency} />}
     
-          {item.EvidenceOwnerRole && <Field l="Owner role"   v={item.EvidenceOwnerRole} />}
+          {item.EvidenceOwnerRole && <Field l="Record owner (legacy extraction)" v={item.EvidenceOwnerRole} />}
           {item.EvidenceValidationCriteria && (
             <Field l="Validation" v={item.EvidenceValidationCriteria} />
           )}
@@ -358,7 +360,7 @@ const DecisionPanel = ({ item, onDecide, onRequestSecondReview, isPending }) => 
           {[
             ["control_statement", "Control statement", item.ControlStatement],
             ["iso_clause",        "ISO clause",        item.ISOClause],
-            ["proposed_owner",    "Owner role",        item.ProposedOwnerRole],
+            ["proposed_owner",    "Control owner",        item.ProposedOwnerRole],
             ["risk_implication",  "Risk implication",  item.RiskStatement],
           ].map(([key, label, placeholder]) => (
             <div key={key} style={{ marginBottom: 6 }}>
@@ -436,10 +438,10 @@ const DecisionPanel = ({ item, onDecide, onRequestSecondReview, isPending }) => 
                 style={inputStyle} />
             </div>
             <div style={{ marginTop: 6 }}>
-              <label style={labelStyle}>Evidence owner role</label>
+              <label style={labelStyle}>Record owner (legacy extraction)</label>
               <JobTitleInput value={edits.evidence_owner_role}
                 onChange={editField("evidence_owner_role")}
-                placeholder={item.EvidenceOwnerRole || "Job title responsible for the evidence"}
+                placeholder={item.EvidenceOwnerRole || "Role in Org Roles responsible for this legacy record"}
                 style={inputStyle} />
             </div>
           </div>
@@ -742,9 +744,9 @@ const ExtractionCard = ({ item, isCompliance, onDecide, onRequestSecondReview, i
             {item.DocumentType    && <StatusBadge label={item.DocumentType} />}
             {item.ControlType     && <StatusBadge label={item.ControlType} />}
             {item.CompletenessFlag === "DEFICIENT" && (definition
-              ? <span title="The document leaves some CDI fields unstated — see the note when opened"
+              ? <span title="The document leaves required control fields unstated — open the card for details"
                       style={{ fontSize: 10, padding: "1px 7px", borderRadius: 3, background: "#FAEEDA",
-                               color: "#633806", border: "0.5px solid #FAC775" }}>Fields missing</span>
+                               color: "#633806", border: "0.5px solid #FAC775" }}>Control fields missing</span>
               : <StatusBadge label="Deficient" />)}
             {!definition && pct < 60 && (
               <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 3,
@@ -822,7 +824,7 @@ const ExtractionCard = ({ item, isCompliance, onDecide, onRequestSecondReview, i
                           borderRadius: 8, marginBottom: 12,
                           border: "1px solid #5DCAA5" }}>
               <div style={{ fontSize: 12, fontWeight: 600, color: "#085041", marginBottom: 3 }}>
-                {item.ReviewStatus} — {item.Decision}
+                {reviewOutcomeLabel(item.ReviewStatus, item.Decision)}
               </div>
               {item.DecisionRationale && (
                 <div style={{ fontSize: 11, color: "#085041", fontStyle: "italic" }}>
@@ -859,7 +861,7 @@ const ExtractionCard = ({ item, isCompliance, onDecide, onRequestSecondReview, i
             {definition && <DefinitionPanel item={item} />}
             {!definition && <>
             {item.ISOClause        && <Field l="ISO clause"     v={item.ISOClause} />}
-            {item.ProposedOwnerRole && <Field l="Proposed owner" v={item.ProposedOwnerRole} />}
+            {item.ProposedOwnerRole && <Field l="Proposed control owner" v={item.ProposedOwnerRole} />}
             {item.SourceType       && <Field l="Source type"    v={item.SourceType} />}
             {item.DeficiencyReason && (
               <div style={{ padding: "6px 10px", background: "#FCEBEB", borderRadius: 6,

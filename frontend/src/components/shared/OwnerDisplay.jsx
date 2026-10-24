@@ -1,9 +1,10 @@
 // =============================================================================
 // OwnerDisplay.jsx — shows an owner ROLE and who it actually resolves to.
 //
-// Ownership in OrgOS is a role string (job title, group name, or group alias),
-// resolved server-side. This renders the role plus:
-//   • a kind badge (GROUP / JOB TITLE / UNASSIGNED)
+// The Control owner is a role in Org Roles, resolved to its members.
+// The server also exposes a legacy job-title fallback; this display preserves
+// that kind without treating a directory title as role registration. It shows:
+//   • a kind badge (ROLE / JOB TITLE / UNASSIGNED)
 //   • the people who hold it (click to expand)
 //   • an alias note when the document's wording matched via an alias
 //
@@ -39,7 +40,7 @@ export default function OwnerDisplay({ item, compact = false }) {
         <span
           title={
             kind === "unresolved"
-              ? "This role doesn't match any job title or registered role — nobody holds it"
+              ? "This owner could not be resolved. Check the role and its members in Org Roles."
               : `${people.length} ${people.length === 1 ? "person" : "people"} hold this role`
           }
           style={{ fontSize: 9, fontWeight: 700, color: k.fg, background: k.bg,
@@ -79,8 +80,8 @@ export default function OwnerDisplay({ item, compact = false }) {
 
       {!compact && kind === "unresolved" && (
         <span style={{ fontSize: 10.5, color: "#8A5A00" }}>
-          Nobody holds this role — set a real job title, or create a role with this
-          name under Org roles → Roles.
+          Check this role in Org Roles and assign the people who hold it. If the name is
+          wrong, use an existing role or create the role there.
         </span>
       )}
     </span>

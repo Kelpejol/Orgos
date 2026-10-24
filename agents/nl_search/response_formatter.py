@@ -70,7 +70,7 @@ def format_compliance_response(search_result: dict) -> dict:
             lines.append(f"**{ctrl_stmt}**")
             if iso:
                 lines.append(f"ISO clause: {iso}")
-            lines.append(f"Owner: {owner_name}")
+            lines.append(f"Control owner: {owner_name}")
             lines.append(f"Record status: {traffic_emoji} {traffic}")
             if src_doc:
                 lines.append(f"Source: {src_doc}")
@@ -119,7 +119,7 @@ def format_compliance_response(search_result: dict) -> dict:
                 parts.append(f"Status: {status}")
             if review:
                 parts.append(f"Next review: {review}")
-            parts.append(f"Owner: {own}")
+            parts.append(f"Document owner: {own}")
             lines.append(" | ".join(parts))
             sources.append({"title": title or code, "document_code": code, "clause": "", "link": ""})
 

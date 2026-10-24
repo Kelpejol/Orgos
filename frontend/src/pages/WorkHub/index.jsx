@@ -170,8 +170,8 @@ export default function WorkHub({ go }) {
   const allGaps    = gapsQ.data         || [];
 
   // Standard Users see only their own items.
-  // Record ownership is a ROLE (job title / group / alias) resolved
-  // server-side into OwnedByMe — OwnerEntraId is never populated on records.
+  // Role holders are resolved server-side into OwnedByMe; that shared resolver
+  // still supports legacy directory titles. Records do not store OwnerEntraId.
   const myEvid  = isStandard
     ? allEvid.filter((e) => e.OwnedByMe === true)
     : allEvid;

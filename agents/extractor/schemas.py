@@ -57,7 +57,7 @@
 #         description="How often the evidence must be collected"
 #     )
 #     proposed_owner_role: str = Field(
-#         description="Role title responsible for this control (resolved against Role Register)"
+#         description="Proposed Control owner for review against Org Roles"
 #     )
 #     iso_clause: str = Field(
 #         description="ISO 9001 / ISO 27001 / NDPA clause this maps to e.g. 'A.5.18'"

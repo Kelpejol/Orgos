@@ -772,7 +772,8 @@ def _build_ai_prompt(text: str, job_titles: Optional[list[str]] = None) -> str:
         if len(text) > _AI_MAX_TEXT_CHARS
         else text
     )
-    # The replacement role for a vague reference must be a real Dragnet job title.
+    # Legacy prompt wording still asks for job titles, although the caller now
+    # supplies Org Roles first. This prompt policy needs separate review.
     roles_block = (
         ("\nReplace the vague term with the CLOSEST matching job title from this "
          "list of real Dragnet job titles — use one of these EXACTLY as written:\n"
@@ -1272,10 +1273,9 @@ async def run_cdi_check(
     checks.append(check_05_responsibilities_section(text))
 
     # ── Stage 2: Language quality — try AI, fall back to patterns ─────────────
-    # Vague-role fixes (CDI-07) suggest a real owner — a Dragnet job title or
-    # an OrgOS group (e.g. "Compliance team"); both are valid control owners.
-    # Org Roles is the role register, and a Microsoft job title is not authority for a role, so the
-    # suggestions come from Org Roles. Job titles are used only if Org Roles cannot be read at all.
+    # Vague-role suggestions use Org Roles first, but still fall back to directory
+    # titles when that vocabulary is empty or unavailable. Such a suggestion is
+    # not role registration and must not bypass V07; fallback policy needs review.
     job_titles: list[str] = []
     try:
         from groups.service import group_names

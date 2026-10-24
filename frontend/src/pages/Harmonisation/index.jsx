@@ -496,7 +496,7 @@ export default function Harmonisation() {
       {filtered.length === 0 ? (
         <EmptyState message={
           items.length === 0
-            ? "No Zone 3 items yet. Harmonisation items are created by the Classifier agent after it compares extracted role terms against the role vocabulary (Entra job titles and OrgOS roles) and detects near-duplicate controls across documents. The Classifier is built in Phase 11 of the implementation plan."
+            ? "No Zone 3 items yet. The Classifier flags near-duplicate control statements across documents for review here. Resolve role spellings through Org Roles and the document’s role check."
             : "No items match your search."
         } />
       ) : (

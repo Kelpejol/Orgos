@@ -280,7 +280,7 @@ export const useOwnershipSummary = () =>
     retry: false,
   });
 
-/** The distinct real Dragnet job titles — role vocabulary for control ownership. */
+/** Directory titles for legacy suggestions; these do not establish registered roles. */
 export const useJobTitles = () =>
   useQuery({
     queryKey: ["job-titles"],
@@ -288,7 +288,7 @@ export const useJobTitles = () =>
     staleTime: 600_000,
   });
 
-/** OrgOS-managed people groups (full objects with members). */
+/** Org Roles entries, including their members and agreed aliases. */
 export const useGroups = () =>
   useQuery({
     queryKey: ["groups"],
@@ -296,13 +296,13 @@ export const useGroups = () =>
     staleTime: 60_000,
   });
 
-/** Active group names — the group contribution to the owner vocabulary. */
+/** Active Org Roles names for owner suggestions. */
 export const useGroupNames = () =>
   useQuery({
     queryKey: ["group-names"],
     queryFn: () => groupsApi.names(),
     staleTime: 120_000,
-    // Groups are optional; never surface an error if the list isn't provisioned.
+    // This suggestion query fails quietly if the role register is unavailable.
     retry: false,
   });
 

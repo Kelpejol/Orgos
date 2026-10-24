@@ -127,9 +127,9 @@ class RecordRef:
 @dataclass(frozen=True)
 class Responsibility:
     """
-    Who answers for a control (accountable) and who carries it out
-    (executing). A control block states both on one line, split by " / ";
-    where it states one role, that role is both.
+    The single Control owner, or the responsibility line from an older document.
+    The new form stores its one role in both compatibility attributes below.
+    The older Accountable / Executing form retains its original split.
     """
 
     accountable: str

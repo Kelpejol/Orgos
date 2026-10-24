@@ -407,9 +407,9 @@ async def _definition_accept_cascade(item: dict, user: CurrentUser, rationale: s
     """
     Accept a control definition from the library sync. Upserts the Control
     Register row by Control ID — a changed definition updates the row it
-    changed, it never adds a second. No evidence row is created: evidence
-    obligations come from the control's record links (architecture plan §9).
-    Active only if the accountable role is recognised; otherwise Blocked with
+    changed, it never adds a second. No legacy one-per-control evidence row is
+    inferred: obligations come from the control's record links (architecture plan §9).
+    Active only if the Control owner is recognised in Org Roles; otherwise Blocked with
     the reason.
 
     A bulk accept passes `owners` and `register_rows` loaded once, and syncs
@@ -1169,8 +1169,8 @@ async def _definition_impact(item: dict, decision: str, impact: dict) -> dict:
         impact["warnings"].append("The document states no standards mapping for this control, so it won't "
                                   "appear against a clause on the Standards Map.")
     if status == "Blocked":
-        impact["warnings"].append("Recorded as Blocked until the role is recognised; it clears itself on the "
-                                  "next library sync once the Role Catalogue has it.")
+        impact["warnings"].append("Recorded as Blocked until the Control owner is recognised in Org Roles. "
+                                  "A role change triggers a status recheck; the next library sync also rechecks it.")
     impact["summary"] = (f"Accepting {'updates' if exists else 'creates'} {cid} in the Control Register "
                          "as its defining document states it.")
     return impact
@@ -1203,7 +1203,7 @@ async def _zone1_impact(item: dict, decision: str, impact: dict) -> dict:
             "register": "Control Register",
             "detail": (
                 f"{item.get('ControlType') or 'Control'} — “{control_stmt[:140]}"
-                f"{'…' if len(control_stmt) > 140 else ''}”, owner: {owner_role or 'Unknown'}, "
+                f"{'…' if len(control_stmt) > 140 else ''}”, Control owner: {owner_role or 'Unknown'}, "
                 f"status: {control_state}"
             ),
         })
@@ -1242,7 +1242,7 @@ async def _zone1_impact(item: dict, decision: str, impact: dict) -> dict:
             impact["warnings"].append("No ISO clause mapped — the control will show as Unmapped on the Standards Map.")
 
         if not owner_role:
-            impact["warnings"].append("No owner role proposed — the control will be created as Blocked (unassigned owner).")
+            impact["warnings"].append("No Control owner proposed — the control will be created as Blocked (unassigned owner).")
 
         impact["summary"] = (
             f"Accepting creates {len(impact['creates'])} record(s) and updates the queue item."

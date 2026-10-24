@@ -3,9 +3,9 @@
 //
 // Every cover field is editable at any time (confirmed by the compliance
 // officer — nothing on the cover is "set once and locked"). The Owner /
-// First Pass Approval / Final Approval fields are ROLE or GROUP labels (e.g.
-// "Compliance Team"), never a specific person — reuses JobTitleInput, which
-// already suggests both real job titles and OrgOS groups.
+// First Pass Approval / Final Approval cover facts name roles in Org Roles;
+// the approval decisions themselves are made by people. JobTitleInput still
+// includes labelled legacy directory suggestions, which do not establish roles.
 //
 // Blank fields are filled automatically from .../cover/suggest when the panel
 // opens, each one labelled with where the value came from and how much to

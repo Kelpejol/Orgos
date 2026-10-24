@@ -279,13 +279,15 @@ Validates the Dragnet ERP's session — a JWT carried in the `erp_auth` HttpOnly
 
 ### org_roles/ — Org Roles Directory
 
-`GET /api/v1/org-roles` (Compliance/OrgOS Admin only) — a read-only list of every user with an `org_roles` value set, read live from Entra ID via `graph.client.list_users_with_org_roles()`. No SharePoint list backs this; assignment happens exclusively in the Dragnet ERP admin panel.
+The **Org Roles** page holds the business-role register through the groups API and the **OrgOS Groups** SharePoint list: role names, agreed aliases and the people who hold each role. Every control states one **Control owner** and a document cover states its **Document owner**. These names must exist in Org Roles; a directory job title alone does not establish a role.
+
+The page's separate People tab uses `GET /api/v1/org-roles` (Compliance/OrgOS Admin only), a read-only directory of users with ERP `org_roles` access tags from Entra ID. Only the ERP assigns those application-access tags; they are not business-role memberships.
 
 ---
 
 ### grc/ — Tier 1 GRC Registers
 
-Three core registers (the Role Register was retired — see `docs.local/orgos_notes.md`). All follow the same pattern: schemas → service → router.
+Three core registers (the older Tier-1 Role Register was retired — see `docs.local/orgos_notes.md`). Org Roles is the business-role register in `groups/`. The three `grc/` registers follow schemas → service → router.
 
 **Document Register** — Tracks every policy, procedure, SOP, form, and guideline. Document codes follow `DRG-[DEPT]-[TYPE]-[REF]-[YY]`. Status: Active / Under Review / Superseded / Withdrawn.
 
@@ -359,7 +361,7 @@ Generates CDI-compliant policy documents and uploads them to SharePoint.
 
 Reads the Control Register and Evidence Tracker. Builds a coverage map of which ISO 27001/9001/NDPA clauses have controls and accepted evidence. For each uncovered or partially covered clause, writes a Gap Analysis item with:
 - Severity: Critical (no control) / Major (no evidence) / Minor (evidence pending)
-- Proposed remediation: full JSON package with suggested controls, evidence types, a freely-proposed owner role name (no fixed pick-list — the Role Register that used to seed one was retired), and timeline
+- Proposed remediation: JSON package with controls, evidence types, proposed roles and timeline. The legacy LLM path still proposes role names freely; a proposal must not be treated as an assigned role without checking Org Roles.
 
 ---
 
@@ -979,6 +981,6 @@ These rules apply to every module and must never be broken.
 
 **All Graph API calls go through `graph/client.py`.** Never call `httpx` directly in routers or services for Graph operations. The client handles token acquisition, retry on 401, and exception mapping.
 
-**OrgOS never handles login, and never assigns `org_roles`.** The Dragnet ERP is the sole authority for both. OrgOS's backend only ever *reads* or *clears* the `erp_auth` cookie — never constructs or signs it. If a task seems to call for a login screen, an app registration, or a role-assignment UI inside OrgOS, that's a sign the task is misunderstood — those belong to the ERP, not here.
+**OrgOS never handles login, and never assigns `org_roles`.** The Dragnet ERP is the sole authority for both. OrgOS's backend only ever *reads* or *clears* the `erp_auth` cookie — never constructs or signs it. Login screens, app registrations and ERP access-tag assignment belong to the ERP. Business-role memberships are managed separately in Org Roles.
 
-**No SharePoint-backed Role Register.** It was retired intentionally (see `docs.local/orgos_notes.md`) — do not re-introduce `ROLE_REGISTER_LIST_ID` or a Role Register list/page. Anything that needs to know "who has what role" reads `org_roles` live from Entra ID via `graph.client.resolve_user()` / `list_users_with_org_roles()`, never from SharePoint.
+**Org Roles is the business-role register.** It is backed by **OrgOS Groups** and the existing `/api/v1/groups` API, with people held in Members and agreed spellings in Aliases. The older Tier-1 Role Register was retired; do not reinstate its list, page or configuration. ERP `org_roles` values are application-access tags, read from Entra ID, and are separate from business-role memberships. Directory job titles alone are not authority for a role. Some legacy resolution paths still use job titles; see [the role-model sweep](docs/ROLE-MODEL-SWEEP.md) for the behavior decisions still needed.

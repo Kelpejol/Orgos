@@ -104,8 +104,9 @@ export const DefinitionPanel = ({ item }) => {
       {c.responsibility_ambiguous && (
         <div style={{ padding: "8px 10px", background: "#FAEEDA", borderRadius: 6,
                       fontSize: 11, color: "#633806", marginTop: 8 }}>
-          “{c.responsibility_as_written}” could be one role or two. Until the Role
-          Catalogue settles it, accepting will record this control as Blocked.
+          The older responsibility line “{c.responsibility_as_written}” could be one role or two.
+          Revise the defining document to state one Control owner from Org Roles.
+          Accepting this older definition records it as Blocked.
         </div>
       )}
       {item.DeficiencyReason && (

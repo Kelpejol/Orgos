@@ -772,9 +772,9 @@ async def run_extraction_from_text(
             procedural_steps_indexed=0,
         )
 
-    # The role vocabulary is everyone's job titles PLUS the OrgOS groups
-    # (e.g. "Compliance team") — both are valid control owners, so the model
-    # maps each control's responsible party to the closest real one.
+    # Legacy proposal prompts still receive directory titles plus Org Roles
+    # names. This is suggestion input, not role validation: only Org Roles
+    # establishes a role, and the closest-title prompt behavior needs separate review.
     job_titles: list[str] = []
     try:
         from graph.client import list_all_job_titles

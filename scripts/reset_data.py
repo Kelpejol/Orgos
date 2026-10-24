@@ -174,7 +174,7 @@ async def main() -> None:
     print()
     print("=" * 60)
     print("  OrgOS Data Reset")
-    print("  ROLE REGISTER WILL NOT BE TOUCHED")
+    print("  ORG ROLES IS NOT INCLUDED IN THE RESET LIST")
     print("=" * 60)
 
     if dry_run:

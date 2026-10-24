@@ -164,8 +164,8 @@ def _find_gaps(
             continue
 
         # Ownership gap — the control's OwnerRole doesn't resolve to anyone.
-        # Ownership is a ROLE (job title / group / alias), never OwnerEntraId
-        # (which the accept cascade leaves empty), so resolve the role.
+        # The Control owner is a role in Org Roles, never OwnerEntraId. The
+        # shared resolver still has a legacy directory-title fallback.
         legacy = [c for c in clause_controls if not c.get("control_id")]
         for ctrl in legacy:
             owner_role = ctrl.get("owner_role") or ""
@@ -175,10 +175,10 @@ def _find_gaps(
             )
             if ctrl["status"] == "Blocked" or unowned:
                 reason = (
-                    "No owner role is set on the control."
+                    "No Control owner is stated on this control."
                     if not owner_role else
-                    f"Role '{owner_role}' does not match any job title or group, "
-                    f"so nobody holds it."
+                    f"Check whether Control owner '{owner_role}' exists in Org Roles "
+                    "and has people assigned."
                 )
                 gaps.append({
                     "standard":    standard,
@@ -189,7 +189,7 @@ def _find_gaps(
                     "severity":    "Major",
                     "finding": (
                         f"Control '{ctrl['statement'][:100]}' for {standard} {clause} "
-                        f"has no assigned owner. {reason}"
+                        f"needs ownership review. {reason}"
                     ),
                     "impact": (
                         "Records cannot be collected. Control is unroutable. "
@@ -392,8 +392,8 @@ async def run_gap_analysis(triggered_by: str = "system") -> dict:
     logger.info(f"Existing open gap keys: {len(existing_keys)}")
 
     # Part 1 — find gaps
-    # Ownership is a role (job title / group / alias) — resolve it once so
-    # role-owned controls aren't all reported as ownership gaps.
+    # Resolve the Control owner's holders once. The shared resolver's legacy
+    # directory-title fallback remains supported here pending a policy decision.
     from ownership.resolver import get_ownership_index
     ownership = await get_ownership_index()
 

@@ -610,8 +610,8 @@ export default function AssignmentOwnership() {
               Assignment & ownership
             </div>
             <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>
-              Zone 2 — JD responsibilities without governing policies, and controls whose
-              owning role's JD doesn't acknowledge the responsibility.
+              Zone 2 — JD responsibilities, conflicts between documents, and library findings
+              that need a document change.
             </div>
           </div>
           <div style={{ padding: "3px 10px", background: "#FCEBEB", borderRadius: 6,

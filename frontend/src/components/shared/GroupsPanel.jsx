@@ -1,8 +1,8 @@
 // =============================================================================
 // GroupsPanel.jsx — manage OrgOS roles and the people who hold them.
 //
-// Compliance/Admin can create groups, add/remove people, and delete groups.
-// A group's name is usable as an owner in documents/controls/records, so any
+// Compliance/Admin can create roles, add/remove people, and delete roles.
+// A role's name is usable as an owner in documents/controls/records, so any
 // member can act on it. Everyone can view; only Compliance/Admin can edit.
 // =============================================================================
 

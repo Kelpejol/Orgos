@@ -195,9 +195,9 @@ async def reassign_control_owner(
     user: CurrentUser = Depends(require_compliance_lead),
 ) -> dict:
     """
-    Reassign a control's owner to a real job title or OrgOS group.
-    A control is Blocked while its role resolves to nobody, so this also
-    re-derives Status: Active once the new role has real holders.
+    Reassign a legacy control's owner string. Defined controls change through
+    their source document; their role holders are managed in Org Roles.
+    The legacy resolver still accepts directory titles and determines Status.
     """
     owner_role = (body.owner_role or "").strip()
     if not owner_role:

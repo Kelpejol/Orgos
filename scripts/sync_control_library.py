@@ -8,7 +8,7 @@
 # current, from its published copy, and compares each control's definition
 # with what is confirmed. New and changed definitions become Zone 1 review
 # items; problems between approved documents become Zone 2 items; Blocked
-# controls are re-checked against the Role Catalogue. Drafts in the library
+# controls are re-checked against Org Roles. Drafts in the library
 # folder are not read — they enter through Document Lifecycle.
 #
 # Use it to retry after an approval whose note says so, or after the Role

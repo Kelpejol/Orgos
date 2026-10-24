@@ -8,7 +8,7 @@
 # so "has this control changed?" is a comparison of two dicts of one shape.
 #
 # Only REVIEWED_FIELDS count as a change, compared as written with spacing
-# ignored. Structured forms (record IDs, clause pairs, the accountable/executing
+# ignored. Structured forms (record IDs, clause pairs, current/legacy owner
 # split) are derived from those texts by the parser; a parser upgrade can
 # change them without the document changing, and that must not put work in
 # front of a reviewer. Nothing here is inferred: a field the document does not
@@ -149,11 +149,11 @@ def decide_status(candidate: dict, resolve: Callable[[str], dict]) -> tuple[str,
     role = (candidate.get("accountable") or "").strip()
     if not role:
         return "Blocked", ("The defining document names no Control owner." if candidate.get("control_owner")
-                           else "The defining document names no Control owner (it has no accountable role either).")
+                           else "The older responsibility line names no Control owner. Revise the defining document.")
     if candidate.get("responsibility_ambiguous"):
         return "Blocked", (
-            f"“{candidate.get('responsibility_as_written')}” could be one role or two; "
-            "a person must settle which is accountable."
+            f"The older responsibility line “{candidate.get('responsibility_as_written')}” could be one role or two; "
+            "revise the defining document to state one Control owner from Org Roles."
         )
     from doc_standards.roles import is_placeholder
     if is_placeholder(role):

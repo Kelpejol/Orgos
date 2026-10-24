@@ -869,7 +869,7 @@ const ExtractionCard = ({
           >
             <Field l="Evidence required" v={item.evidence_required} />
             <Field l="Evidence frequency" v={item.evidence_frequency} />
-            <Field l="Proposed owner" v={item.proposed_owner_role} />
+            <Field l="Proposed control owner" v={item.proposed_owner_role} />
             <Field l="ISO clause" v={item.iso_clause} />
             <Field l="Source clause" v={item.source_clause} />
           </div>

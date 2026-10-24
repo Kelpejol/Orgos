@@ -9,9 +9,10 @@
 #   therefore resolve the role to people. Testing OwnerEntraId directly is
 #   always wrong — it is never populated by the accept cascade.
 #
-#   A role resolves via, in order:
-#     1. an OrgOS group — by its name OR any of its aliases → the members
-#     2. an Entra job title → everyone holding that job title
+#   Org Roles is the role authority. This resolver currently also supports a
+#   legacy directory-title fallback, which is not role recognition under V07:
+#     1. an Org Roles entry — by its name OR aliases → its members
+#     2. an Entra job title → everyone holding that job title (legacy behavior)
 #
 # The index is built once and cached (roles/groups change rarely), so batch
 # callers (Standards Map, Gap Analyzer) resolve hundreds of controls without

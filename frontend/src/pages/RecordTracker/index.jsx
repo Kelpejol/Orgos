@@ -477,8 +477,8 @@ const RecordCard = ({ item, currentOid, isCompliance, onSubmit, onSubmitLink, on
 
   const ob = item.IsObligation;
   const ss = (ob ? STATE_STYLES[item.State] : STATUS_STYLES[item.Status]) || STATUS_STYLES["Pending"];
-  // Ownership resolved server-side: whoever holds the owning role (job
-  // title, group, or alias) can act — OwnerEntraId is never populated.
+  // The server resolves role holders and still supports legacy directory-title
+  // rows. OwnedByMe determines access; OwnerEntraId is not populated here.
   const canAct      = item.OwnedByMe === true;
   const isOwner      = canAct;
   const canSubmit   = canAct && (ob
@@ -555,7 +555,7 @@ const RecordCard = ({ item, currentOid, isCompliance, onSubmit, onSubmitLink, on
                          padding: "1px 6px" }}>ROLE</span>
             )}
             {item.OwnerResolved === false && item.OwnerRole && (
-              <span title="This role doesn't match any job title or registered role, so nobody holds it"
+              <span title="This owner could not be resolved. Check the role and its members in Org Roles."
                 style={{ marginLeft: 5, fontSize: 9, fontWeight: 700, color: "#8A5A00",
                          background: "#FDF3E2", border: "0.5px solid #F0CE94", borderRadius: 20,
                          padding: "1px 6px" }}>UNASSIGNED</span>
@@ -705,12 +705,12 @@ const RecordCard = ({ item, currentOid, isCompliance, onSubmit, onSubmitLink, on
                           border: "1px solid var(--color-border-tertiary)" }}
                  onClick={e => e.stopPropagation()}>
               <label style={{ fontSize: 11, fontWeight: 600, color: "var(--color-text-secondary)" }}>
-                Owner role (job title)
+                Record owner role
               </label>
               <JobTitleInput
                 value={newOwner}
                 onChange={e => setNewOwner(e.target.value)}
-                placeholder={item.OwnerRole || "Job title responsible"}
+                placeholder={item.OwnerRole || "Role in Org Roles responsible for this legacy record"}
                 style={{ width: "100%", padding: "8px 10px", fontSize: 12.5, borderRadius: 8,
                          border: "1.5px solid var(--color-border-tertiary)", marginTop: 4,
                          boxSizing: "border-box", background: "var(--color-background-primary)",
@@ -756,8 +756,8 @@ export default function RecordTracker() {
   const { notify } = useAlert();
   const qc = useQueryClient();
   const { data: all = [], isLoading, error, refetch } = useRecords();
-  // Ownership is resolved server-side (job title, group, or group alias) and
-  // stamped on each item as OwnedByMe — OwnerEntraId is never populated.
+  // The server stamps resolved ownership as OwnedByMe, including its legacy
+  // directory-title fallback. These rows do not carry a person OwnerEntraId.
   const ownsIt = (e) => e.OwnedByMe === true;
 
   const views = useMemo(() => {

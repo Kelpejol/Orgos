@@ -138,7 +138,8 @@ async def list_records(
         items = await get_list_items(_list_id(), _LIST_NAME)
         records = [_sp_to_record(i) for i in items]
 
-        # Ownership is a ROLE (job title / group / alias) — OwnerEntraId is
+        # Ownership is the Control owner's role for obligations; the shared
+        # resolver still supports legacy job-title rows. OwnerEntraId is
         # never populated. Resolve once and stamp each item so the UI can gate
         # actions without re-deriving membership client-side.
         try:
@@ -436,7 +437,9 @@ async def reassign_record_owner(
     user: CurrentUser = Depends(require_compliance_lead),
 ) -> dict:
     """
-    Reassign the record owner role to a (real) job title. Compliance only.
+    Reassign a legacy record's owner role. Compliance only. Defined obligations
+    keep the Control owner stated in their defining document; role holders are
+    managed in Org Roles. This endpoint does not validate legacy role names.
     """
     owner = (body.owner_role or "").strip()
     if not owner:

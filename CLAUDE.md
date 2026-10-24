@@ -1,6 +1,17 @@
 # CLAUDE.md — OrgOS: Complete Project Reference
 **Dragnet Solutions Limited | GRC Orchestration Module | DRG-AUTO-BRIEF-GRC-01-26**
 
+> **Current role model (24 October 2026):** Org Roles is the business-role register,
+> stored in **OrgOS Groups**, with members and agreed aliases. It was loaded from
+> job descriptions and staff-register titles; no organogram or separate Role
+> Catalogue is required. Each control states one **Control owner**; a document
+> cover states its **Document owner**. Directory job titles and ERP `org_roles`
+> access tags do not establish a business role. References below to the former
+> Tier-1 Role Register, its schemas and `/api/v1/grc/roles` routes are historical;
+> that register was retired. Older Accountable / Executing document forms remain
+> readable. See [ROLE-MODEL-SWEEP.md](docs/ROLE-MODEL-SWEEP.md) for remaining
+> implementation differences and decisions; this note supersedes older role guidance below.
+
 ---
 
 ## Table of Contents

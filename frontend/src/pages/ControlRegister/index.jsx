@@ -111,17 +111,17 @@ export default function ControlRegister() {
         <Field l="ISO clause"      v={selected.ISOClause} />
         <Field l="Source document" v={selected.SourceDocument} />
         {selected.SourceClause && <Field l="Source clause"  v={selected.SourceClause} />}
-        <Field l="Owner role"      v={<OwnerDisplay item={selected} />} />
+        <Field l="Control owner"      v={<OwnerDisplay item={selected} />} />
         {isCompliance && (
           reassigning ? (
             <div style={{ margin: "6px 0 10px", padding: "10px 12px", borderRadius: 8,
                           background: "var(--color-background-secondary)",
                           border: "1px solid var(--color-border-tertiary)" }}>
               <div style={{ fontSize: 11, fontWeight: 600, color: "var(--color-text-secondary)", marginBottom: 4 }}>
-                New owner role
+                New Control owner
               </div>
               <JobTitleInput value={newOwner} onChange={(e) => setNewOwner(e.target.value)}
-                placeholder={selected.OwnerRole || "Role or job title"}
+                placeholder={selected.OwnerRole || "Role in Org Roles"}
                 style={{ width: "100%", padding: "8px 10px", fontSize: 12.5, borderRadius: 8,
                          border: "1.5px solid var(--color-border-tertiary)", boxSizing: "border-box",
                          background: "var(--color-background-primary)", color: "var(--color-text-primary)" }} />
@@ -170,7 +170,8 @@ export default function ControlRegister() {
           <div style={{ marginTop: 14, padding: "10px 12px", background: "#FCEBEB",
                         borderRadius: 8, fontSize: 12, color: "#791F1F",
                         border: "1px solid #F09595" }}>
-            This control is Blocked — the role "{selected.OwnerRole}" doesn't resolve to anyone. Set it to a real job title, or create a role with that name under Org roles → Roles, then reassign this control.
+            This control is Blocked. Check the Control owner "{selected.OwnerRole}" in Org Roles and
+            assign the people who hold it. If the owner name is wrong, choose a role that exists there.
           </div>
         )}
       </div>

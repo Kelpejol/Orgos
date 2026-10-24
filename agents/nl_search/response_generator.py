@@ -250,7 +250,7 @@ def _context_from_compliance(result: dict) -> str:
             lines.append(f"ISO clause: {iso}")
         if risk:
             lines.append(f"Risk if fails: {risk}")
-        lines.append(f"Type: {ctype or 'N/A'} | Owner role: {owner_str}")
+        lines.append(f"Type: {ctype or 'N/A'} | Control owner: {owner_str}")
         ev_status = _record_status(ev)
         lines.append(f"Record status: {ev_status}")
         if ev:
@@ -497,7 +497,7 @@ def _context_from_compliance(result: dict) -> str:
                 parts.append(f"Next review: {review}")
             if stds:
                 parts.append(f"Standards: {stds}")
-            parts.append(f"Owner: {own}")
+            parts.append(f"Document owner: {own}")
             if parts:
                 lines.append(" | ".join(parts))
             if sp_url:
@@ -519,7 +519,7 @@ def _context_from_compliance(result: dict) -> str:
                     parts.append(f"Status: {status}")
                 if review:
                     parts.append(f"Next review: {review}")
-                parts.append(f"Owner: {own}")
+                parts.append(f"Document owner: {own}")
                 lines.append(" | ".join(parts))
             lines.append("")
 

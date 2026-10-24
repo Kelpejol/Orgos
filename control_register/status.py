@@ -1,9 +1,9 @@
 # =============================================================================
 # control_register/status.py — re-check Active / Blocked when roles change
 #
-# A control is Active only when its accountable role is recognised (an OrgOS
-# group today; the Role Catalogue once the organogram is in). When someone
-# creates, renames or changes a group on Org Roles, every confirmed control
+# A control is Active only when its Control owner is recognised in Org Roles,
+# by its name or an agreed alias. When someone creates, renames or changes
+# a role in Org Roles, every confirmed control
 # is re-checked straight away — nobody has to run a script. The daily
 # evidence run re-checks too, as a safety net.
 #

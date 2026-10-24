@@ -33,8 +33,8 @@ async def ownership_summary(
 ) -> dict:
     """
     How many controls and record items each role owns, keyed by the
-    lower-cased role name. Lets the UI show ownership load per job title /
-    group — and surface roles that own nothing before the Gap Analyzer does.
+    lower-cased stored owner name. The UI uses this for Org Roles entries and
+    legacy directory-title owner strings; it does not validate role recognition.
     """
     from config import settings
     from graph.client import get_list_items
@@ -68,7 +68,7 @@ async def list_job_titles(
     user: CurrentUser = Depends(get_current_user),
 ) -> list[str]:
     """
-    The distinct real Dragnet job titles — the role vocabulary used for control
-    ownership. Available to any authenticated user (reviewers assign owners).
+    Distinct directory job titles for legacy suggestion pickers. Available to
+    authenticated users; a returned title does not establish a role in Org Roles.
     """
     return await list_all_job_titles()

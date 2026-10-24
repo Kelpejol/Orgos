@@ -1,14 +1,12 @@
 # =============================================================================
-# groups/service.py — OrgOS-managed people groups
+# groups/service.py — Org Roles, stored through the groups API
 #
-# A group is a named set of people (e.g. "Compliance Team") that can be used as
-# an owner in documents/controls/records — the same name is written in docs, so
-# any member can act on it and (later) all members can be notified.
+# A role has a name, agreed aliases and the people who hold it. Documents name
+# these roles as their Document owner or a control's single Control owner.
 #
-# Storage: a dedicated SharePoint list "OrgOS Groups", AUTO-PROVISIONED — this
-# module resolves the list by name and creates it (with columns) on first use,
-# so no manual list setup or .env change is required. The list id is cached in
-# process. Item CRUD reuses graph.client; only list creation is done here.
+# Storage remains "OrgOS Groups". First use attempts list/column setup; if the
+# app lacks permission an admin must provision them. The list id is cached.
+# Item CRUD reuses graph.client; list/column setup is done here.
 # =============================================================================
 
 import json
@@ -224,7 +222,7 @@ async def get_group(group_id: str) -> dict:
 
 
 async def group_names() -> list[str]:
-    """Active group names — the owner vocabulary contribution from groups."""
+    """Active Org Roles names for owner suggestions."""
     return [g["name"] for g in await list_groups() if g["name"]]
 
 
@@ -262,9 +260,9 @@ async def create_group(name: str, description: str, category: str,
                        aliases: Optional[list[str]] = None) -> dict:
     name = (name or "").strip()
     if not name:
-        raise ValueError("Group name is required.")
+        raise ValueError("Role name is required.")
     if await find_group_by_name(name):
-        raise ValueError(f"A group named '{name}' already exists.")
+        raise ValueError(f"A role named '{name}' already exists.")
 
     lid = await get_groups_list_id()
     fields = {
@@ -289,10 +287,10 @@ async def update_group(group_id: str, description: Optional[str],
     if name is not None:
         new_name = name.strip()
         if not new_name:
-            raise ValueError("Group name cannot be empty.")
+            raise ValueError("Role name cannot be empty.")
         existing = await find_group_by_name(new_name)
         if existing and existing["id"] != group_id:
-            raise ValueError(f"A group named '{new_name}' already exists.")
+            raise ValueError(f"A role named '{new_name}' already exists.")
         fields["Title"] = new_name
     if description is not None:
         fields["Description"] = description

@@ -7,6 +7,7 @@
 // Depends on: hooks/useGrc.js, components/shared/StatusBadge, Forms
 // =============================================================================
 
+import { reviewOutcomeLabel } from "../../components/shared/reviewWording.js";
 import { useState, useMemo } from "react";
 import StatusBadge from "../../components/shared/StatusBadge.jsx";
 import { Field } from "../../components/shared/Forms.jsx";
@@ -159,7 +160,7 @@ const EvidencePanel = ({ item }) => {
           <Field l="Format" v={item.EvidenceFormat} />
           <Field l="Frequency" v={item.EvidenceFrequency} />
           <Field l="Collection" v={item.EvidenceCollectionMethod} />
-          <Field l="Owner" v={item.EvidenceOwnerRole} />
+          <Field l="Record owner (legacy extraction)" v={item.EvidenceOwnerRole} />
           {item.EvidenceValidationCriteria && (
             <Field l="Validation" v={item.EvidenceValidationCriteria} />
           )}
@@ -527,7 +528,7 @@ const QueueCard = ({ item, isCompliance, onDecide, isPending }) => {
                   marginBottom: 4,
                 }}
               >
-                {item.ReviewStatus} — {item.Decision}
+                {reviewOutcomeLabel(item.ReviewStatus, item.Decision)}
               </div>
               {item.DecisionRationale && (
                 <div
@@ -583,7 +584,7 @@ const QueueCard = ({ item, isCompliance, onDecide, isPending }) => {
                 )}
                 {item.ISOClause && <Field l="ISO clause" v={item.ISOClause} />}
                 {item.ProposedOwnerRole && (
-                  <Field l="Proposed owner" v={item.ProposedOwnerRole} />
+                  <Field l="Proposed control owner" v={item.ProposedOwnerRole} />
                 )}
                 {item.SourceType && (
                   <Field l="Source type" v={item.SourceType} />

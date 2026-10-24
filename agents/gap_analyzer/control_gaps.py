@@ -12,7 +12,7 @@
 # definitions (its owner settles them together), one per control no procedure
 # carries out, or that states no evidence at all.
 #
-# The fix is always to a document or the Role Catalogue, so each gap carries a
+# The fix is always to a document or Org Roles, so each gap carries a
 # stated remediation; none is written by a model. Pure: controls in, gaps out.
 # =============================================================================
 
@@ -75,7 +75,7 @@ def find_control_gaps(controls: list[dict]) -> list[dict]:
     # ── ownership: one gap per defining document ───────────────────────────
     # Role spellings vary too much ("DPO", "DPO + Legal", prose) for one gap
     # per role to group anything; the document is where the fix is decided —
-    # its owner either confirms the roles for the Role Catalogue or corrects
+    # its owner either confirms the roles in Org Roles or corrects
     # the text.
     blocked: dict[str, list[dict]] = defaultdict(list)
     for c in defined:
@@ -104,7 +104,7 @@ def find_control_gaps(controls: list[dict]) -> list[dict]:
             f"Controls: {_ids(group)}.",
             "Nobody is answerable for these controls, so their evidence cannot be routed and an "
             "auditor will find them unowned.",
-            "Add each real role to the Role Catalogue (or as an alias of the role it means). "
+            "Add each real role to Org Roles (or agree its spelling as an alias of an existing role). "
             f"Where a control names no role, several, or a misspelt one, revise {doc} to state one "
             "Control owner (one role).",
             ["Document Owner", "Compliance Executive (QMS & NDPA)"],

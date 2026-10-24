@@ -1,7 +1,7 @@
 # =============================================================================
 # doc_standards/roles.py — does this role exist, and if not, which one is meant?
 #
-# Org Roles is the Role Register (until the organogram fills it). A role named in
+# Org Roles is the role register, loaded from JDs and staff titles. A role named in
 # a controlled document must be one of its roles — by name, or by an alias someone
 # has already agreed (CDI V07). A Microsoft job title alone is never a role.
 #

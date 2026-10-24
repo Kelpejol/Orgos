@@ -412,12 +412,12 @@ export const orgRolesApi = {
   list: () => apiClient.get("/api/v1/org-roles").then((r) => r.data),
   ownershipSummary: () =>
     apiClient.get("/api/v1/org-roles/ownership-summary").then((r) => r.data),
-  // Distinct real job titles — the role vocabulary for control ownership.
+  // Legacy directory-title suggestions; Org Roles establishes business roles.
   jobTitles: () => apiClient.get("/api/v1/org-roles/job-titles").then((r) => r.data),
 };
 
 // =============================================================================
-//  Groups — OrgOS-managed people groups usable as owners in documents.
+//  Org Roles — business roles and holders; groups API paths stay unchanged.
 // =============================================================================
 
 export const groupsApi = {

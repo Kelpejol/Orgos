@@ -1,7 +1,7 @@
 # =============================================================================
-# groups/router.py — OrgOS people groups API
-# GET    /api/v1/groups                       list groups (any authenticated user)
-# GET    /api/v1/groups/names                 active group names (owner vocabulary)
+# groups/router.py — Org Roles API (groups paths retained for compatibility)
+# GET    /api/v1/groups                       list roles (any authenticated user)
+# GET    /api/v1/groups/names                 active role names (owner vocabulary)
 # POST   /api/v1/groups                       create (Compliance/Admin)
 # PATCH  /api/v1/groups/{id}                  rename/edit (Compliance/Admin)
 # POST   /api/v1/groups/{id}/members          add members (Compliance/Admin)
@@ -72,7 +72,7 @@ async def list_groups(user: CurrentUser = Depends(get_current_user)) -> list[dic
     try:
         return await service.list_groups()
     except Exception as exc:
-        _handle(exc, "list groups")
+        _handle(exc, "list roles")
 
 
 @router.get("/names")
@@ -80,7 +80,7 @@ async def list_group_names(user: CurrentUser = Depends(get_current_user)) -> lis
     try:
         return await service.group_names()
     except Exception as exc:
-        _handle(exc, "list group names")
+        _handle(exc, "list role names")
 
 
 @router.get("/{group_id}")
@@ -88,7 +88,7 @@ async def get_group(group_id: str, user: CurrentUser = Depends(get_current_user)
     try:
         return await service.get_group(group_id)
     except Exception as exc:
-        _handle(exc, f"get group {group_id}")
+        _handle(exc, f"get role {group_id}")
 
 
 @router.post("", status_code=201)
@@ -109,7 +109,7 @@ async def create_group(
         recheck_soon()
         return result
     except Exception as exc:
-        _handle(exc, "create group")
+        _handle(exc, "create role")
 
 
 @router.patch("/{group_id}")
@@ -123,7 +123,7 @@ async def update_group(
         recheck_soon()
         return result
     except Exception as exc:
-        _handle(exc, f"update group {group_id}")
+        _handle(exc, f"update role {group_id}")
 
 
 @router.post("/{group_id}/members")
@@ -163,4 +163,4 @@ async def delete_group(
         await service.soft_delete_group(group_id)
         recheck_soon()
     except Exception as exc:
-        _handle(exc, f"delete group {group_id}")
+        _handle(exc, f"delete role {group_id}")

@@ -1,9 +1,8 @@
 // =============================================================================
 // pages/OrgRoles/index.jsx
-// Read-only directory of Dragnet users and their org_roles (orgos-admin,
-// compliance, and any other Dragnet-wide tags), read live from Entra ID.
-// OrgOS never assigns org_roles — that's exclusively a Dragnet ERP admin
-// panel action. Compliance/OrgOS Admin only.
+// Org Roles is the business-role register with members and agreed aliases.
+// The People tab separately shows Entra directory details and ERP access tags
+// (org_roles); only the ERP assigns those application-access tags.
 // =============================================================================
 
 import { useMemo, useState } from "react";
@@ -118,7 +117,7 @@ export default function OrgRoles() {
         type="text"
         value={search}
         onChange={(e) => setSearch(e.target.value)}
-        placeholder="Search people, job title, department, or roles..."
+        placeholder="Search people, job title, department, or access tags..."
         style={{
           width: "100%",
           fontSize: 13,
@@ -140,7 +139,7 @@ export default function OrgRoles() {
           message={
             search
               ? "No people match your search."
-              : "No users with an org_role assigned yet."
+              : "No people with access tags assigned yet."
           }
         />
       )}
@@ -163,7 +162,7 @@ export default function OrgRoles() {
             >
               <thead>
                 <tr style={{ background: "var(--color-background-secondary)" }}>
-                  {["Name", "Email", "Job title", "Department", "Owns", "Org roles"].map((h) => (
+                  {["Name", "Email", "Job title", "Department", "Owns", "Access tags"].map((h) => (
                     <th
                       key={h}
                       style={{

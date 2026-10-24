@@ -1083,7 +1083,8 @@ def _extraction_outcome_note(ex: dict) -> str:
                 f"defining document to be approved, and enter review then: {listed}.")
     if focus and not focus.get("defines") and not focus.get("carries_out"):
         return (f"[{today}] ℹ No controls found in this document's CDI control pattern "
-                "(Control ID heading with Requirement / Trigger / Accountable / Evidence … fields), "
+                "(Control ID heading with Requirement / Trigger / Control owner / Evidence … fields; "
+                "older Accountable / Executing fields are also supported), "
                 "so nothing was raised for review. If it should define or carry out controls, "
                 "revise it to the pattern.")
     return ""

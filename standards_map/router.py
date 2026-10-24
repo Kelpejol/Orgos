@@ -44,8 +44,8 @@ def _calculate_traffic_light(
     `clause_records` must already be scoped to `controls` (the caller indexes
     records by control id — this avoids an O(controls × records) scan here).
 
-    Ownership is judged by resolving the control's OwnerRole (job title, group
-    name, or group alias) to real people via `ownership` — NOT by OwnerEntraId,
+    Ownership is judged by resolving the Control owner's OwnerRole to people
+    via `ownership`, whose legacy directory-title fallback remains — NOT by OwnerEntraId,
     which the accept cascade never populates.
     """
     if not controls:
