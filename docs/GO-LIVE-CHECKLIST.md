@@ -8,7 +8,7 @@ Everything below is built and tested on the `dev` branch. Nothing has been writt
 
 | Item | Why | Format |
 |---|---|---|
-| **The organogram** | It becomes the Role Catalogue. Until then almost every control is *Blocked* (its accountable role isn't recognised), and the ~110 role spellings in the documents can't be resolved. | Any of: Excel/CSV, a PDF chart, or a list. For each role: **title, department, reports to, current holder (name or email), acting holder and until when, vacant or not**. |
+| **Roles in Org Roles** | Org Roles is the role register, loaded from the job descriptions and the staff register (no organogram needed). A control stays *Blocked* until its document names a role that exists there. | Done: roles loaded and people added. Still to do: the documents must name real roles (V07 shows which and suggests the roles that exist). |
 
 That is the only input needed to finish building. Everything else uses the defaults already agreed.
 
@@ -132,7 +132,7 @@ Add one flow on the **Evidence Tracker** list: when **State** changes to *Missin
 
 After the first run, Gap Analysis and the review queue will show them; listed here so nobody is surprised:
 
-- **101 controls name no accountable role**, and many name several jointly ("DPO + Legal"). CDI expects one accountable role per control.
+- **Many controls name no Control owner, or several jointly** ("DPO + Legal"), or write a field name ("Control Owner") where a role belongs. The CDI now has exactly one Control owner per control, a role that exists in Org Roles.
 - **302 of 347 controls leave CDI fields unstated** — mostly mapping, failure route and exception route.
 - **Two documents have no document code:** *IT and Infrastructure Control Standard* ("Not assigned") and *Context and Interested Parties Procedure*.
 - **DP-002 was retired** but three procedures still cite it.
@@ -141,9 +141,9 @@ After the first run, Gap Analysis and the review queue will show them; listed he
 
 ---
 
-## 8. Still to build — after the organogram arrives
+## 8. Still to build
 
-- **Role Catalogue:** roles with kind (positional, functional, team, system), status, reports-to and acting holders; role assignments by scope; seeded from the organogram and the documents' Roles tables.
+- **Role Catalogue:** roles with kind (positional, functional, team, system), status, reports-to and acting holders; role assignments by scope; seeded from Org Roles and the documents' Roles tables.
 - **Role resolution in the review queue** for unrecognised role spellings, and scored role suggestions a reviewer accepts with one click (accepting adds an alias, so the same spelling resolves next time).
 
 Once those are in, Blocked controls clear themselves on the next sync.

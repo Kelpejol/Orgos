@@ -1,5 +1,8 @@
 # Document standards engine and role resolution — design for discussion
 
+> **Update, 22–24 Oct 2026.** Parts of this design are superseded. Bobby's role model replaced Accountable/Executing with one **Control owner** per control and a **Document owner** for the document; **Org Roles is the role register** (loaded from the job descriptions and staff register, so no organogram is needed); and V07 is built. See `ROLE-MODEL-CHANGE.md` for the current design. Where this document says otherwise, the newer one is right.
+
+
 *21 Oct 2026. For you to mark up, and to take the "Ask Bobby" questions to him.*
 
 > **Built since this was written (21 Oct):** the Document Standards page (see HOW-ORGOS-WORKS §1c), with checks V01 to V04, V08 to V12, V14, V15, V22 and V23, and Convert to CDT with its five proofs. Still to build: V05 to V07 (need the organogram), V13, V16 to V21, V24, wiring the checks into the Lifecycle Review gate, and everything about roles in Part B.

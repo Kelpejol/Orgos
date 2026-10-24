@@ -22,14 +22,14 @@ Status: ✅ done · 🔨 being built · ⏳ waiting · ☐ not started
 |---|---|---|---|
 | 1 | Do V01–V24 replace the old CDI-01 to 15 checker? | Switching the old checker off | ⏳ |
 | 2 | Were any documents approved before OrgOS (a "Legacy" tier)? | How strictly existing documents are held | ⏳ |
-| 3 | Who is **Control Owner**, and where is it recorded? | 8 Blocked controls | ⏳ |
-| 4 | Do Document Owner, Control Owner and Custodian sit in the Role Register? | V07; resolving 24 controls | ⏳ |
+| 3 | Who is **Control Owner**, and where is it recorded? | 8 Blocked controls | ✅ answered: one Control owner per control, in the control itself |
+| 4 | Do Document Owner, Control Owner and Custodian sit in the Role Register? | V07; resolving 24 controls | ✅ answered: Control owner and Document owner only; roles live in Org Roles |
 | 5 | Implement the two-step approval route (First Pass, Final) by domain? | V05, V06 | ⏳ |
 | 6 | Which libraries are the **published** and **archive** libraries? | Publishing approved copies properly | ⏳ |
-| 7 | Do "platform check Vnn" entries name the validation platform itself? | Resolving the executing role | ⏳ |
-| 8 | **The organogram** (via Daniel and Wani) | Everything in section 2 | ⏳ |
+| 7 | Do "platform check Vnn" entries name the validation platform itself? | Resolving the executing role | ✅ no longer needed (no executing role) |
+| 8 | **The organogram** (via Daniel and Wani) | Not needed: Org Roles is loaded from the job descriptions and staff register | ✅ dropped |
 
-## 2. Waiting on the organogram
+## 2. Was waiting on the organogram (no longer: Org Roles is loaded from the job descriptions and staff register)
 - ⏳ The Role Catalogue and Role Register: titles, holders, acting holders, vacancies.
 - ⏳ Controls with an official accountable role turn Active by themselves.
 - ⏳ Resolving a **person** for each role.

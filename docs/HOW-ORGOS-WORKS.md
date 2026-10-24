@@ -31,14 +31,14 @@ Because the earlier library sync **didn't look at approval**; it read whatever w
 The full scenario list is in section 7.
 
 ### "Does the control pattern have to be a standard we follow when writing documents?"
-**Yes.** OrgOS doesn't "understand" text; it recognises **labels**. A control is a line with its ID (e.g. `ACS-L3-01`) followed by labelled lines: `Requirement:`, `Trigger:`, `Accountable / Executing:`, `Evidence:`, `Risk:`, `Failure route:`, `Exception route:`, `Mapping:`. Your CDI v06 Standard already uses this pattern, so it's not new work. It just has to be followed every time. Section 11 is the 12-rule checklist for authors.
+**Yes.** OrgOS doesn't "understand" text; it recognises **labels**. A control is a line with its ID (e.g. `ACS-L3-01`) followed by labelled lines: `Requirement:`, `Trigger:`, `Control owner:`, `Evidence:`, `Risk:`, `Failure route:`, `Exception route:`, `Mapping:`. Your CDI v06 Standard already uses this pattern, so it's not new work. It just has to be followed every time. Section 11 is the 12-rule checklist for authors.
 
-### "Is the Responsibilities section where the controls, or the Accountable role, are checked?"
+### "Is the Responsibilities section where the controls, or the Control owner, are checked?"
 **No, they're two different things:**
 - **The Responsibilities section** (CDI-05) is a **document-level** list near the front: *who has which duties under this document* (Document Owner, Information Security Officer, …). CDI-05 only checks that the section exists.
-- **The Accountable / Executing line** sits **inside each control**. It says who answers for, and who carries out, *that one control*. It's what decides whether a control is **Active** or **Blocked** (section 10).
+- **The Control owner line** sits **inside each control**. It names the **one role** answerable for *that one control* (and for producing its evidence). It's what decides whether a control is **Active** or **Blocked** (section 10).
 
-The reader also uses the Responsibilities (Roles) table: its role names help it work out where "Accountable / Executing" splits into two roles, and later they'll seed the Role Catalogue.
+The reader also uses the Responsibilities (Roles) table. Every role named anywhere in the document must be a role in **Org Roles**; the check (V07) says which are not and suggests the roles that exist.
 
 ### "What does each field mean — trigger, failure route, exception route…?"
 Imagine the control *"lock the office door"*:
@@ -47,8 +47,8 @@ Imagine the control *"lock the office door"*:
 |---|---|---|
 | **Requirement** | The rule | The last person out shall lock the front door |
 | **Trigger** | When the rule applies | Every evening, when the last person leaves |
-| **Accountable** | The one person who answers for it | Office Manager |
-| **Executing** | Who actually does it | Whoever leaves last |
+| **Control owner** | The one role answerable for it, and for its evidence | Office Manager |
+| | *(There is no separate "Executing" role: older documents that still say "Accountable / Executing" keep working and are told to move to Control owner.)* | |
 | **Evidence** | The proof it happened | The lock-up sheet, signed (REC-0123) |
 | **Risk** | Why the rule exists; what goes wrong without it | Break-in and stolen laptops |
 | **Failure route** | What to do **when it went wrong** | If found unlocked: check the CCTV, report an incident, the Office Manager follows up |
@@ -100,7 +100,7 @@ The CDI checks run in Lifecycle **before** approval. They make sure a document i
 7. [What could go wrong when reading the library](#7-what-could-go-wrong-when-reading-the-library)
 8. [The review pages: what you see and what the colours mean](#8-the-review-pages--what-you-see-and-what-the-colours-mean)
 9. [After you accept: registers, evidence, gaps](#9-after-you-accept--registers-evidence-gaps)
-10. [Roles and the organogram](#10-roles-and-the-organogram)
+10. [Roles](#10-roles)
 11. [Rules for writing documents so OrgOS reads them correctly](#11-rules-for-writing-documents-so-orgos-reads-them-correctly)
 12. [What was fixed today, and what's next](#12-what-was-fixed-today-and-whats-next)
 13. [Words](#13-words)
@@ -126,7 +126,7 @@ The CDI checks run in Lifecycle **before** approval. They make sure a document i
      NEW READER — the approved library (every Active document) is read:
        • this document's new / changed controls ──▶ Extraction Review (by Control ID)
        • problems against other APPROVED documents ──▶ Assignment & Ownership
-       • Blocked controls re-checked against the Role Catalogue
+        • Blocked controls re-checked against Org Roles
                                ▼
      You accept ──▶ Control Register · Evidence Tracker · Audit Log ──▶ Gap Analysis · Standards Map
 ```
@@ -345,7 +345,7 @@ This is control **ACS-L3-01** from your screenshot, field by field.
 | **Title** | A short name | *Identity and account inventory* |
 | **Requirement** | **The rule itself**: who must do what, by when | *The Information Security Officer shall maintain a unique … inventory … no later than 24 hours after creation …* |
 | **Trigger** | **When the rule kicks in**: an event or a schedule | *Creation; authoritative HR or approved app/service event.* |
-| **Accountable / Executing** | **Accountable** = answers for it (one role). **Executing** = does the work. | *Information Security Officer; IT and application owners.* |
+| **Control owner** | The **one** role answerable for the control and its evidence. It must be a role that exists in Org Roles. | *Information Security Officer* |
 | **Evidence** | **The proof the rule was followed**, ideally with Record IDs | *Account inventory entry and identity creation log. Record IDs: REC-0691; REC-0692.* |
 | **Risk** | **What goes wrong if the rule isn't followed**, i.e. why the control exists | *An account could remain unidentified … resulting in uncontrolled privilege …* |
 | **Failure route** | **What happens when the control has failed**: the clean-up and who fixes it | *Quarantine an unowned identity; IT reconciles the inventory and the ISO opens a gap …* |
@@ -359,7 +359,7 @@ In short, the difference between the last few:
 - **Exception route** answers *how you're allowed not to follow it*.
 - **Mapping** answers *which ISO / NDPA clauses it counts towards*.
 
-**Required fields** (CDI): Requirement, Trigger, Accountable / Executing, Evidence, Risk, Failure route, Exception route, Mapping. Title and Governing authority are optional. If any required field is missing, the card is marked **Fields missing** (shown as "Deficient" until the frontend update is deployed), with the red note *"The defining document does not state: …"*.
+**Required fields** (CDI): Requirement, Trigger, Control owner, Evidence, Risk, Failure route, Exception route, Mapping. Title and Governing authority are optional. If any required field is missing, the card is marked **Fields missing** (shown as "Deficient" until the frontend update is deployed), with the red note *"The defining document does not state: …"*.
 
 ---
 
@@ -369,7 +369,7 @@ In short, the difference between the last few:
 
 ### What it recognises
 1. **A control heading:** a line that is a Control ID, optionally followed by a title, e.g. `ACS-L3-01 Identity and account inventory`. The ID looks like `ABC-01`, `ACS-L3-01` or `IT-09`. Word heading styles aren't needed.
-2. **Labelled fields under it:** `Requirement:`, `Trigger:`, `Accountable / Executing:`, `Evidence:`, `Risk:`, `Failure route:`, `Exception route:`, `Mapping:`, `Governing authority:`, and the common alternatives (e.g. "Control statement", "Risk treated", "Standards mapping").
+2. **Labelled fields under it:** `Requirement:`, `Trigger:`, `Control owner:`, `Evidence:`, `Risk:`, `Failure route:`, `Exception route:`, `Mapping:`, `Governing authority:`, and the common alternatives (e.g. "Control statement", "Risk treated", "Standards mapping").
    - Labels can be paragraphs, a two-column table, or columns of a table with one control per row (first column "Control ID", plus a requirement column).
 3. **Record IDs:** any `REC-` followed by four digits, in Evidence, in a "Record IDs" field, or in a records table.
 4. **Procedures that carry out a control:** a heading ending "(ACS-L3-01)", a line "Implements ACS-L3-01, ACS-L3-02", "This procedure implements …", a "Controls implemented" field, or a control-map table. Ranges like "CM-01 to CM-06" work.
@@ -455,7 +455,7 @@ These items **close themselves** on the next sync once the documents are fixed.
 ## 9. After you accept: registers, evidence, gaps
 
 1. **Control Register:** one row per Control ID, created or updated, never duplicated.
-   - **Active** if its accountable role is recognised.
+    - **Active** if its Control owner is a role in Org Roles.
    - **Blocked**, with the reason, if not. Today most will be Blocked (section 10).
 2. **Evidence Tracker:** one *evidence obligation* per record the control names, e.g. "REC-0691 must exist for ACS-L3-01".
    - It starts **Unscheduled** until Compliance sets how often it's checked. OrgOS suggests a frequency for 62; it never guesses the rest.
@@ -467,16 +467,16 @@ These items **close themselves** on the next sync once the documents are fixed.
 
 ---
 
-## 10. Roles and the organogram
+## 10. Roles
 
-**Today** a role counts as recognised only if it matches an **OrgOS group** (Org Roles page). A Microsoft job title alone doesn't count; Bobby was clear on that. Documents also use roles like *"Accountable Department Head"*, or two roles at once (*"Information Security Officer; HR and application owner"*). So **most accepted controls will be Blocked for now.** That's safe: the control is recorded, evidence is tracked, and the reason is shown.
+**A role counts as recognised only if it is a role in Org Roles** (by its name or an agreed alias). A Microsoft job title alone doesn't count; Bobby was clear on that. A name like *"Control Owner"*, *"Document Owner"* or *"Custodian Role"* is the name of a field, not a role, so a control that says it stays **Blocked** until its document names a real role. That's safe: the control is recorded, evidence is tracked, and the reason is shown.
 
-**When the organogram arrives:**
-1. It becomes the **Role Catalogue**: each role with its holder, any acting holder and until when, vacancy, and who it reports to. The *Roles* tables in the documents are added with their duty descriptions.
-2. **Different spellings are linked to one role.** "Head of IT", "IT Head" and "Head of IT and Infrastructure" become one. Spellings OrgOS can't place go to Assignment & Ownership with suggested matches. Choosing one teaches OrgOS that spelling for next time.
+**How a document gets its roles right:**
+1. **Org Roles is the role register.** It is loaded from the job descriptions and the staff register; people are added to roles. There is no separate organogram step.
+2. **While a document is in Review, the Document standard panel (V07) lists every role it names that does not exist**, with the nearest existing roles. The author can **Use this role** (the document text is changed to the official name), choose another, **keep the wording as an alias** (Compliance), or **Create role** (opens Org Roles with the name filled in).
 3. **The next library sync re-checks every Blocked control** and turns it Active by itself if its role is now recognised. Nothing needs accepting again.
-4. **Real people become answerable:** evidence reminders and gaps go to actual people. When someone changes job, you change the role holder once and every control follows.
-5. **What's still Blocked is a real document problem** (no accountable role, or two named) and becomes a gap for the document owner.
+4. **Real people become answerable:** evidence reminders and gaps go to the people who hold the role. When someone changes job, you change the role's members once and every control follows.
+5. **What's still Blocked is a real document problem** (no Control owner, a field name in its place, or a role that doesn't exist) and becomes a gap for the document owner.
 
 **What we need:** for each role, its title, department, who it reports to, who holds it (name or email), whether it's vacant, and who is acting in it and until when. Any format is fine.
 
@@ -489,8 +489,8 @@ These items **close themselves** on the next sync once the documents are fixed.
 1. **Every document has a code**, e.g. `DRG-ISMS-STD-IDL`, in the header's *Document code* field. Never "Not assigned".
 2. **Each control starts with its ID on its own line**, optionally followed by the title: `ACS-L3-01 Identity and account inventory`.
 3. **Use the standard labels**, spelled exactly, each followed by a colon:
-   `Requirement:` · `Trigger:` · `Accountable / Executing:` · `Evidence:` · `Risk:` · `Failure route:` · `Exception route:` · `Mapping:` · `Governing authority:` (optional)
-4. **One accountable role**, named as in the organogram. Use "Accountable: X; Executing: Y", not "X and Y".
+   `Requirement:` · `Trigger:` · `Control owner:` · `Evidence:` · `Risk:` · `Failure route:` · `Exception route:` · `Mapping:` · `Governing authority:` (optional)
+4. **One Control owner**, named exactly as the role is in Org Roles. One role, not two ("X and Y").
 5. **Cite records by ID**: `Record IDs: REC-0691; REC-0692`.
 6. **Mapping names the clause**: `Mapping: ISO 27001 A.5.16; NDPA s.39`.
 7. **A control is defined in exactly one document**, normally the Standard. **Procedures cite it by ID** (`Implements ACS-L3-01`). If they copy the requirement, they copy it word for word.
