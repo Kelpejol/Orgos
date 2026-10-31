@@ -23,8 +23,8 @@ const COLS = [
   { key: "title",         label: "Title" },
   { key: "type",          label: "Type" },
   { key: "department",    label: "Dept" },
-  { key: "owner",         label: "Owner" },
-  { key: "current_version", label: "Rev", mono: true },
+  { key: "owner",         label: "Owner (person)" },
+  { key: "current_version", label: "Version", mono: true },
   { key: "next_review_date", label: "Next review" },
   {
     key: "linked_controls_count",
@@ -235,20 +235,10 @@ export default function DocumentRegister({ go }) {
         <div>
           <div style={{ fontSize: 17, fontWeight: 600, marginBottom: 3 }}>Document register</div>
           <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>
-            Approved controlled documents.
+            Approved controlled documents. A document enters the Register when it is approved in Document
+            Lifecycle; to change one, start a revision there.
           </div>
         </div>
-        {isCompliance && (
-          <button
-            onClick={() => {
-              setEditing(null);
-              setShowForm(true);
-            }}
-            style={{ padding: "8px 16px", fontSize: 12, borderRadius: 8, border: "none", background: "#378ADD", color: "#fff", cursor: "pointer", fontWeight: 500, flexShrink: 0 }}
-          >
-            + Register document
-          </button>
-        )}
       </div>
 
       <input

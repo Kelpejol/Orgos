@@ -6,7 +6,7 @@
 // =============================================================================
 
 import { useMemo, useState } from "react";
-import { useOrgRoles, useOwnershipSummary } from "../../hooks/useGrc.js";
+import { useGroups, useOrgRoles, useOwnershipSummary } from "../../hooks/useGrc.js";
 import { TableSkeleton, ErrorState, EmptyState } from "../../components/shared/LoadingState.jsx";
 import ReadOnlyBanner from "../../components/shared/ReadOnlyBanner.jsx";
 import GroupsPanel from "../../components/shared/GroupsPanel.jsx";
@@ -64,13 +64,22 @@ const TextCell = ({ value, muted }) => {
 
 export default function OrgRoles() {
   const [search, setSearch] = useState("");
-  const [tab, setTab] = useState(() => {
-    try { return sessionStorage.getItem("orgos.newRoleName") !== null ? "groups" : "people"; }
-    catch { return "people"; }
-  });
+  // The role register is the page's purpose: it opens on Roles. People is the directory beside it.
+  const [tab, setTab] = useState("groups");
   const { data: users = [], isLoading, error, refetch } = useOrgRoles();
   const { data: ownership = {} } = useOwnershipSummary();
-  const ownsFor = (role) => ownership[(role || "").trim().toLowerCase()] || null;
+  const { data: roles = [] } = useGroups();
+  // What a person owns comes from the ROLES they hold in Org Roles — never from a job title.
+  const ownsFor = (oid) => {
+    const held = roles.filter((g) => (g.members || []).some((m) => m.oid === oid));
+    if (!held.length) return null;
+    const total = { controls: 0, records: 0, roles: held.map((g) => g.name) };
+    held.forEach((g) => {
+      const o = ownership[(g.name || "").trim().toLowerCase()];
+      if (o) { total.controls += o.controls || 0; total.records += o.records || 0; }
+    });
+    return total;
+  };
 
   const filtered = useMemo(() => {
     if (!search.trim()) return users;
@@ -97,7 +106,7 @@ export default function OrgRoles() {
       </div>
 
       <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
-        {[["people", "People"], ["groups", "Roles"]].map(([k, label]) => (
+        {[["groups", "Roles"], ["people", "People"]].map(([k, label]) => (
           <button key={k} onClick={() => setTab(k)} style={{
             padding: "7px 14px", fontSize: 12.5, fontWeight: 600, borderRadius: 8, cursor: "pointer",
             border: tab === k ? "1.5px solid var(--color-text-primary)" : "1.5px solid var(--color-border-tertiary)",
@@ -201,10 +210,10 @@ export default function OrgRoles() {
                     </td>
                     <td style={{ padding: "6px 8px", whiteSpace: "nowrap" }}>
                       {(() => {
-                        const o = ownsFor(u.job_title);
+                        const o = ownsFor(u.oid);
                         if (!o) return <span style={{ color: "var(--color-text-tertiary)" }}>—</span>;
                         return (
-                          <span title={`${o.controls} control(s), ${o.records} record(s) owned by "${u.job_title}"`}
+                          <span title={`${o.controls} control(s), ${o.records} record(s) through the role(s) ${o.roles.join(", ")}`}
                                 style={{ fontSize: 11 }}>
                             {o.controls > 0 && <b>{o.controls}</b>} {o.controls > 0 ? "ctrl" : ""}
                             {o.controls > 0 && o.records > 0 ? " · " : ""}

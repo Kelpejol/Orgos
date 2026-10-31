@@ -266,67 +266,6 @@ export const nlSearchApi = {
 };
 
 // =============================================================================
-//  Extractor Agent
-// =============================================================================
-
-export const extractorApi = {
-  /**
-   * Upload a file and extract GRC controls from it.
-   * @param {File} file — PDF, DOCX, or TXT
-   * @param {string} sourceDocumentCode — e.g. DRG-ISMS-POL-ACP-01-25
-   */
-  extractFile: async (file, sourceDocumentCode) => {
-    const formData = new FormData();
-    formData.append("file", file);
-    formData.append("source_document_code", sourceDocumentCode);
-    formData.append("write_to_sharepoint", "false");
-
-    const BASE_URL =
-      import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
-    const response = await fetch(`${BASE_URL}/api/v1/agents/extract/file`, {
-      method: "POST",
-      credentials: "include",
-      body: formData,
-    });
-
-    if (!response.ok) {
-      const err = await response.json().catch(() => ({}));
-      throw new Error(err.detail || `Extraction failed: ${response.status}`);
-    }
-
-    return response.json();
-  },
-
-  /**
-   * Extract from a file already in SharePoint.
-   * Backend fetches the file bytes directly — no upload needed.
-   */
-  extractFromSharePoint: (itemId, sourceDocumentCode) =>
-    apiClient
-      .post(
-        `/api/v1/sharepoint/extract/${itemId}`,
-        {
-          source_document_code: sourceDocumentCode,
-          write_to_sharepoint: false,
-        },
-        { timeout: 300_000 }, // 5 minutes — extraction is slow on small GPU
-      )
-      .then((r) => r.data),
-
-  /**
-   * Submit a confirmed extraction item to the AI Review Queue staging list.
-   * Becomes active when Tier 2 AI Review Queue list is created in SharePoint.
-   */
-  submitToQueue: (item, sourceDocumentCode) =>
-    apiClient
-      .post("/api/v1/agents/queue/submit", {
-        ...item,
-        source_document_code: sourceDocumentCode,
-      })
-      .then((r) => r.data),
-};
-
-// =============================================================================
 //  Document Lifecycle
 // =============================================================================
 

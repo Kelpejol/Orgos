@@ -12,7 +12,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import Response
 
-from auth.validator import CurrentUser, get_current_user, require_compliance_lead
+from auth.validator import ROLE_ADMIN, CurrentUser, get_current_user, require_admin, require_compliance_lead
 from graph.client import (
     convert_drive_item_to_pdf,
     download_file_from_sharepoint,
@@ -87,14 +87,23 @@ async def list_documents(
     "/documents",
     response_model=schemas.DocumentRead,
     status_code=status.HTTP_201_CREATED,
-    summary="Register an approved document",
+    summary="Register a document approved outside OrgOS (admin, for migration only)",
 )
 async def create_document(
     doc: schemas.DocumentCreate,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(require_admin),
 ) -> schemas.DocumentRead:
+    """
+    A document enters the Register when it is APPROVED in Document Lifecycle — the one way in.
+    This exists only to record a document that was approved before OrgOS (an admin action,
+    audited); it is not offered on the screens.
+    """
     try:
-        return await service.create_document(doc)
+        created = await service.create_document(doc)
+        from audit.trail import record
+        await record(user, "Document registered directly (migration)", f"{doc.document_code} {doc.title}",
+                     item_id=str(getattr(created, "id", "")), item_type="Document", document_code=doc.document_code)
+        return created
     except Exception as exc:
         _handle_graph_error(exc, "create document")
 
@@ -197,10 +206,26 @@ async def get_document(
 async def update_document(
     item_id: str,
     doc: schemas.DocumentUpdate,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(require_compliance_lead),
 ) -> schemas.DocumentRead:
+    """
+    Compliance corrects a Register entry's descriptive facts. The version and its dates are
+    the Register's record of what approval decided (CDI §14): they change by approving a
+    revision in Document Lifecycle, or — to correct a migrated entry — by an admin, audited.
+    """
+    controlled = {k for k in ("current_version", "effective_date", "next_review_date")
+                  if getattr(doc, k) is not None}
+    if controlled and ROLE_ADMIN not in user.roles:
+        raise HTTPException(status_code=409, detail=(
+            "The version and its dates are set by approval. Start a revision in Document Lifecycle "
+            "to change them."))
     try:
-        return await service.update_document(item_id, doc)
+        updated = await service.update_document(item_id, doc)
+        from audit.trail import record
+        changed = {k: str(v) for k, v in doc.model_dump().items() if v is not None and k != "cdt_cover"}
+        await record(user, "Document Register entry corrected", str(changed)[:1000], item_id=item_id,
+                     item_type="Document", document_code=getattr(updated, "document_code", ""))
+        return updated
     except Exception as exc:
         _handle_graph_error(exc, f"update document {item_id}")
 
@@ -295,7 +320,7 @@ async def suggest_register_cover(
 async def update_register_cover(
     item_id: str,
     body: UpdateRegisterCover,
-    user: CurrentUser = Depends(get_current_user),
+    user: CurrentUser = Depends(require_compliance_lead),
 ) -> dict:
     """
     A document's cover facts are editable at any time, same as on the

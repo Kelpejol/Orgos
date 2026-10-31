@@ -8,6 +8,7 @@ import { useState } from "react";
 import { FormInput, FormSelect, FormError, Btn } from "../../components/shared/Forms.jsx";
 import { useCreateDocument, useUpdateDocument } from "../../hooks/useGrc.js";
 import OwnerField from "../../components/shared/OwnerField.jsx";
+import { useCurrentUserRole } from "../../hooks/useCurrentUserRole.js";
 
 const DOC_TYPES = ["Policy", "Procedure", "SOP", "Form", "Guidelines",
   "Combined", "Manual", "Guideline", "Standard", "SLA"];
@@ -30,6 +31,9 @@ function normalizeStandards(value) {
 
 export default function DocumentForm({ document, onSuccess, onCancel }) {
   const isEdit = !!document;
+  // The version and its dates are what approval decided; only an admin corrects a migrated entry.
+  const { isAdmin } = useCurrentUserRole();
+  const versionLocked = isEdit && !isAdmin;
   const createDoc = useCreateDocument();
   const updateDoc = useUpdateDocument();
   const [form, setForm] = useState({
@@ -63,6 +67,9 @@ export default function DocumentForm({ document, onSuccess, onCancel }) {
       const payload = { ...form };
       if (!payload.next_review_date) delete payload.next_review_date;
       if (!payload.owner_id) delete payload.owner_id;
+      if (versionLocked) {
+        delete payload.current_version; delete payload.effective_date; delete payload.next_review_date;
+      }
 
       if (isEdit) {
         await updateDoc.mutateAsync({ id: document.id, updates: payload });
@@ -104,12 +111,25 @@ export default function DocumentForm({ document, onSuccess, onCancel }) {
           onChange={set("type")} options={DOC_TYPES} required />
         <FormSelect label="Department" id="dept" value={form.department}
           onChange={set("department")} options={DEPARTMENTS} required />
-        <FormInput label="Version" id="version" value={form.current_version}
-          onChange={set("current_version")} required placeholder="01" />
-        <FormInput label="Effective date" id="eff_date" value={form.effective_date}
-          onChange={set("effective_date")} type="date" required />
-        <FormInput label="Next review date" id="rev_date" value={form.next_review_date}
-          onChange={set("next_review_date")} type="date" />
+        {versionLocked ? (
+          <div style={{ fontSize: 12, marginBottom: 12, padding: "8px 10px", borderRadius: 8,
+                        background: "var(--color-background-secondary)", lineHeight: 1.6 }}>
+            Version <strong>{form.current_version || "—"}</strong> · effective {form.effective_date || "—"} ·
+            next review {form.next_review_date || "—"}
+            <div style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>
+              Set by approval in Document Lifecycle. To change them, start a revision of this document.
+            </div>
+          </div>
+        ) : (
+          <>
+            <FormInput label="Version" id="version" value={form.current_version}
+              onChange={set("current_version")} required placeholder="01" />
+            <FormInput label="Effective date" id="eff_date" value={form.effective_date}
+              onChange={set("effective_date")} type="date" required />
+            <FormInput label="Next review date" id="rev_date" value={form.next_review_date}
+              onChange={set("next_review_date")} type="date" />
+          </>
+        )}
        <OwnerField onResolve={(oid) => setForm(f => ({ ...f, owner_id: oid }))} />
        {isEdit && (
           <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginTop: -6, marginBottom: 12 }}>

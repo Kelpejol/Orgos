@@ -1024,7 +1024,7 @@ async def _zone3_cascade(
                     title=f"Harmonisation fix — standardise control in {doc_code}: {item.get('Title', '')[:140]}",
                     trigger="Harmonisation Fix",
                     document_code=doc_code,
-                    document_type="Policy",
+                    document_type=_type_for(doc_code),
                     notes=shared_notes,
                     user=user,
                 )
@@ -1046,7 +1046,7 @@ async def _zone3_cascade(
                     title=f"Harmonisation fix — partial merge in {doc_code}: {item.get('Title', '')[:140]}",
                     trigger="Harmonisation Fix",
                     document_code=doc_code,
-                    document_type="Policy",
+                    document_type=_type_for(doc_code),
                     notes=shared_notes,
                     user=user,
                 )

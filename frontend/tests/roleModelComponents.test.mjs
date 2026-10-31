@@ -116,7 +116,7 @@ const refused = {
   AcceptanceRefusal: "Control TST-01 writes Control owner: Review Lead; Operations Lead. The document author must revise the document to name exactly one role.",
 };
 
-for (const [path, name] of [["pages/ExtractionReview/index.jsx", "ExtractionCard"], ["pages/AIReviewQueue/index.jsx", "QueueCard"]]) {
+for (const [path, name] of [["pages/ExtractionReview/index.jsx", "ExtractionCard"]]) {
   test(`${name} shows the refusal before expanding the card`, async () => {
     const module = await component(path, [name]);
     const html = render(module[name], { item: refused, isCompliance: true });

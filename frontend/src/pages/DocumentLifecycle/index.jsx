@@ -402,7 +402,7 @@ const DetailsModal = ({ doc, onClose }) => {
         {doc.DocumentType  && <Field l="Document type"  v={doc.DocumentType} />}
         {doc.Department    && <Field l="Department"     v={doc.Department} />}
         <Field l="Stage"              v={doc.Stage} />
-        <Field l="Owner"              v={doc.OwnerName || doc.OwnerEntraId || "—"} />
+        <Field l="Assigned to (person)" v={doc.OwnerName || doc.OwnerEntraId || "—"} />
         <Field l="Trigger"            v={doc.Trigger} />
         <Field l="Days in stage"      v={`${Math.max(0, doc.DaysInStage || 0)}d`} />
         {doc.StandardsMapping && <Field l="Standards"   v={doc.StandardsMapping} />}
@@ -736,7 +736,7 @@ const NewDocForm = ({ onSuccess, onCancel }) => {
         border: "0.5px solid #5DCAA5", marginBottom: 18,
       }}>
         <div>
-          <div style={{ fontSize: 11, fontWeight: 600, color: "#085041" }}>Owner</div>
+          <div style={{ fontSize: 11, fontWeight: 600, color: "#085041" }}>Assigned to (the person who works on it)</div>
           <div style={{ fontSize: 11, color: "#085041", opacity: 0.85 }}>
             {name || "You"} — resolved from Microsoft 365
           </div>
@@ -861,337 +861,9 @@ const NewDocForm = ({ onSuccess, onCancel }) => {
 //  Lifecycle card
 // =============================================================================
 
-// const LifecycleCard = ({
-//   doc, stageConfig, currentUserOid,
-//   onViewDetails, onProgress, onUpload, onReassign,
-//   progressPending,
-// }) => {
-//   const uploadRef  = useRef();
-//   const [uploading, setUploading] = useState(false);
-//   const [uploadError, setUploadError] = useState("");
-//   const [showFeedback, setShowFeedback] = useState(false);
-//   const [feedbackText, setFeedbackText] = useState("");
-//   const [submittingFeedback, setSubmittingFeedback] = useState(false);
-//   const qc = useQueryClient();
-
-//   const isOwner    = doc.OwnerEntraId === currentUserOid;
-//   const daysIn     = doc.DaysInStage || 0;
-//   const isStalled  = daysIn > 14;
-//   const canProgress= isOwner && doc.Revised;
-//   const isSensitisation = doc.Stage === "Sensitisation";
-//   const triggerStyle = TRIGGER_LABELS[doc.Trigger] || TRIGGER_LABELS["Manual"];
-
-//   // CDI failures parsed
-//   let cdiCount = 0;
-//   if (doc.CDIFailures) {
-//     try {
-//       const parsed = JSON.parse(doc.CDIFailures);
-//       cdiCount = Array.isArray(parsed) ? parsed.length : 1;
-//     } catch { cdiCount = 1; }
-//   }
-
-//   // Parse sensitisation feedback
-//   let feedbackItems = [];
-//   if (doc.SensitisationFeedback) {
-//     try {
-//       feedbackItems = JSON.parse(doc.SensitisationFeedback);
-//     } catch {
-//       feedbackItems = [];
-//     }
-//   }
-
-//   const handleFileSelect = async (e) => {
-//     const file = e.target.files[0];
-//     if (!file) return;
-//     setUploading(true);
-//     setUploadError("");
-//     try {
-//       await lifecycleApi.upload(doc.id, file);
-//       qc.invalidateQueries({ queryKey: ["lifecycle"] });
-//     } catch (err) {
-//       setUploadError(err.message || "Upload failed");
-//     } finally {
-//       setUploading(false);
-//       if (uploadRef.current) uploadRef.current.value = "";
-//     }
-//   };
-
-//   const handleSubmitFeedback = async () => {
-//     if (!feedbackText.trim()) return;
-//     setSubmittingFeedback(true);
-//     try {
-//       const existing = feedbackItems;
-//       const newEntry = {
-//         text:      feedbackText.trim(),
-//         submittedAt: new Date().toISOString(),
-//         submittedBy: "You",
-//       };
-//       const updated = [...existing, newEntry];
-//       await lifecycleApi.updateFeedback(doc.id, JSON.stringify(updated));
-//       qc.invalidateQueries({ queryKey: ["lifecycle"] });
-//       setFeedbackText("");
-//       setShowFeedback(false);
-//     } catch (err) {
-//       setUploadError(err.message || "Failed to submit feedback.");
-//     } finally {
-//       setSubmittingFeedback(false);
-//     }
-//   };
-
-//   return (
-//     <div style={{
-//       background: "var(--color-background-primary)",
-//       border: isOwner ? `1.5px solid ${stageConfig.color}` : "1px solid #D0D0D0",
-//       borderRadius: 12, padding: "10px 12px",
-//       boxShadow: isStalled ? `0 0 0 2px #F09595` : "none",
-//     }}>
-//       {/* Your action badge */}
-//       {isOwner && (
-//         <div style={{ fontSize: 9, fontWeight: 600, color: stageConfig.color,
-//                       marginBottom: 3, textTransform: "uppercase", letterSpacing: "0.5px" }}>
-//           Your action
-//         </div>
-//       )}
-
-//       {/* Title + View details link */}
-//       <div style={{ display: "flex", justifyContent: "space-between",
-//                     alignItems: "flex-start", marginBottom: 6, gap: 8 }}>
-//         <div style={{ fontSize: 12, fontWeight: 600, lineHeight: 1.4, flex: 1 }}>
-//           {doc.Title || doc.DocumentCode || "Untitled document"}
-//         </div>
-//         <span
-//           role="button" tabIndex={0}
-//           onClick={() => onViewDetails(doc)}
-//           onKeyDown={e => e.key === "Enter" && onViewDetails(doc)}
-//           style={{ fontSize: 11, color: "var(--color-text-tertiary)",
-//                    textDecoration: "underline", cursor: "pointer",
-//                    flexShrink: 0, marginTop: 2, userSelect: "none" }}
-//         >
-//           View details
-//         </span>
-//       </div>
-
-//       {/* Badges row */}
-//       <div style={{ display: "flex", gap: 4, marginBottom: 6, flexWrap: "wrap" }}>
-//         {doc.Trigger && (
-//           <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 3, fontWeight: 500,
-//                          background: triggerStyle.bg, color: triggerStyle.color,
-//                          border: `0.5px solid ${triggerStyle.bd}` }}>
-//             {doc.Trigger}
-//           </span>
-//         )}
-//         {doc.AIGenerated  && <StatusBadge label="AI draft" />}
-//         {doc.Revised      && <StatusBadge label="Revised" />}
-//         {doc.DocumentType && <StatusBadge label={doc.DocumentType} />}
-//       </div>
-
-//       {/* CDI failure notice */}
-//       {cdiCount > 0 && (
-//         <div style={{ padding: "6px 10px", background: "#FCEBEB", borderRadius: 6,
-//                       fontSize: 11, color: "#791F1F", marginBottom: 8 }}>
-//           {cdiCount} CDI failure{cdiCount > 1 ? "s" : ""} to fix — click View details
-//         </div>
-//       )}
-
-//       {/* Gap link */}
-//       {doc.LinkedGapId && (
-//         <div style={{ fontSize: 10, color: "#3C3489", marginBottom: 6 }}>
-//           Gap: {doc.LinkedGapId}
-//         </div>
-//       )}
-
-//       {/* Upload error */}
-//       {uploadError && (
-//         <div style={{ padding: "5px 8px", background: "#FCEBEB", borderRadius: 6,
-//                       fontSize: 11, color: "#791F1F", marginBottom: 6 }}>
-//           Upload failed: {uploadError}
-//         </div>
-//       )}
-
-//       {/* Action buttons — owner only */}
-//       {isOwner && (
-//         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginTop: 6 }}>
-
-//           {/* Download */}
-//           <a
-//             href={doc.SharePointFileUrl || lifecycleApi.downloadUrl(doc.id)}
-//             target="_blank"
-//             rel="noreferrer"
-//             style={{
-//               padding: "7px", fontSize: 11, borderRadius: 7,
-//               border: "1.5px solid #C0C0C0", background: "transparent",
-//               color: "var(--color-text-primary)", cursor: "pointer",
-//               textDecoration: "none", textAlign: "center",
-//               display: "block",
-//             }}
-//           >
-//             Download ↓
-//           </a>
-
-//           {/* Upload */}
-//           <div>
-//             <input
-//               ref={uploadRef} type="file"
-//               accept=".pdf,.docx,.doc"
-//               style={{ display: "none" }}
-//               onChange={handleFileSelect}
-//             />
-//             <button
-//               onClick={() => uploadRef.current?.click()}
-//               disabled={uploading}
-//               style={{
-//                 width: "100%", padding: "7px", fontSize: 11, borderRadius: 7,
-//                 border: "1.5px solid #C0C0C0", background: "transparent",
-//                 color: uploading ? "#999" : "var(--color-text-primary)",
-//                 cursor: uploading ? "not-allowed" : "pointer",
-//               }}
-//             >
-//               {uploading ? "Uploading..." : "Upload ↑"}
-//             </button>
-//           </div>
-
-//           {/* Reassign */}
-//           <button
-//             onClick={() => onReassign(doc)}
-//             style={{
-//               padding: "7px", fontSize: 11, borderRadius: 7,
-//               border: "1.5px solid #C0C0C0", background: "transparent",
-//               color: "var(--color-text-secondary)", cursor: "pointer",
-//             }}
-//           >
-//             Reassign
-//           </button>
-
-//           {/* Progress */}
-//           <button
-//             onClick={() => canProgress && onProgress(doc.id, doc.Stage)}
-//             disabled={!canProgress || progressPending}
-//             title={!canProgress ? "Upload a revised version to unlock Progress" : undefined}
-//             style={{
-//               padding: "7px", fontSize: 11, borderRadius: 7, fontWeight: 500,
-//               border: canProgress && !progressPending ? "none" : "1.5px solid #E0E0E0",
-//               background: canProgress && !progressPending ? stageConfig.color : "transparent",
-//               color: canProgress && !progressPending ? "#fff" : "#B0B0B0",
-//               cursor: canProgress && !progressPending ? "pointer" : "not-allowed",
-//             }}
-//           >
-//             {progressPending ? "Moving..." : "Progress →"}
-//           </button>
-//         </div>
-//       )}
-
-//       {/* Sensitisation feedback panel */}
-//       {isSensitisation && (
-//         <div style={{ marginTop: 10 }}>
-//           {/* Collected feedback */}
-//           {feedbackItems.length > 0 && (
-//             <div style={{ marginBottom: 8 }}>
-//               <div style={{ fontSize: 10, fontWeight: 600, color: "#D85A30",
-//                             textTransform: "uppercase", letterSpacing: "0.5px", marginBottom: 6 }}>
-//                 Feedback received ({feedbackItems.length})
-//               </div>
-//               <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-//                 {feedbackItems.map((fb, i) => (
-//                   <div key={i} style={{
-//                     padding: "7px 10px", background: "#FAECE7", borderRadius: 7,
-//                     border: "0.5px solid #F0997B", fontSize: 11, color: "#712B13",
-//                   }}>
-//                     <div style={{ lineHeight: 1.4 }}>{fb.text}</div>
-//                     <div style={{ fontSize: 10, opacity: 0.7, marginTop: 2 }}>
-//                       {fb.submittedBy} · {fb.submittedAt
-//                         ? new Date(fb.submittedAt).toLocaleDateString("en-GB", {
-//                             day: "numeric", month: "short", year: "numeric",
-//                           })
-//                         : ""}
-//                     </div>
-//                   </div>
-//                 ))}
-//               </div>
-//             </div>
-//           )}
-
-//           {/* Submit feedback button — visible to all, not just owner */}
-//           {!showFeedback && (
-//             <button
-//               onClick={() => setShowFeedback(true)}
-//               style={{
-//                 width: "100%", padding: "7px", fontSize: 11, borderRadius: 7,
-//                 border: "1.5px solid #F0997B", background: "transparent",
-//                 color: "#D85A30", cursor: "pointer", fontWeight: 500,
-//               }}
-//             >
-//               + Add feedback or comment
-//             </button>
-//           )}
-
-//           {showFeedback && (
-//             <div style={{ padding: "10px 12px", background: "#FAECE7",
-//                           borderRadius: 8, border: "1px solid #F0997B" }}>
-//               <div style={{ fontSize: 11, fontWeight: 600, color: "#D85A30", marginBottom: 6 }}>
-//                 Your feedback on this document
-//               </div>
-//               <textarea
-//                 value={feedbackText}
-//                 onChange={e => setFeedbackText(e.target.value)}
-//                 placeholder="What needs to change? Any concerns, suggestions, or comments for the document owner..."
-//                 rows={3}
-//                 style={{
-//                   width: "100%", fontSize: 11, padding: "8px 10px", borderRadius: 7,
-//                   border: "1.5px solid #F0997B", background: "var(--color-background-primary)",
-//                   color: "var(--color-text-primary)", resize: "vertical",
-//                   fontFamily: "var(--font-sans)", outline: "none",
-//                   boxSizing: "border-box", marginBottom: 8,
-//                 }}
-//                 onFocus={e => (e.target.style.borderColor = "#D85A30")}
-//                 onBlur={e => (e.target.style.borderColor = "#F0997B")}
-//               />
-//               <div style={{ display: "flex", gap: 6 }}>
-//                 <button
-//                   onClick={handleSubmitFeedback}
-//                   disabled={!feedbackText.trim() || submittingFeedback}
-//                   style={{
-//                     padding: "7px 14px", fontSize: 11, borderRadius: 7, border: "none",
-//                     fontWeight: 500,
-//                     background: !feedbackText.trim() || submittingFeedback ? "#E8E8E8" : "#D85A30",
-//                     color: !feedbackText.trim() || submittingFeedback ? "#999" : "#fff",
-//                     cursor: !feedbackText.trim() || submittingFeedback ? "not-allowed" : "pointer",
-//                   }}
-//                 >
-//                   {submittingFeedback ? "Submitting..." : "Submit feedback"}
-//                 </button>
-//                 <button
-//                   onClick={() => { setShowFeedback(false); setFeedbackText(""); }}
-//                   style={{ padding: "7px 12px", fontSize: 11, borderRadius: 7,
-//                            border: "1.5px solid #C0C0C0", background: "transparent",
-//                            color: "var(--color-text-secondary)", cursor: "pointer" }}
-//                 >
-//                   Cancel
-//                 </button>
-//               </div>
-//             </div>
-//           )}
-//         </div>
-//       )}
-
-//       {/* Footer */}
-//       <div style={{ display: "flex", justifyContent: "space-between",
-//                     fontSize: 11, marginTop: isOwner ? 8 : 4 }}>
-//         <span style={{ color: "var(--color-text-secondary)" }}>
-//           {doc.OwnerName || "Unassigned"}
-//         </span>
-//         <span style={{ color: isStalled ? "#A32D2D" : "var(--color-text-tertiary)",
-//                        fontWeight: isStalled ? 500 : 400 }}>
-//           {daysIn}d {isStalled && "— stalled"}
-//         </span>
-//       </div>
-//     </div>
-//   );
-// };
-
-
 const LifecycleCard = ({
   doc, stageConfig, currentUserOid,
-  onViewDetails, onProgressClick, onReassign, onApprove,
+  onViewDetails, onProgressClick, onReassign,
 }) => {
   const uploadRef  = useRef();
   const navigate   = useNavigate();
@@ -1361,7 +1033,11 @@ const LifecycleCard = ({
     setDownloadError("");
     try {
       const BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
-      const filename = `${doc.DocumentCode || doc.id}_v1.0_DRAFT.docx`;
+      // One version number (01, 02…): an approved copy is named by it, anything else is a DRAFT.
+      let version = "";
+      try { version = JSON.parse(doc.CDTCoverFacts || "{}").version || ""; } catch { version = ""; }
+      const issued = doc.ApprovalStatus === "Approved" && version && version !== "Draft";
+      const filename = `${doc.DocumentCode || doc.id}_${issued ? `v${version}` : "DRAFT"}.docx`;
       await authenticatedDownload(
         `${BASE}/api/v1/lifecycle/documents/${doc.id}/download`,
         filename,
@@ -1454,7 +1130,7 @@ const LifecycleCard = ({
       {cdiCount > 0 && (
         <div style={{ padding: "6px 10px", background: "#FCEBEB", borderRadius: 6,
                       fontSize: 11, color: "#791F1F", marginBottom: 8 }}>
-          {cdiCount} CDI failure{cdiCount > 1 ? "s" : ""} to fix — click View details
+          {cdiCount} CDI check failure{cdiCount > 1 ? "s" : ""} (CDI-01–15) to fix — click View details
         </div>
       )}
 
@@ -1888,7 +1564,7 @@ const LifecycleCard = ({
                     color: editing ? "#085041" : "var(--color-text-secondary)",
                     cursor: editBusy ? "not-allowed" : "pointer",
                   }}>
-                  {editBusy === "checking" ? "Checking CDI..." : editing ? "Done editing — re-check" : "Re-check CDI"}
+                  {editBusy === "checking" ? "Checking CDI..." : editing ? "Done editing — re-check" : "Re-check (CDI and roles)"}
                 </button>
               )}
               {/* Auto-fix CDI issues — guided confirm-and-apply (Review only) */}
@@ -2494,107 +2170,6 @@ const ApproverModal = ({ doc, onClose, onDone }) => {
 };
 
 
-// =============================================================================
-//  ApproveConfirmModal — Approval stage → Mark as Approved
-// =============================================================================
-
-const ApproveConfirmModal = ({ doc, onClose, onDone }) => {
-  const qc = useQueryClient();
-  const [notes,  setNotes]  = useState("");
-  const [saving, setSaving] = useState(false);
-  const [error,  setError]  = useState("");
-  const [impact, setImpact] = useState(null);
-  const [version, setVersion] = useState({ decision: "", summary: "" });
-  const [versionReady, setVersionReady] = useState(false);
-
-  const handleApprove = async () => {
-    setSaving(true); setError("");
-    try {
-      await lifecycleApi.approve(doc.id, {
-        notes: notes.trim() || undefined,
-        version_decision: version.decision || undefined,
-        change_summary: version.summary.trim() || undefined,
-      });
-      qc.invalidateQueries({ queryKey: ["lifecycle"] });
-      onDone();
-    } catch (err) {
-      setError(err.response?.data?.detail || err.message || "Approval failed.");
-      setSaving(false);
-    }
-  };
-
-  return (
-    <div onClick={onClose} style={{
-      position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000,
-      display: "flex", alignItems: "center", justifyContent: "center", padding: 20,
-    }}>
-      <div onClick={e => e.stopPropagation()} style={{
-        background: "var(--color-background-primary)", borderRadius: 14,
-        padding: "24px 28px", maxWidth: 520, width: "100%", maxHeight: "92vh", overflowY: "auto",
-        boxShadow: "0 20px 60px rgba(0,0,0,0.25)",
-      }}>
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 14 }}>
-          <div>
-            <div style={{ fontSize: 15, fontWeight: 700, marginBottom: 4 }}>Mark as Approved</div>
-            <div style={{ fontSize: 12, color: "var(--color-text-secondary)", maxWidth: 320, lineHeight: 1.4 }}>
-              {doc.Title}
-            </div>
-          </div>
-          <button onClick={onClose} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 20, color: "var(--color-text-tertiary)" }}>×</button>
-        </div>
-        {/* The version: new, a correction, or an annual review (CDI §14) */}
-        <VersionChoice docId={doc.id} value={version} onChange={setVersion} onReady={setVersionReady} />
-        {/* Cascade impact — what approving will create/update (DINT §5.3.1) */}
-        <div style={{ marginBottom: 14 }}>
-          <CascadeImpactPreview
-            impactUrl={`/api/v1/lifecycle/documents/${doc.id}/approval-impact`}
-            impactParams={{ version_decision: version.decision || undefined,
-                            change_summary: version.summary.trim() || undefined }}
-            onImpact={setImpact}
-          />
-        </div>
-        {error && (
-          <div style={{ padding: "9px 12px", background: "#FCEBEB", border: "1px solid #F09595",
-                        borderRadius: 8, fontSize: 12, color: "#791F1F", marginBottom: 12 }}>
-            {error}
-          </div>
-        )}
-        <div style={{ marginBottom: 14 }}>
-          <label style={{ display: "block", fontSize: 11, fontWeight: 600,
-                          color: "var(--color-text-secondary)", marginBottom: 5 }}>
-            Approval note (optional)
-          </label>
-          <textarea
-            value={notes} onChange={e => setNotes(e.target.value)}
-            placeholder="Any notes or conditions on this approval..."
-            rows={3}
-            style={{
-              width: "100%", fontSize: 12, padding: "9px 11px", borderRadius: 8,
-              border: "1.5px solid #C0C0C0", background: "var(--color-background-primary)",
-              color: "var(--color-text-primary)", resize: "vertical",
-              fontFamily: "var(--font-sans)", outline: "none", boxSizing: "border-box",
-            }}
-            onFocus={e => (e.target.style.borderColor = "#993556")}
-            onBlur={e => (e.target.style.borderColor = "#C0C0C0")}
-          />
-        </div>
-        <div style={{ display: "flex", gap: 10 }}>
-          <button onClick={handleApprove} disabled={saving || impact?.blocked || !versionReady} style={{
-            flex: 1, padding: "11px", fontSize: 13, borderRadius: 9, border: "none", fontWeight: 600,
-            background: saving || impact?.blocked || !versionReady ? "#E8E8E8" : "#1D9E75",
-            color: saving || impact?.blocked || !versionReady ? "#999" : "#fff",
-            cursor: saving || impact?.blocked || !versionReady ? "not-allowed" : "pointer",
-          }}>{saving ? "Approving..." : impact?.blocked ? "Approval blocked" : !versionReady ? "Complete the version above" : "Confirm Approval ✓"}</button>
-          <button onClick={onClose} style={{
-            padding: "11px 16px", fontSize: 13, borderRadius: 9,
-            border: "1.5px solid #D0D0D0", background: "transparent",
-            color: "var(--color-text-secondary)", cursor: "pointer",
-          }}>Cancel</button>
-        </div>
-      </div>
-    </div>
-  );
-};
 
 
 // =============================================================================
@@ -2607,7 +2182,6 @@ export default function DocumentLifecycle({ focusDocumentCode = "", onClearFocus
   const [detailsDoc,        setDetailsDoc]        = useState(null);
   const [reassignDoc,       setReassignDoc]       = useState(null);
   const [progressingDoc,    setProgressingDoc]    = useState(null); // doc whose Progress → was clicked
-  const [approvingDoc,      setApprovingDoc]      = useState(null); // doc being approved
   const [extendDeadlineDoc, setExtendDeadlineDoc] = useState(null); // doc for deadline extension
 
   const { oid: currentUserOid } = useCurrentUserRole();
@@ -2633,7 +2207,6 @@ export default function DocumentLifecycle({ focusDocumentCode = "", onClearFocus
   };
 
   const closeProgress      = () => setProgressingDoc(null);
-  const closeApprove       = () => setApprovingDoc(null);
   const closeExtendDeadline = () => setExtendDeadlineDoc(null);
 
   if (isLoading) return <LoadingState message="Loading document lifecycle..." />;
@@ -2747,7 +2320,6 @@ export default function DocumentLifecycle({ focusDocumentCode = "", onClearFocus
                         onViewDetails={setDetailsDoc}
                         onProgressClick={handleProgressClick}
                         onReassign={setReassignDoc}
-                        onApprove={setApprovingDoc}
                       />
                     ))
                   )}
@@ -2782,14 +2354,6 @@ export default function DocumentLifecycle({ focusDocumentCode = "", onClearFocus
           doc={progressingDoc}
           onClose={closeProgress}
           onDone={closeProgress}
-        />
-      )}
-
-      {approvingDoc && (
-        <ApproveConfirmModal
-          doc={approvingDoc}
-          onClose={closeApprove}
-          onDone={closeApprove}
         />
       )}
 
