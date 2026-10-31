@@ -8,6 +8,7 @@
 import asyncio
 import json
 import logging
+import os
 import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
@@ -238,6 +239,7 @@ async def _sp_to_doc(item: dict) -> dict:
         "StandardsMapping":         f.get("StandardsMapping", ""),
         "LinkedDocumentRegisterItem": f.get("LinkedDocumentRegisterItem", ""),
         "RevisionOf":               f.get("RevisionOf", ""),
+        "RegisterBeforeApproval":   f.get("RegisterBeforeApproval", ""),
         "RevisionReason":           f.get("RevisionReason", ""),
         "SensitisationFeedback":    f.get("SensitisationFeedback", ""),
         "AmendmentSummary":         f.get("AmendmentSummary", ""),
@@ -321,9 +323,37 @@ def _iso_date(value) -> Optional[date]:
         return None
 
 
+_LIVE_REGISTER_STATUSES = {"Active", "Under Review"}
+
+
+async def _register_target(doc: dict) -> str:
+    """
+    The Document Register entry approving this item updates. An item opened as a revision (or a
+    scheduled review) names it. Any other item whose code is already in the Register — the library
+    file re-read by intake, a review-queue task, a gap remediation — is a revision of that entry
+    too: approving it as a "first issue" made a second entry with the same code at version 01.
+    Two live entries with one code cannot be resolved here: that is refused, not guessed.
+    """
+    target = _revision_target(doc)
+    if target:
+        return target
+    code = str(doc.get("DocumentCode") or "").strip().upper()
+    if not code or not settings.is_list_configured(settings.document_register_list_id):
+        return ""
+    rows = await get_list_items(settings.document_register_list_id, "Document Register")
+    live = [str(r.get("id")) for r in rows
+            if str((r.get("fields") or {}).get("DocumentCode") or "").strip().upper() == code
+            and (r.get("fields") or {}).get("Status", "Active") in _LIVE_REGISTER_STATUSES]
+    if len(live) > 1:
+        raise HTTPException(status_code=409, detail=(
+            f"{code} is in the Document Register more than once (entries {', '.join(live)}). "
+            "Withdraw the duplicate before approving."))
+    return live[0] if live else ""
+
+
 async def _register_entry_for(doc: dict) -> tuple[str, dict]:
     """(the Register entry this item revises, its fields) — ("", {}) for a first issue or if unreadable."""
-    target = _revision_target(doc)
+    target = await _register_target(doc)
     if not target:
         return "", {}
     try:
@@ -494,6 +524,18 @@ async def _get_document_text(doc: dict) -> str:
 #  Endpoints
 # =============================================================================
 
+def _involves(doc: dict, oid: str) -> bool:
+    if oid and oid in (doc.get("OwnerEntraId"), doc.get("ApproverEntraId")):
+        return True
+    stakeholders = doc.get("Stakeholders") or []
+    if isinstance(stakeholders, str):
+        try:
+            stakeholders = json.loads(stakeholders or "[]")
+        except ValueError:
+            stakeholders = []
+    return any(isinstance(s, dict) and s.get("oid") == oid or s == oid for s in stakeholders)
+
+
 @router.get("/documents")
 async def list_docs(
     stage:   Optional[str] = None,
@@ -505,6 +547,10 @@ async def list_docs(
         items = await get_list_items(_get_list_id(), _LIST_NAME)
         docs  = list(await asyncio.gather(*[_sp_to_doc(i) for i in items]))
 
+        # Compliance sees every document; anyone else sees the documents they own, approve or
+        # were asked to comment on.
+        if not (ROLE_COMPLIANCE in user.roles or ROLE_ADMIN in user.roles):
+            docs = [d for d in docs if _involves(d, user.oid)]
         if stage:
             docs = [d for d in docs if d["Stage"] == stage]
         if trigger:
@@ -579,6 +625,15 @@ async def create_doc(
         return await _sp_to_doc(item)
     except Exception as exc:
         _handle_error(exc, "create lifecycle document")
+
+
+def _approved_source(items: list[dict], register_id: str) -> str:
+    """The file of the most recently approved Lifecycle item for this Register entry."""
+    approved = [(i.get("fields") or {}) for i in items
+                if str((i.get("fields") or {}).get("LinkedDocumentRegisterItem", "")) == str(register_id)
+                and (i.get("fields") or {}).get("ApprovalStatus") == "Approved"]
+    approved.sort(key=lambda f: str(f.get("ApprovedDate") or ""))
+    return (approved[-1].get("SharePointFileUrl") or "") if approved else ""
 
 
 @router.post("/documents/revise", status_code=201)
@@ -681,9 +736,16 @@ async def revise_doc(
         ]:
             if reg.get(reg_field):
                 fields[col] = reg[reg_field]
-        # Attach the current approved file so the reviser can download it
-        if reg.get("SharePointUrl"):
-            fields["SharePointFileUrl"] = reg["SharePointUrl"]
+        # The cover's facts and history live in the Register; without them a revision's
+        # cover would be stamped from nothing at approval.
+        for col in ("CDTCoverFacts", "RevisionHistory"):
+            if reg.get(col):
+                fields[col] = reg[col]
+        # Start from the approved item's SOURCE (live cover markers) when there is one, so the
+        # cover can be stamped again; else the published file (its cover is made live at approval).
+        source = _approved_source(existing, body.document_register_id)
+        if source or reg.get("SharePointUrl"):
+            fields["SharePointFileUrl"] = source or reg["SharePointUrl"]
         if body.gap_reference:
             fields["LinkedGapId"] = body.gap_reference.strip()
         if body.nc_reference:
@@ -785,6 +847,7 @@ async def progress_doc(
                 # Past this point it sits in Approval with nobody to approve it, so a
                 # refusal after the move (a missing change summary, a standard it
                 # does not meet) would strand it there.
+                _check_publishable(doc)
                 await standard_gate.enforce(doc)                              # approval re-checks the standard
                 await _plan_version(doc, body.version_decision, body.change_summary)
                 await update_list_item(
@@ -961,8 +1024,7 @@ async def approval_impact(
         approver_oid = doc.get("ApproverEntraId", "")
         if approver_oid and user.oid != approver_oid:
             return blocked("Only the designated approver can approve this document.")
-        if user.oid == doc.get("OwnerEntraId", ""):
-            return blocked("The document owner cannot approve their own document.")
+        # The owner MAY be the approver (approve_doc allows it); the preview must agree.
         if not settings.is_list_configured(settings.document_register_list_id):
             return blocked("Document Register list is not configured — approval cannot publish.")
         if not is_valid_doc_code(str(doc.get("DocumentCode", ""))):
@@ -1139,6 +1201,57 @@ async def _background_extract_and_flag(
             logger.warning(f"Could not record extraction flag on lifecycle {item_id}: {exc}")
 
 
+# The Register fields an approval of a revision changes — kept so a reversal can restore them.
+_REGISTER_SNAPSHOT_FIELDS = ("Status", "CurrentVersion", "EffectiveDate", "NextReviewDate", "Title",
+                             "ApplicableStandards", "CDTCoverFacts", "RevisionHistory", "SharePointUrl")
+
+
+def _check_publishable(doc: dict) -> None:
+    """What approval needs before anything moves: somewhere to publish, and a valid code."""
+    if not settings.is_list_configured(settings.document_register_list_id):
+        raise HTTPException(
+            status_code=503,
+            detail="Document Register list is not configured; approval cannot publish this document.",
+        )
+    if not is_valid_doc_code(str(doc.get("DocumentCode", ""))):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Document code '{doc.get('DocumentCode', '')}' is invalid. "
+                "Fix the document code before approving/publishing."
+            ),
+        )
+
+
+async def _with_live_cover(item_id: str, doc: dict, source_bytes: bytes, filename: str) -> bytes:
+    """
+    The source with a live (marker) cover. A source that is a published copy — a revision
+    started from the approved file — has its cover put back on the master template, proven
+    to leave the body unchanged, and saved as this item's own source. Anything that is not a
+    merged CDT cover is returned as it is: a document that never had a cover is not given one here.
+    """
+    from lifecycle.retemplate import RetemplateError, restore_live_cover
+
+    if not (filename or "").lower().endswith(".docx"):
+        return source_bytes
+    try:
+        if scan_markers(source_bytes) or detect_cover(source_bytes, filename).source != "cover table":
+            return source_bytes
+    except Exception:                       # not a readable Word file: merge decides what happens
+        return source_bytes
+    try:
+        master = await load_master_template(doc.get("DocumentType") or "Policy")
+        restored = restore_live_cover(source_bytes, master).document
+    except (RetemplateError, TemplateNotFoundError, InvalidTemplateError) as exc:
+        logger.warning(f"Lifecycle {item_id}: the cover could not be made live again, so it keeps "
+                       f"its previous version and dates ({exc}).")
+        return source_bytes
+    if settings.document_writes_live:
+        url = await _upload_to_sharepoint(item_id, filename, restored)
+        await update_list_item(_get_list_id(), _LIST_NAME, item_id, {"SharePointFileUrl": url})
+    return restored
+
+
 async def _finalize_document_approval(
     item_id: str,
     doc: dict,
@@ -1167,40 +1280,23 @@ async def _finalize_document_approval(
     this function assumes finalisation is permitted. Returns
     (register_item_id, extraction_result).
     """
-    if not settings.is_list_configured(settings.document_register_list_id):
-        raise HTTPException(
-            status_code=503,
-            detail="Document Register list is not configured; approval cannot publish this document.",
-        )
-
+    _check_publishable(doc)
     effective_date = date.today()
-    if not is_valid_doc_code(str(doc.get("DocumentCode", ""))):
-        raise HTTPException(
-            status_code=422,
-            detail=(
-                f"Document code '{doc.get('DocumentCode', '')}' is invalid. "
-                "Fix the document code before approving/publishing."
-            ),
-        )
 
-    revision_of = _revision_target(doc)
+    revision_of = await _register_target(doc)
 
     # The Register is the master of the version: read what it holds BEFORE doing
-    # anything, so the choice is checked while nothing has been written.
+    # anything, so the choice is checked while nothing has been written. If it can't
+    # be read, nothing is approved: publishing it as a "new" entry duplicated the code.
     existing_fields: dict = {}
     if revision_of:
         try:
             existing_fields = (await get_list_item(
                 settings.document_register_list_id, "Document Register", revision_of)).get("fields", {}) or {}
         except Exception as exc:
-            if (version_decision or "").strip().lower() in (versioning.CORRECTION, versioning.REVIEW):
-                raise HTTPException(status_code=502, detail=(
-                    f"The Document Register entry this revises could not be read ({exc}), so a correction or "
-                    "review cannot be applied to it."))
-            logger.warning(
-                f"Lifecycle {item_id} is a revision of register item {revision_of}, "
-                f"but it could not be fetched ({exc}) — publishing as a new entry instead.")
-            revision_of = ""
+            raise HTTPException(status_code=502, detail=(
+                f"The Document Register entry this revises ({revision_of}) could not be read ({exc}). "
+                "Nothing was approved; try again."))
     try:
         outcome = versioning.plan(
             version_decision, change_summary or "",
@@ -1244,12 +1340,19 @@ async def _finalize_document_approval(
             # copy to ".../application/vnd.openxmlformats…" and left the Register
             # pointing at a folder.
             filename = _filename_from_sharepoint_url(doc["SharePointFileUrl"], content_type)
+            # A revision that started from a published copy has no markers left, so the
+            # cover could not be stamped with the new version and dates. Put the live cover back
+            # first (proven: the body is unchanged), and keep it as this item's source.
+            source_bytes = await _with_live_cover(item_id, doc, source_bytes, filename)
             merge_ctx = MergeContext.from_lifecycle_dict({
                 **doc, "CDTCoverFacts": cdt_cover.to_json(),
                 "RevisionHistory": RevisionHistoryEntry.list_to_json(cdt_history),
             })
             result = merge(source_bytes, merge_ctx)
-            published_url = await _upload_to_sharepoint(item_id, filename or f"{doc['DocumentCode']}.docx", result.document)
+            # The published copy goes in its own folder: written next to the source under the
+            # same name, it replaced the source, and the next revision had no markers to stamp.
+            published_url = await _upload_to_sharepoint(
+                item_id, filename or f"{doc['DocumentCode']}.docx", result.document, subfolder="Published")
         except Exception as exc:
             logger.warning(
                 f"CDT merge at approval failed for lifecycle {item_id} — publishing the "
@@ -1279,6 +1382,18 @@ async def _finalize_document_approval(
         if outcome.next_review_date:
             dr_update["NextReviewDate"] = outcome.next_review_date.isoformat()
 
+        # What the entry held before this approval, so reversing it can put the entry back
+        # exactly. Best-effort: the column is optional (see GO-LIVE-CHECKLIST).
+        snapshot = {k: existing_fields.get(k) for k in _REGISTER_SNAPSHOT_FIELDS if k in existing_fields}
+        try:
+            await update_list_item(_get_list_id(), _LIST_NAME, item_id, {
+                "RevisionOf": str(revision_of), "RegisterBeforeApproval": json.dumps(snapshot)})
+        except Exception as exc:
+            logger.info(f"Lifecycle {item_id}: Register snapshot not stored (column missing?): {exc}")
+            try:
+                await update_list_item(_get_list_id(), _LIST_NAME, item_id, {"RevisionOf": str(revision_of)})
+            except Exception:
+                pass
         try:
             await update_list_item(
                 settings.document_register_list_id,
@@ -1372,8 +1487,8 @@ async def _finalize_document_approval(
         "CDTCoverFacts":              cdt_cover.to_json(),
         "RevisionHistory":            RevisionHistoryEntry.list_to_json(cdt_history),
     }
-    if published_url and published_url != doc.get("SharePointFileUrl"):
-        fields["SharePointFileUrl"] = published_url
+    # The item keeps pointing at its SOURCE (with live markers); the Register points at the
+    # published copy. A revision starts from the source, so its cover can be stamped again.
     if approval_note:
         fields["Notes"] = (doc.get("Notes") or "") + f"\n\n{approval_note}"
     await update_list_item(_get_list_id(), _LIST_NAME, item_id, fields)
@@ -1426,7 +1541,7 @@ async def approve_doc(
 ) -> dict:
     """
     Mark a document as Approved and create a Document Register entry.
-    Only the designated approver may call this. Owner cannot approve their own document.
+    Only the designated approver may call this (the owner may be that approver).
     """
     try:
         item = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
@@ -1674,6 +1789,28 @@ class ReverseApproval(BaseModel):
     reason: str
 
 
+async def _register_before(doc: dict, register_id: str) -> tuple[dict, str]:
+    """The Register fields to restore when the approval of a revision is reversed, and a
+    sentence saying how exact that is. Exact from the snapshot taken at approval; without it,
+    the version and history are rolled back from the history itself and the dates are left."""
+    try:
+        snapshot = json.loads(doc.get("RegisterBeforeApproval") or "{}")
+    except ValueError:
+        snapshot = {}
+    if snapshot:
+        return {**snapshot, "Status": "Under Review"}, "restored to its state before this approval"
+    current = (await get_list_item(settings.document_register_list_id, "Document Register",
+                                   register_id)).get("fields", {}) or {}
+    history = RevisionHistoryEntry.list_from_json(current.get("RevisionHistory", ""))
+    if history:
+        history = history[:-1]                      # the row this approval added
+    restore = {"Status": "Under Review", "RevisionHistory": RevisionHistoryEntry.list_to_json(history)}
+    if history:
+        restore["CurrentVersion"] = history[-1].version
+    return restore, ("version and history rolled back; the effective and review dates and the file link "
+                     "were NOT restored (no snapshot) — check them")
+
+
 @router.post("/documents/{item_id}/reverse-approval")
 async def reverse_approval(
     item_id: str,
@@ -1710,17 +1847,27 @@ async def reverse_approval(
 
         register_id = doc.get("LinkedDocumentRegisterItem", "")
         register_withdrawn = False
+        register_outcome = "n/a"
+        is_revision = bool(_revision_target(doc))
         if register_id and settings.is_list_configured(settings.document_register_list_id):
             try:
-                await update_list_item(
-                    settings.document_register_list_id, "Document Register", str(register_id),
-                    {"Status": "Withdrawn"},
-                )
-                register_withdrawn = True
+                if is_revision:
+                    # The previously approved version still governs: put the entry back, never withdraw it.
+                    restore, register_outcome = await _register_before(doc, str(register_id))
+                    await update_list_item(settings.document_register_list_id, "Document Register",
+                                           str(register_id), restore)
+                else:
+                    await update_list_item(
+                        settings.document_register_list_id, "Document Register", str(register_id),
+                        {"Status": "Withdrawn"},
+                    )
+                    register_withdrawn = True
+                    register_outcome = "withdrawn (it was a first issue)"
             except Exception as exc:
+                register_outcome = f"NOT changed ({exc}) — check it manually"
                 logger.error(
                     f"Approval reversed for {item_id} but Document Register item "
-                    f"{register_id} could not be withdrawn: {exc}"
+                    f"{register_id} could not be updated: {exc}"
                 )
 
         await update_list_item(_get_list_id(), _LIST_NAME, item_id, {
@@ -1731,13 +1878,13 @@ async def reverse_approval(
         })
         await _audit_lifecycle_action(
             doc, user, "Approval reversed",
-            f"{reason} (register item {register_id or 'n/a'} "
-            f"{'withdrawn' if register_withdrawn else 'NOT withdrawn — check manually'})",
+            f"{reason} (register item {register_id or 'n/a'}: {register_outcome})",
         )
 
         updated = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
         result  = await _sp_to_doc(updated)
         result["RegisterEntryWithdrawn"] = register_withdrawn
+        result["RegisterOutcome"] = register_outcome
         result["PreviousRegisterItemId"] = register_id
         return result
 
@@ -1979,6 +2126,10 @@ async def update_cover_facts(
         item = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
         doc  = await _sp_to_doc(item)
 
+        if doc.get("ApprovalStatus") == "Approved":
+            raise HTTPException(status_code=409, detail=(
+                "This document is approved; its cover facts are the published record. "
+                "Start a revision to change them."))
         if not _may_correct_approval(doc, user):
             raise HTTPException(
                 status_code=403,
@@ -2229,6 +2380,7 @@ async def attach_cdt_cover(
         item = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
         doc  = await _sp_to_doc(item)
 
+        await _writable_item(item_id, user, need_file=False)
         if not _may_correct_approval(doc, user):
             raise HTTPException(
                 status_code=403,
@@ -2285,7 +2437,7 @@ async def attach_cdt_cover(
         backup_filename = f"original_upload_{timestamp}.docx"
         backup_url = await _upload_to_sharepoint(item_id, backup_filename, existing_bytes)
 
-        original_filename = urlparse(file_url).path.rsplit("/", 1)[-1] or f"document_{item_id}.docx"
+        original_filename = _filename_from_sharepoint_url(file_url) or f"document_{item_id}.docx"
         new_file_url = await _upload_to_sharepoint(item_id, original_filename, graft_result.document)
 
         await update_list_item(_get_list_id(), _LIST_NAME, item_id, {"SharePointFileUrl": new_file_url})
@@ -2414,6 +2566,10 @@ async def _cdi_check_file(item_id: str, file_bytes: bytes, filename: str) -> tup
 
         cdi_result = await run_cdi_check(cdi_check_bytes, filename, doc_code)
         cdi_status, cdi_failures = _cdi_result_to_storage(cdi_result)
+        # The role check runs on every file change too, so a wrong role is flagged the moment
+        # a document enters Lifecycle — not only when someone asks (doc_standards/role_check.py).
+        from doc_standards.role_check import with_role_problems
+        cdi_status, cdi_failures = await with_role_problems(cdi_status, cdi_failures, cdi_check_bytes, filename)
         if cdi_result.get("error"):
             logger.warning(f"CDI check error for lifecycle {item_id}: {cdi_result['error']}")
         logger.info(f"CDI check for lifecycle {item_id}: {cdi_status} — {cdi_result.get('fail_count', 0)} failures")
@@ -2435,8 +2591,9 @@ async def upload_doc_file(
     Upload a revised document to SharePoint, link it to the lifecycle item,
     set Revised=True, then automatically run the CDI Checker.
     """
+    await _writable_item(item_id, user, need_file=False)
     file_bytes = await file.read()
-    filename   = file.filename or f"document_{item_id}.docx"
+    filename   = os.path.basename(file.filename or "") or f"document_{item_id}.docx"
 
     try:
         file_url = await _upload_to_sharepoint(item_id, filename, file_bytes)
@@ -2480,18 +2637,32 @@ def _is_working_copy(meta: dict, item_id: str) -> bool:
     return path.endswith(f"/Lifecycle Documents/{item_id}")
 
 
-async def _editable_item(item_id: str, user: CurrentUser) -> dict:
+async def _writable_item(item_id: str, user: CurrentUser, *, stages: tuple[str, ...] = ("Review",),
+                         need_file: bool = True) -> dict:
+    """
+    The one gate in front of every action that changes a document's FILE: the item is in one of
+    `stages` and not approved, and the user is its owner or Compliance. An approved document's
+    file is the published record and is never changed; a change to it is a revision.
+    """
     fields = (await get_list_item(_get_list_id(), _LIST_NAME, item_id)).get("fields", {}) or {}
-    if fields.get("Stage") != "Review" or fields.get("ApprovalStatus") == "Approved":
-        raise HTTPException(status_code=409,
-                            detail="A document is edited in the Review stage only.")
+    if fields.get("ApprovalStatus") == "Approved":
+        raise HTTPException(status_code=409, detail=(
+            "This document is approved, so its file can't be changed. Start a revision to change it."))
+    if fields.get("Stage", "Review") not in stages:
+        raise HTTPException(status_code=409, detail=(
+            f"A document is edited in the {' or '.join(stages)} stage only "
+            f"(this one is in {fields.get('Stage')}). Return it to Review to change it."))
     is_compliance = ROLE_COMPLIANCE in user.roles or ROLE_ADMIN in user.roles
     if fields.get("OwnerEntraId") != user.oid and not is_compliance:
         raise HTTPException(status_code=403,
                             detail="Only the document owner or Compliance can edit it.")
-    if not fields.get("SharePointFileUrl"):
+    if need_file and not fields.get("SharePointFileUrl"):
         raise HTTPException(status_code=422, detail="There is no file yet — upload one first.")
     return fields
+
+
+async def _editable_item(item_id: str, user: CurrentUser) -> dict:
+    return await _writable_item(item_id, user)
 
 
 def _is_docx_bytes(data: bytes) -> bool:
@@ -2594,66 +2765,69 @@ async def version_options(item_id: str, user: CurrentUser = Depends(get_current_
 class RoleFixBody(BaseModel):
     from_role: str          # the role as the document writes it
     to_role: str            # the role to use: must exist in Org Roles
+    # Optional: just this use — a control's owner ("Control owner", "TST-01") or a cover field
+    # ("Document owner", "First pass approval", "Final approval") or "Roles section".
+    scope_kind: str = ""
+    scope_where: str = ""
 
 
 @router.post("/documents/{item_id}/role-fix")
 async def role_fix(item_id: str, body: RoleFixBody, user: CurrentUser = Depends(get_current_user)) -> dict:
     """
-    "Use this role": change a role named in the document to one that exists in Org Roles.
-    Only role FIELDS change (a Control owner line, a role column, an Owner or approver row),
-    never the same words in running text, and the edit proves that before it is saved. It is made
-    on the item's own working copy: the original file is never touched.
+    "Use this role": change a role named in the document to one that exists in Org Roles —
+    everywhere it is used as a role, or for one control or cover field. Only role FIELDS change
+    (a Control owner line, a role column, an Owner or approver row), never the same words in
+    running text; an older "Accountable / Executing" line becomes "Control owner: <role>"; the
+    edit proves itself before it is saved. It is made on the item's own working copy (the
+    original file is never touched), and the card's check result is refreshed after.
     """
     from doc_standards import roles as role_matching
-    from doc_standards.role_fix import RoleFixError, replace_role
     from groups import service as groups_service
 
     fields = await _editable_item(item_id, user)
     book = role_matching.RoleBook.from_groups(await groups_service.list_groups())
-    target = book.find(body.to_role)
-    if target is None:
+    if book.find(body.to_role) is None:
         raise HTTPException(status_code=422, detail=(
             f"“{body.to_role}” is not a role in Org Roles. Choose one that exists, or create it first."))
     try:
         working, name = await _ensure_working_copy(item_id, fields, user)
         data, _ = await download_file_from_sharepoint(working)
-        fix = replace_role(data, body.from_role, target.name)
-    except RoleFixError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
     except HTTPException:
         raise
     except Exception as exc:
         _handle_error(exc, f"role fix {item_id}")
-
-    # A CDT source keeps its cover values on the item, not in the file.
     try:
         cover = CdtCoverFacts.from_json(fields.get("CDTCoverFacts", ""))
     except ValueError:
         cover = CdtCoverFacts()
-    cover_places = []
-    for attr, label in (("owner", "the cover's Document owner"), ("first_pass_approval", "the cover's First pass approval"),
-                        ("final_approval", "the cover's Final approval")):
-        if role_matching.norm(getattr(cover, attr)) == role_matching.norm(body.from_role):
-            setattr(cover, attr, target.name)
-            cover_places.append(label)
-    if not fix.count and not cover_places:
+    fix = ConfirmedFix(fix_id="role-fix", check_id="V07", find=body.from_role, replace=body.to_role,
+                       scope_kind=body.scope_kind, scope_where=body.scope_where)
+    new_bytes, outcomes, cover_changed = _apply_role_fixes(data, [fix], book, cover)
+    outcome = outcomes[0]
+    if outcome.status in ("rejected", "verify_failed"):
+        raise HTTPException(status_code=422, detail=outcome.detail)
+    if outcome.status != "applied":
         raise HTTPException(status_code=409, detail=(
-            f"“{body.from_role}” was not found in a role field of the document, so nothing was changed. "
+            f"“{body.from_role}” was not found in that role field of the document, so nothing was changed. "
             "It may be written differently in the file: edit it in Word."))
+    places = outcome.detail.split(", ")
+    if not settings.document_writes_live:
+        return {"changed": len(places), "places": places, "to_role": outcome.after, "wrote_to_sharepoint": False}
     try:
-        if fix.count:
-            await _upload_to_sharepoint(item_id, name, fix.data)
-        if cover_places:
+        if cover_changed:
             await update_list_item(_get_list_id(), _LIST_NAME, item_id, {"CDTCoverFacts": cover.to_json()})
+        url = await _upload_to_sharepoint(item_id, name, new_bytes) if new_bytes != data else working
+        status_, failures = await _cdi_check_file(item_id, new_bytes, name)
+        await update_list_item(_get_list_id(), _LIST_NAME, item_id, {
+            "SharePointFileUrl": url, "Revised": True, "CDIStatus": status_, "CDIFailures": failures})
     except Exception as exc:
         _handle_error(exc, f"role fix save {item_id}")
     standard_gate.invalidate()
-    places = fix.places + cover_places
     await _audit_lifecycle_action(
         {**fields, "id": item_id}, user, "Role changed in the document",
-        f"“{body.from_role}” → “{target.name}” in {len(places)} place(s): {', '.join(dict.fromkeys(places))}. "
+        f"“{body.from_role}” → “{outcome.after}” in {len(places)} place(s): {', '.join(places)}. "
         "Made on the working copy; the original is unchanged.")
-    return {"changed": len(places), "places": places, "to_role": target.name}
+    return {"changed": len(places), "places": places, "to_role": outcome.after, "wrote_to_sharepoint": True}
 
 
 class StandardDecision(BaseModel):
@@ -2959,6 +3133,9 @@ class ConfirmedFix(BaseModel):
     check_id: str = ""
     find: str = ""
     replace: str = ""
+    # A role fix (V07) names the one use it is for: a control's owner, or a cover field.
+    scope_kind: str = ""
+    scope_where: str = ""
     occurrence_index: Optional[int] = None
     # "replace" (default) or "insert" — insert adds missing content
     action: str = "replace"
@@ -3007,8 +3184,11 @@ async def cdi_fix_plan(
 
         if not failures:
             failures = _load_cdi_failures(doc)
+        # Role problems are worked out live below, one row per use; never twice.
+        failures = [f for f in failures if (f.get("check_id") or f.get("check")) != "V07"]
+        role_findings = await _role_findings_for_fix_plan({**doc, "id": item_id}) if is_docx else []
 
-        if not failures:
+        if not failures and not role_findings:
             return {"document_id": item_id, "title": doc.get("Title", ""),
                     "editable": is_docx, "findings": [],
                     "message": "No CDI failures on the current document."}
@@ -3079,8 +3259,7 @@ async def cdi_fix_plan(
                 "severity":      "warning" if _is_warning(f) else "error",
             })
 
-        if is_docx:
-            findings.extend(await _role_findings_for_fix_plan(doc))
+        findings.extend(role_findings)
 
         return {
             "document_id": item_id,
@@ -3107,10 +3286,17 @@ _ROLE_RULE = ("Every role a document names must be a role in Org Roles: a contro
               "Document owner, the approvers and any Roles table. (CDI V07.)")
 
 
+_USE_LABEL = {"Document owner": "the cover's Document owner", "First pass approval": "the cover's First pass approval",
+              "Final approval": "the cover's Final approval", "Roles section": "the Roles table"}
+_COVER_ATTR = {"Document owner": "owner", "First pass approval": "first_pass_approval",
+               "Final approval": "final_approval"}
+
+
 async def _role_findings_for_fix_plan(doc: dict) -> list[dict]:
     """The roles this document names that Org Roles does not have (V07), as fixes in the same
-    list as the old checker's, so a role is fixed where the other problems are. Never raises:
-    if the role check can't run, the plan simply has no role findings."""
+    list as the old checker's — ONE ROW PER USE (a control, a cover field, the Roles table), so
+    each control can be given its own role. Never raises: if the role check can't run, the plan
+    simply has no role findings."""
     from groups import service as groups_service
     try:
         evaluation = await standard_gate.evaluate_item(doc)
@@ -3127,50 +3313,69 @@ async def _role_findings_for_fix_plan(doc: dict) -> list[dict]:
         if d.get("kind") != "role":
             continue
         suggested = [s["name"] for s in d.get("suggestions", [])]
-        group, placeholder = d.get("group"), d.get("placeholder")
-        out.append({
-            "fix_id": f"V07-role-{n}",
-            "check_id": "V07", "check_name": "Every role named exists in Org Roles",
-            "finding": f["message"], "anchor": f.get("where", ""),
-            "find": d["role"], "replace": suggested[0] if len(suggested) == 1 else "",
-            "proposed_fix": ("Name the actual role(s) in the document, then check again. "
-                             if group else f.get("fix", "")),
-            "needs_choice": True,
-            # The nearest roles that exist first, then every role: the author picks, nothing is invented.
-            "choices": list(dict.fromkeys([*suggested, *names])),
-            "fixable": "choice", "confidence": 0,
-            "locate_status": "located", "occurrences": len(d.get("locations", [])) or 1,
-            "contexts": [], "can_apply": not group,
-            "insert": None, "rule": _ROLE_RULE, "severity": "error",
-        })
+        group = d.get("group")
+        uses = d.get("uses") or [{"kind": "", "where": ""}]
+        for m, use in enumerate(uses):
+            kind, where = use.get("kind", ""), use.get("where", "")
+            place = where if kind == "Control owner" else _USE_LABEL.get(kind, "the document")
+            out.append({
+                "fix_id": f"V07-role-{n}-{m}",
+                "check_id": "V07", "check_name": "Every role named exists in Org Roles",
+                "finding": f"{place}: {f['message']}", "anchor": place,
+                "find": d["role"], "replace": suggested[0] if len(suggested) == 1 else "",
+                "proposed_fix": ("Name the actual role(s) in the document, then check again. "
+                                 if group else f.get("fix", "")),
+                "needs_choice": True,
+                # The nearest roles that exist first, then every role: the author picks, nothing is invented.
+                "choices": list(dict.fromkeys([*suggested, *names])),
+                "fixable": "choice", "confidence": 0,
+                "locate_status": "located", "occurrences": 1,
+                "contexts": [], "can_apply": not group,
+                "insert": None, "rule": _ROLE_RULE, "severity": "error",
+                "scope_kind": kind, "scope_where": where,
+            })
     return out
 
 
-def _apply_role_fixes(file_bytes: bytes, role_fixes: list, book) -> tuple[bytes, list]:
-    """Apply the V07 fixes one by one with the scoped, proven role edit. Each fix is judged alone:
-    one that cannot be made is reported, and the others still go ahead."""
+def _apply_role_fixes(file_bytes: bytes, role_fixes: list, book,
+                      cover: Optional[CdtCoverFacts] = None) -> tuple[bytes, list, bool]:
+    """Apply the V07 fixes one by one with the scoped, proven role edit — each to its own control
+    or cover field. A CDT source keeps its cover values on the item, not in the file, so a cover
+    fix updates `cover` too. Each fix is judged alone: one that cannot be made is reported, and the
+    others still go ahead. Returns (bytes, outcomes, cover_changed)."""
     from agents.cdi_checker.fixer import FixOutcome
-    from doc_standards.role_fix import RoleFixError, replace_role
-    outcomes = []
+    from doc_standards import roles as role_matching
+    from doc_standards.role_fix import RoleFixError, Scope, replace_role
+    outcomes, cover_changed = [], False
     for f in role_fixes:
         target = book.find(f.replace)
         if target is None:
             outcomes.append(FixOutcome(f.fix_id, "V07", "rejected",
                                        f"“{f.replace}” is not a role in Org Roles. Choose one that exists."))
             continue
+        scope = Scope(f.scope_kind, f.scope_where) if f.scope_kind else None
         try:
-            fix = replace_role(file_bytes, f.find, target.name)
+            fix = replace_role(file_bytes, f.find, target.name, scope=scope)
         except RoleFixError as exc:
             outcomes.append(FixOutcome(f.fix_id, "V07", "verify_failed", str(exc)))
             continue
-        if not fix.count:
+        places = list(fix.places)
+        attr = _COVER_ATTR.get(f.scope_kind or "")
+        attrs = [attr] if attr else (list(_COVER_ATTR.values()) if not f.scope_kind else [])
+        if cover is not None:
+            for a in attrs:
+                if role_matching.norm(getattr(cover, a)) == role_matching.norm(f.find):
+                    setattr(cover, a, target.name)
+                    cover_changed = True
+                    places.append(f"the cover's {a.replace('_', ' ')}")
+        if not places:
             outcomes.append(FixOutcome(f.fix_id, "V07", "skipped_not_found",
-                                       f"“{f.find}” was not found in a role field. Edit it in Word."))
+                                       f"“{f.find}” was not found in that role field. Edit it in Word."))
             continue
         file_bytes = fix.data
-        outcomes.append(FixOutcome(f.fix_id, "V07", "applied", ", ".join(dict.fromkeys(fix.places)),
+        outcomes.append(FixOutcome(f.fix_id, "V07", "applied", ", ".join(dict.fromkeys(places)),
                                    before=f.find, after=target.name, changed_texts=[target.name]))
-    return file_bytes, outcomes
+    return file_bytes, outcomes, cover_changed
 
 
 @router.post("/documents/{item_id}/cdi-fix/apply")
@@ -3187,6 +3392,7 @@ async def cdi_fix_apply(
     """
     if not body.fixes:
         raise HTTPException(status_code=422, detail="No fixes were confirmed.")
+    await _writable_item(item_id, user)
     try:
         item = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
         doc  = await _sp_to_doc(item)
@@ -3205,11 +3411,18 @@ async def cdi_fix_apply(
         from agents.cdi_checker.service import validate_fix_content
         role_fixes = [f for f in body.fixes if f.check_id == "V07"]
         role_outcomes: list = []
+        cover_after_roles: Optional[CdtCoverFacts] = None
         if role_fixes:
             from doc_standards import roles as role_matching
             from groups import service as groups_service
             book = role_matching.RoleBook.from_groups(await groups_service.list_groups())
-            file_bytes, role_outcomes = _apply_role_fixes(file_bytes, role_fixes, book)
+            try:
+                cover = CdtCoverFacts.from_json(doc.get("CDTCoverFacts", ""))
+            except ValueError:
+                cover = CdtCoverFacts()
+            file_bytes, role_outcomes, cover_changed = _apply_role_fixes(file_bytes, role_fixes, book, cover)
+            if cover_changed:
+                cover_after_roles = cover
         fixes, rejected = [], []
         for f in (x for x in body.fixes if x.check_id != "V07"):
             spec = f.model_dump()
@@ -3249,14 +3462,19 @@ async def cdi_fix_apply(
                 "cdi_status": doc.get("CDIStatus", ""),
             }
 
+        wrote = settings.document_writes_live
+        # A role fix to a CDT cover changes the cover facts on the item; store them first so
+        # the re-check below reads the cover as it now is.
+        if wrote and cover_after_roles is not None:
+            await update_list_item(_get_list_id(), _LIST_NAME, item_id,
+                                   {"CDTCoverFacts": cover_after_roles.to_json()})
+
         # Re-run the CDI check on the fixed document (on the bytes, either way,
         # so the reviewer sees the real result even when nothing is uploaded).
-        doc_code = item.get("fields", {}).get("DocumentCode", "")
-        recheck = await run_cdi_check(new_bytes, filename, doc_code)
-        cdi_status, cdi_failures = _cdi_result_to_storage(recheck)
+        cdi_status, cdi_failures = await _cdi_check_file(item_id, new_bytes, filename)
+        standard_gate.invalidate()
 
         file_url = ""
-        wrote = settings.document_writes_live
         if wrote:
             # Same path → SharePoint keeps the previous version in its history.
             file_url = await _upload_to_sharepoint(item_id, filename, new_bytes)
@@ -3286,7 +3504,7 @@ async def cdi_fix_apply(
             "outcomes":       [_outcome_dict(o) for o in outcomes],
             "preview":        preview,
             "cdi_status":     cdi_status,
-            "remaining_failures": recheck.get("fail_count", 0) if not recheck.get("passed") else 0,
+            "remaining_failures": _error_count(cdi_failures),
             "sharepoint_url": file_url,
             "wrote_to_sharepoint": wrote,
             "message": (
@@ -3308,6 +3526,13 @@ def _outcome_dict(o) -> dict:
         "fix_id": o.fix_id, "check_id": o.check_id, "status": o.status,
         "detail": o.detail, "before": o.before, "after": o.after,
     }
+
+
+def _error_count(failures_json: str) -> int:
+    try:
+        return sum(1 for f in json.loads(failures_json or "[]") if f.get("severity") != "warning")
+    except ValueError:
+        return 0
 
 
 def _cdi_result_to_storage(cdi_result: dict) -> tuple[str, str]:
@@ -3499,6 +3724,7 @@ async def amend_apply(
     if not body.amendments:
         raise HTTPException(status_code=422, detail="No amendments were confirmed.")
     try:
+        await _writable_item(item_id, user, stages=("Review", "Sensitisation"))
         item = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
         doc  = await _sp_to_doc(item)
         _ensure_owner(doc, user)
@@ -3520,9 +3746,7 @@ async def amend_apply(
                     "outcomes": [_outcome_dict(o) for o in outcomes],
                     "message": "No amendments could be applied — see per-item reasons."}
 
-        doc_code = item.get("fields", {}).get("DocumentCode", "")
-        recheck = await run_cdi_check(new_bytes, filename, doc_code)
-        cdi_status, cdi_failures = _cdi_result_to_storage(recheck)
+        cdi_status, cdi_failures = await _cdi_check_file(item_id, new_bytes, filename)
 
         if not settings.document_writes_live:
             logger.info(f"DOCUMENT_WRITE_MODE=dev — {len(applied)} amendment(s) applied "
@@ -3839,7 +4063,7 @@ Return only the JSON object, no other text."""
 # =============================================================================
 
 async def _upload_to_sharepoint(
-    item_id: str, filename: str, file_bytes: bytes
+    item_id: str, filename: str, file_bytes: bytes, subfolder: str = ""
 ) -> str:
     # A name is a name: a slash in it (e.g. a content type passed by mistake) would make a phantom
     # sub-folder and a file with no extension, which cannot be opened in Word.
@@ -3854,7 +4078,8 @@ async def _upload_to_sharepoint(
     base    = settings.graph_base_url
     site_id = settings.sharepoint_site_id
 
-    upload_path = f"Lifecycle Documents/{item_id}/{filename}"
+    folder = f"Lifecycle Documents/{item_id}" + (f"/{subfolder.strip('/')}" if subfolder else "")
+    upload_path = f"{folder}/{filename}"
     upload_url  = f"{base}/sites/{site_id}/drive/root:/{upload_path}:/content"
 
     async with httpx.AsyncClient(timeout=120.0) as client:

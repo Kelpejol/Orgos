@@ -54,10 +54,10 @@ export default function StandardCheckPanel({ docId, isCompliance }) {
 
   // After any role change the checks are run again: the finding either goes or says why not.
   const roleAction = {
-    use: async (fromRole, toRole) => {
+    use: async (fromRole, toRole, scope = {}) => {
       setBusy("fixing"); setError("");
       try {
-        await apiClient.post(`/api/v1/lifecycle/documents/${docId}/role-fix`, { from_role: fromRole, to_role: toRole });
+        await apiClient.post(`/api/v1/lifecycle/documents/${docId}/role-fix`, { from_role: fromRole, to_role: toRole, ...scope });
         qc.invalidateQueries({ queryKey: ["lifecycle"] });
         await run();
       } catch (e) { setError(e.response?.data?.detail || e.message); setBusy(""); }

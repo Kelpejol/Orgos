@@ -1245,13 +1245,19 @@ const LifecycleCard = ({
 
   // Warnings (e.g. no effective date on a draft) are stored beside failures
   // with severity "warning" — they never count as failures or block progress.
-  let cdiCount = 0, cdiWarnCount = 0;
+  // The stored check result holds the old CDI checks AND the role check (V07), which runs
+  // every time the file changes. Role problems are counted on their own line.
+  let cdiCount = 0, cdiWarnCount = 0, roleCount = 0, roleBlocking = false;
   if (doc.CDIFailures) {
     try {
       const parsed = JSON.parse(doc.CDIFailures);
       if (Array.isArray(parsed)) {
-        cdiWarnCount = parsed.filter(f => f.severity === "warning").length;
-        cdiCount = parsed.length - cdiWarnCount;
+        const roles = parsed.filter(f => (f.check_id || f.check) === "V07");
+        const others = parsed.filter(f => (f.check_id || f.check) !== "V07");
+        roleCount = roles.length;
+        roleBlocking = roles.some(f => f.severity !== "warning");
+        cdiWarnCount = others.filter(f => f.severity === "warning").length;
+        cdiCount = others.length - cdiWarnCount;
       } else cdiCount = 1;
     } catch { cdiCount = 1; }
   }
@@ -1449,6 +1455,16 @@ const LifecycleCard = ({
         <div style={{ padding: "6px 10px", background: "#FCEBEB", borderRadius: 6,
                       fontSize: 11, color: "#791F1F", marginBottom: 8 }}>
           {cdiCount} CDI failure{cdiCount > 1 ? "s" : ""} to fix — click View details
+        </div>
+      )}
+
+      {/* Roles the document names that are not in Org Roles — flagged as soon as the file arrives */}
+      {roleCount > 0 && (
+        <div style={{ padding: "6px 10px", background: roleBlocking ? "#FCEBEB" : "#FDF3E2", borderRadius: 6,
+                      fontSize: 11, color: roleBlocking ? "#791F1F" : "#8A5A00", marginBottom: 8 }}>
+          {roleCount} role{roleCount > 1 ? "s" : ""} not in Org Roles
+          {roleBlocking ? " — must be fixed before this document can move on" : ""}. Use “Fix CDI issues” to
+          pick the right role for each control.
         </div>
       )}
 
@@ -1807,8 +1823,8 @@ const LifecycleCard = ({
         </div>
       )}
 
-      {/* ── Owner action buttons ── */}
-      {isOwner && (
+      {/* ── Owner action buttons (Compliance may act on any document, as the server allows) ── */}
+      {(isOwner || isCompliance) && (
         <div style={{ marginTop: 8 }}>
 
           {/* Review + Sensitisation: View / Upload / Reassign / Progress */}
@@ -1876,7 +1892,7 @@ const LifecycleCard = ({
                 </button>
               )}
               {/* Auto-fix CDI issues — guided confirm-and-apply (Review only) */}
-              {isReview && (cdiCount > 0 || cdiWarnCount > 0) && (
+              {isReview && (cdiCount > 0 || cdiWarnCount > 0 || roleCount > 0) && (
                 <button onClick={() => setShowCdiFix(true)} style={{
                   padding: "7px", fontSize: 11, borderRadius: 7, fontWeight: 600,
                   border: "1.5px solid #9FD9C8", background: "#E7F5F0", color: "#085041",

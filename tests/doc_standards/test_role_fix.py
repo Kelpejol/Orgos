@@ -55,8 +55,15 @@ def test_a_header_table_owner_and_approver_rows_are_changed_but_other_rows_are_n
     assert "Test Standard" in cells
 
 
-def test_the_older_accountable_executing_line_changes_only_the_accountable_part():
+def test_the_older_accountable_executing_line_becomes_one_control_owner():
     fix = replace_role(control_doc(owner_line=f"Accountable / Executing: {OLD}; IT and application owners."), OLD, NEW)
+    assert f"Control owner: {NEW}." in texts(fix.data)
+    assert not any("Accountable / Executing" in t for t in texts(fix.data))
+
+
+def test_the_older_line_can_be_kept_and_only_the_role_changed():
+    fix = replace_role(control_doc(owner_line=f"Accountable / Executing: {OLD}; IT and application owners."), OLD, NEW,
+                       convert_legacy=False)
     assert f"Accountable / Executing: {NEW}; IT and application owners." in texts(fix.data)
 
 
@@ -126,12 +133,81 @@ def test_it_refuses_empty_or_unchanged_input():
 
 def test_a_change_that_would_alter_more_than_the_role_is_refused(monkeypatch):
     import doc_standards.role_fix as rf
-    real = rf._fix_tables
+    real = rf._fix_table
 
-    def vandal(doc, role, new, fix):
-        real(doc, role, new, fix)
-        doc.paragraphs[0].runs[0].text = "TAMPERED"
-        fix.count += 1
-    monkeypatch.setattr(rf, "_fix_tables", vandal)
+    def vandal(table, ed, scope):
+        real(table, ed, scope)
+        table.rows[0].cells[0].paragraphs[0].runs[0].text = "TAMPERED"
+    monkeypatch.setattr(rf, "_fix_table", vandal)
     with pytest.raises(RoleFixError, match="more than the role"):
         replace_role(control_doc(), OLD, NEW)
+
+
+# ── one use at a time, every spelling, never a record owner ───────────────────
+
+from doc_standards.role_fix import CONTROL_OWNER, DOCUMENT_OWNER, Scope
+
+
+def two_controls_doc():
+    b = DocBuilder()
+    b.control_block(title="T", code="DRG-ISMS-STD-TST", layer="Layer 3", domain="d", owner=OLD, classification="c")
+    b.control("TST-01", "One", requirement="R.", trigger="T.")
+    b.para(f"Control owner: {OLD}.")
+    b.control("TST-02", "Two", requirement="R.", trigger="T.")
+    b.para(f"Control owner: {OLD}.")
+    return b.bytes()
+
+
+def test_a_change_can_be_limited_to_one_control():
+    fix = replace_role(two_controls_doc(), OLD, NEW, scope=Scope(CONTROL_OWNER, "TST-02"))
+    t = texts(fix.data)
+    assert t.index(f"Control owner: {OLD}.") < t.index(f"Control owner: {NEW}.")   # TST-01 kept, TST-02 changed
+    assert fix.count == 1 and fix.places == ["TST-02 “Control owner” line"]
+    assert OLD in t                                                                 # the cover owner is untouched
+
+
+def test_two_controls_can_get_different_roles():
+    data = replace_role(two_controls_doc(), OLD, NEW, scope=Scope(CONTROL_OWNER, "TST-01")).data
+    data = replace_role(data, OLD, "HR Manager", scope=Scope(CONTROL_OWNER, "TST-02")).data
+    t = texts(data)
+    assert f"Control owner: {NEW}." in t and "Control owner: HR Manager." in t
+
+
+def test_the_cover_owner_can_be_changed_alone():
+    fix = replace_role(two_controls_doc(), OLD, NEW, scope=Scope(DOCUMENT_OWNER))
+    t = texts(fix.data)
+    assert NEW in t and t.count(f"Control owner: {OLD}.") == 2
+
+
+def test_every_spelling_of_the_role_is_found():
+    b = DocBuilder()
+    b.control_block(title="T", code="DRG-ISMS-STD-TST", layer="Layer 3", domain="d", owner="X", classification="c")
+    b.control("TST-01", "One", requirement="R.", trigger="T.")
+    b.para("Control owner: IT & Security Lead.")
+    b.control("TST-02", "Two", requirement="R.", trigger="T.")
+    b.para("Control owner: it and security-lead.")
+    fix = replace_role(b.bytes(), "IT and Security Lead", NEW)
+    assert texts(fix.data).count(f"Control owner: {NEW}.") == 2
+
+
+def test_a_record_owner_is_not_a_role_field():
+    b = DocBuilder()
+    b.control_block(title="T", code="DRG-ISMS-STD-TST", layer="Layer 3", domain="d", owner="X", classification="c")
+    b.para(f"Record owner: {OLD}.")
+    b.table([["Record", "Owner", "Retention"], ["REC-0101 Log", OLD, "6 years"]])
+    data = b.bytes()
+    fix = replace_role(data, OLD, NEW)
+    assert fix.count == 0 and fix.data == data
+
+
+def test_an_approver_written_with_a_route_in_brackets_is_found():
+    b = DocBuilder()
+    b.control_block(title="T", code="DRG-ISMS-STD-TST", layer="Layer 3", domain="d", owner="X", classification="c",
+                    approval=f"First Pass: Compliance Executive. Final Approval: {OLD} (via ExCo)")
+    fix = replace_role(b.bytes(), OLD, NEW)
+    assert any(f"Final Approval: {NEW} (via ExCo)" in x for x in texts(fix.data))
+
+
+def test_an_older_line_split_by_a_slash_is_converted():
+    fix = replace_role(control_doc(owner_line=f"Accountable / Executing: {OLD} / Service Desk."), OLD, NEW)
+    assert f"Control owner: {NEW}." in texts(fix.data)

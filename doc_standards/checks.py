@@ -324,8 +324,10 @@ def v07(s: Subject) -> Outcome:
     def add(text: str, kind: str, where: str) -> None:
         text = (text or "").strip().rstrip(".").strip()
         if text:
-            entry = named.setdefault(role_matching.norm(text), {"text": text, "uses": []})
+            entry = named.setdefault(role_matching.norm(text), {"text": text, "uses": [], "spellings": []})
             entry["uses"].append((kind, where))
+            if text not in entry["spellings"]:
+                entry["spellings"].append(text)
 
     for c in s.parsed.controls:                       # a role named anywhere in the text, even in a copy
         if c.responsibility and c.responsibility.accountable:
@@ -335,6 +337,9 @@ def v07(s: Subject) -> Outcome:
     add(h.final_approval, "Final approval", "cover")
     for duty in s.parsed.roles:
         add(duty.role, "Roles section", "roles section")
+    if not named and not s.parsed.roles and not s.parsed.controls:
+        return Outcome(skip="The document names no roles: it has no controls, no Roles table and no owner or "
+                            "approvers on its cover that OrgOS could read.")
 
     problems = []
     for entry in named.values():
@@ -366,6 +371,9 @@ def v07(s: Subject) -> Outcome:
             "kind": "role", "role": text, "kinds": kinds, "locations": places,
             "placeholder": placeholder, "several": several, "group": group,
             "suggestions": [x.as_dict() for x in suggestions],
+            # Each use on its own (a control, a cover field, the Roles table), so each can get its own role.
+            "uses": [{"kind": k, "where": w} for k, w in dict.fromkeys(entry["uses"])],
+            "spellings": entry["spellings"],
         }))
     note = ""
     if not len(book):

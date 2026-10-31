@@ -5,7 +5,7 @@
 # in Org Roles, and is refused rather than guessed when nothing could be changed.
 # =============================================================================
 
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, PropertyMock, patch
 
 import pytest
 from fastapi import HTTPException
@@ -30,7 +30,7 @@ def doc_bytes():
     return b.bytes()
 
 
-async def _fix(to_role=NEW, from_role=OLD, data=None, cover=""):
+async def _fix(to_role=NEW, from_role=OLD, data=None, cover="", **scope):
     item = {"fields": {"Stage": "Review", "OwnerEntraId": "owner", "SharePointFileUrl": COPY,
                        "DocumentCode": "DRG-ISMS-STD-TST", "CDTCoverFacts": cover}}
     meta = {"name": "IDL.docx", "webUrl": COPY, "parentReference": {"path": "/drives/d/root:/Lifecycle Documents/42"}}
@@ -40,8 +40,10 @@ async def _fix(to_role=NEW, from_role=OLD, data=None, cover=""):
          patch.object(lr, "_upload_to_sharepoint", new=AsyncMock(return_value=COPY)) as upload, \
          patch.object(lr, "update_list_item", new=AsyncMock()) as update, \
          patch.object(lr, "_audit_lifecycle_action", new=AsyncMock()) as audit, \
-         patch("groups.service.list_groups", new=AsyncMock(return_value=GROUPS)):
-        result = await lr.role_fix("42", lr.RoleFixBody(from_role=from_role, to_role=to_role), OWNER)
+         patch("groups.service.list_groups", new=AsyncMock(return_value=GROUPS)), \
+         patch.object(lr, "_cdi_check_file", new=AsyncMock(return_value=("Passed", ""))), \
+         patch.object(type(lr.settings), "document_writes_live", new_callable=PropertyMock, return_value=True):
+        result = await lr.role_fix("42", lr.RoleFixBody(from_role=from_role, to_role=to_role, **scope), OWNER)
     return result, upload, update, audit
 
 
@@ -68,3 +70,15 @@ async def test_nothing_found_is_said_not_silently_ignored():
     with pytest.raises(HTTPException) as e:
         await _fix(from_role="Someone Not In It")
     assert e.value.status_code == 409
+
+
+
+async def test_the_card_result_is_refreshed_after_the_change():
+    result, upload, update, audit = await _fix()
+    stored = [c.args[3] for c in update.call_args_list if "CDIStatus" in c.args[3]]
+    assert stored and stored[0]["CDIStatus"] == "Passed" and stored[0]["Revised"] is True
+
+
+async def test_one_control_can_be_fixed_on_its_own():
+    result, upload, *_ = await _fix(scope_kind="Control owner", scope_where="TST-01")
+    assert result["changed"] == 1 and result["places"] == ["TST-01 “Control owner” line"]

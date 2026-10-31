@@ -59,14 +59,14 @@ const NAV_GROUPS = [
   {
     type: "dropdown",
     id: "extraction-lifecycle",
-    label: "Extraction & Lifecycle",
+    label: "Lifecycle & Review",
     icon: faArrowsRotate,
-    complianceOnly: true,
     children: [
+      // Document owners work on their own documents here; Compliance sees every document.
       { id: "lifecycle", label: "Document Lifecycle", icon: faArrowsRotate },
-      { id: "extraction", label: "Extraction Review", icon: faMagnifyingGlass },
-      { id: "assignment", label: "Assignment & Ownership", icon: faUserGroup },
-      { id: "harmonisation", label: "Harmonisation", icon: faCodeCompare },
+      { id: "extraction", label: "Extraction Review", icon: faMagnifyingGlass, complianceOnly: true },
+      { id: "assignment", label: "Assignment & Ownership", icon: faUserGroup, complianceOnly: true },
+      { id: "harmonisation", label: "Harmonisation", icon: faCodeCompare, complianceOnly: true },
     ],
   },
   {

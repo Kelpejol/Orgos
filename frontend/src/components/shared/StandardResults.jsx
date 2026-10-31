@@ -107,6 +107,38 @@ function FlagDecision({ r, canDecide, onDecide, busy }) {
 // A role the document names that Org Roles does not have (V07): the roles that ARE there and
 // might be meant, a free choice from all of them, and — when the role is really new — Create role.
 // `onRole` is given only where the document can be changed (a Lifecycle Review card).
+const USE_LABEL = { "Document owner": "Cover: Document owner", "First pass approval": "Cover: First pass approval",
+                    "Final approval": "Cover: Final approval", "Roles section": "Roles table" };
+
+// One row per place the wrong role is used (a control, a cover field), each with its own role:
+// two controls that wrote the same wrong role can each be given the right one.
+function UseRows({ d, roles, onRole, busy, btn, row }) {
+  const [picks, setPicks] = useState({});
+  const options = [...(d.suggestions || []).map((s) => s.name), ...roles.filter((n) => !(d.suggestions || []).some((s) => s.name === n))];
+  return (
+    <div style={{ marginTop: 6, borderTop: "1px dashed #D8D6CC", paddingTop: 6 }}>
+      <div style={{ color: "var(--color-text-secondary)" }}>Or choose the role for each place it is used:</div>
+      {d.uses.map((u) => {
+        const key = `${u.kind}|${u.where}`;
+        const pick = picks[key] || "";
+        const label = u.kind === "Control owner" ? `${u.where} — Control owner` : (USE_LABEL[u.kind] || u.kind);
+        return (
+          <div key={key} style={row}>
+            <span style={{ minWidth: 170 }}>{label}</span>
+            <select value={pick} onChange={(e) => setPicks({ ...picks, [key]: e.target.value })}
+              style={{ fontSize: 11, padding: "3px 6px", borderRadius: 6, border: "1.5px solid #C0C0C0", maxWidth: 240 }}>
+              <option value="">Choose a role…</option>
+              {options.map((n) => <option key={n} value={n}>{n}</option>)}
+            </select>
+            <button disabled={busy || !pick} style={btn(true, busy || !pick)}
+              onClick={() => onRole.use(d.role, pick, { scope_kind: u.kind, scope_where: u.where })}>Use here</button>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function RoleActions({ f, roles = [], canCreate, canAlias, onRole, busy }) {
   const d = f.data;
   const [choice, setChoice] = useState("");
@@ -132,8 +164,10 @@ function RoleActions({ f, roles = [], canCreate, canAlias, onRole, busy }) {
         <div key={s.group_id} style={row}>
           <strong>{s.name}</strong>
           <span style={{ color: "var(--color-text-secondary)" }}>{s.reason}</span>
-          {onRole && (
-            <button disabled={busy} style={btn(true, busy)} onClick={() => onRole.use(from, s.name)}>Use this role</button>
+          {onRole && !d.group && (
+            <button disabled={busy} style={btn(true, busy)} onClick={() => onRole.use(from, s.name)}>
+              {(d.uses || []).length > 1 ? "Use this role everywhere" : "Use this role"}
+            </button>
           )}
           {onRole && canAlias && !d.placeholder && (
             <button disabled={busy} style={btn(false, busy)} title="Agree that this spelling means this role. The document is not changed."
@@ -141,7 +175,7 @@ function RoleActions({ f, roles = [], canCreate, canAlias, onRole, busy }) {
           )}
         </div>
       ))}
-      {onRole && roles.length > 0 && (
+      {onRole && !d.group && roles.length > 0 && (
         <div style={row}>
           <select value={choice} onChange={(e) => setChoice(e.target.value)}
             style={{ fontSize: 11, padding: "3px 6px", borderRadius: 6, border: "1.5px solid #C0C0C0", maxWidth: 260 }}>
@@ -150,6 +184,9 @@ function RoleActions({ f, roles = [], canCreate, canAlias, onRole, busy }) {
           </select>
           <button disabled={busy || !choice} style={btn(true, busy || !choice)} onClick={() => onRole.use(from, choice)}>Use this role</button>
         </div>
+      )}
+      {onRole && !d.group && (d.uses || []).length > 1 && (
+        <UseRows d={d} roles={roles} onRole={onRole} busy={busy} btn={btn} row={row} />
       )}
       <div style={row}>
         {d.group ? (

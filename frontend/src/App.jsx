@@ -306,7 +306,6 @@ const Risks = () => {
 
 // Routes that require at minimum the Compliance role
 const COMPLIANCE_ONLY_ROUTES = new Set([
-  "lifecycle",
   "extraction",
   "assignment",
   "harmonisation",

@@ -709,6 +709,10 @@ async def create_lifecycle_entry(
         else:
             cdi_status = "Failed"
             cdi_failures = cdi_failures_json(result.get("checks", []))
+        # A role the document names that is not in Org Roles is flagged on arrival (V07).
+        from doc_standards.role_check import with_role_problems
+        cdi_status, cdi_failures = await with_role_problems(
+            cdi_status, cdi_failures or "", file_bytes, download_name or filename)
 
     effective_owner = owner_name or DEFAULT_OWNER_NAME
     revised = bool(run_cdi and cdi_status == "Passed")

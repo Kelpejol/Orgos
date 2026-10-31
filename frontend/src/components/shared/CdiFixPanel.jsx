@@ -91,7 +91,7 @@ function RuleHint({ rule }) {
 }
 
 // ── one finding card ──────────────────────────────────────────────────────────
-function FixCard({ f, decision, onChange }) {
+function FixCard({ f, decision, onChange, onSameForAll }) {
   const kind = kindOf(f);
   const c = C[kind] || C.manual;
   const isInsert = kind === "insert";
@@ -208,6 +208,15 @@ function FixCard({ f, decision, onChange }) {
               <option value="">— choose the replacement —</option>
               {f.choices.map((ch) => <option key={ch} value={ch}>{ch}</option>)}
             </select>
+          )}
+
+          {/* the same role for every place this wrong role is used */}
+          {f.check_id === "V07" && onSameForAll && replace.trim() && (
+            <button type="button" onClick={() => onSameForAll(replace)}
+              style={{ marginTop: 8, marginRight: 8, padding: "5px 10px", fontSize: 11.5, fontWeight: 600, borderRadius: 6,
+                cursor: "pointer", border: "1.5px solid #C0C0C0", background: "transparent", color: "var(--color-text-primary)" }}>
+              Use “{replace}” everywhere “{f.find}” is used
+            </button>
           )}
 
           {/* a role that does not exist can be created in Org Roles (name filled in) */}
@@ -497,6 +506,8 @@ export default function CdiFixPanel({ docId, docCode, onClose }) {
         fix_id: f.fix_id, check_id: f.check_id, find: f.find,
         replace: d.replace ?? f.replace ?? "",
         occurrence_index: d.occurrence_index ?? null,
+        // A role fix is for one use: this control's owner, or this cover field.
+        scope_kind: f.scope_kind || "", scope_where: f.scope_where || "",
       }));
   }, [findings, decisions]);
 
@@ -598,7 +609,14 @@ export default function CdiFixPanel({ docId, docCode, onClose }) {
                   )}
                   {findings.map((f) => (
                     <FixCard key={f.fix_id} f={f} decision={decisions[f.fix_id]}
-                      onChange={(d) => setDecisions((p) => ({ ...p, [f.fix_id]: d }))} />
+                      onChange={(d) => setDecisions((p) => ({ ...p, [f.fix_id]: d }))}
+                      onSameForAll={(replace) => setDecisions((p) => {
+                        // The same role for every use of this wrong role (each still applied to its own place).
+                        const next = { ...p };
+                        findings.filter((x) => x.check_id === "V07" && x.find === f.find && x.can_apply)
+                          .forEach((x) => { next[x.fix_id] = { ...(p[x.fix_id] || {}), action: "confirm", replace }; });
+                        return next;
+                      })} />
                   ))}
                 </div>
               )

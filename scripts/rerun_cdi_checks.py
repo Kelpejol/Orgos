@@ -119,6 +119,8 @@ async def main(dry_run: bool, only_failed: bool, limit: int = 0) -> None:
             # Same storage the upload / fix endpoints use: full findings,
             # warnings flagged with severity, so the modal and card agree.
             new_status, failures = _cdi_result_to_storage(result)
+            from doc_standards.role_check import with_role_problems
+            new_status, failures = await with_role_problems(new_status, failures, content, filename)
 
             rescued = sum(
                 1 for c in result.get("checks", [])
