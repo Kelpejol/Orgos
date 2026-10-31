@@ -227,22 +227,37 @@ async def group_names() -> list[str]:
 
 
 def _all_names(group: dict) -> list[str]:
-    """A group's canonical name plus its aliases, lower-cased — for resolution."""
-    names = [(group.get("name") or "").strip().lower()]
-    names += [(a or "").strip().lower() for a in group.get("aliases", [])]
+    """A role's name plus its aliases, as the role check reads them (doc_standards/roles.norm:
+    case, punctuation, "&" / "/" read as "and") — one matching rule everywhere."""
+    from doc_standards.roles import norm
+    names = [norm(group.get("name") or "")] + [norm(a) for a in group.get("aliases", [])]
     return [n for n in names if n]
 
 
 async def find_group_by_name(name: str) -> Optional[dict]:
-    """Resolve a name to a group by its canonical name OR any of its aliases,
-    so different wordings in documents map to the same group."""
-    target = (name or "").strip().lower()
+    """Resolve a name to a role by its name OR any of its aliases, so different wordings in
+    documents map to the same role. Same matching rule as the role check (V07)."""
+    from doc_standards.roles import norm
+    target = norm(name)
     if not target:
         return None
     for g in await list_groups():
         if target in _all_names(g):
             return g
     return None
+
+
+async def _alias_clashes(group_id: str, aliases: list[str]) -> list[str]:
+    """Aliases that are already the name or an alias of ANOTHER role, or a field name."""
+    from doc_standards.roles import is_placeholder, norm
+    others = {n: g["name"] for g in await list_groups() if g["id"] != group_id for n in _all_names(g)}
+    clashes = []
+    for a in aliases:
+        if is_placeholder(a):
+            clashes.append(f"“{a}” is the name of a field, not a role")
+        elif norm(a) in others:
+            clashes.append(f"“{a}” already means {others[norm(a)]}")
+    return clashes
 
 
 async def user_in_group(name: str, oid: str) -> bool:
@@ -261,8 +276,13 @@ async def create_group(name: str, description: str, category: str,
     name = (name or "").strip()
     if not name:
         raise ValueError("Role name is required.")
-    if await find_group_by_name(name):
-        raise ValueError(f"A role named '{name}' already exists.")
+    existing = await find_group_by_name(name)
+    if existing:
+        raise ValueError(f"“{name}” is already in Org Roles as {existing['name']}.")
+    if aliases:
+        clashes = await _alias_clashes("", _clean_aliases(aliases))
+        if clashes:
+            raise ValueError("These aliases can't be used: " + "; ".join(clashes) + ".")
 
     lid = await get_groups_list_id()
     fields = {
@@ -297,6 +317,9 @@ async def update_group(group_id: str, description: Optional[str],
     if category is not None:
         fields["Category"] = category
     if aliases is not None and _has_col("Aliases"):
+        clashes = await _alias_clashes(group_id, _clean_aliases(aliases))
+        if clashes:
+            raise ValueError("These aliases can't be used: " + "; ".join(clashes) + ".")
         fields["Aliases"] = json.dumps(_clean_aliases(aliases))
     if fields:
         await update_list_item(lid, _LIST_NAME, group_id, fields)

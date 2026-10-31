@@ -290,6 +290,13 @@ class Zone1DecideBody(Zone1Overrides):
     rationale: str
 
 
+
+async def _role_authority():
+    """(ownership index, is-this-a-role callable) — Org Roles, the one role authority."""
+    from ownership.resolver import get_ownership_index
+    owners = await get_ownership_index()
+    return owners, (lambda text: owners.resolve(text).get("kind") == "group")
+
 async def _zone1_accept_cascade(item: dict, user: CurrentUser, overrides: dict) -> str:
     """
     Accept cascade — creates:
@@ -300,10 +307,15 @@ async def _zone1_accept_cascade(item: dict, user: CurrentUser, overrides: dict) 
     """
     created = []
 
-    refusal = acceptance_refusal(item)
+    owners, is_role = await _role_authority()
+    owner = (overrides or {}).get("proposed_owner") or item.get("ProposedOwnerRole", "")
+    refusal = acceptance_refusal(item, is_role, owner)
     if refusal:
         raise HTTPException(status_code=422, detail=refusal)
-    plan = legacy_accept_plan(item, overrides)
+    plan = legacy_accept_plan(item, overrides, owners.resolve if owners.groups_loaded else None)
+    if not plan["control"]["Status"]:      # Org Roles unreadable: re-checked automatically later
+        plan["control"].update(Status="Blocked", BlockedReason=(
+            "Org Roles could not be read when this was accepted; it is re-checked automatically."))
     control_stmt = plan["control"]["ControlStatement"]
     control_type = plan["control"]["ControlType"]
     iso_clause = plan["control"]["ISOClause"]
@@ -1184,11 +1196,13 @@ async def _zone1_impact(item: dict, decision: str, impact: dict, overrides: dict
         return await _definition_impact(item, decision, impact)
 
     if decision in ("Accept", "Edit and Accept"):
-        refusal = acceptance_refusal(item)
+        owners, is_role = await _role_authority()
+        owner = (overrides or {}).get("proposed_owner") or item.get("ProposedOwnerRole", "")
+        refusal = acceptance_refusal(item, is_role, owner)
         if refusal:
             impact.update(blocked=True, blocked_reason=refusal)
             return impact
-        plan = legacy_accept_plan(item, overrides)
+        plan = legacy_accept_plan(item, overrides, owners.resolve if owners.groups_loaded else None)
         if not plan["control"]["ControlStatement"]:
             impact.update(blocked=True, blocked_reason="Cannot accept — the queue item has no control statement.")
             return impact

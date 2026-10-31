@@ -34,6 +34,9 @@ async def recheck_control_statuses() -> dict:
         return {"changed": 0, "failures": []}
     async with _lock:
         owners = await get_ownership_index(force=True)      # the change just made
+        if not getattr(owners, "groups_loaded", True):
+            # Judged without Org Roles, every control would turn Blocked. Leave them as they are.
+            return {"changed": 0, "detail": [], "failures": ["Org Roles could not be read; statuses were not re-checked."]}
         register = await get_list_items(settings.control_register_list_id, "Control Register")
         plan = plan_sync(LibraryIndex([]), register, [], owners.resolve)
         plan.actions = [a for a in plan.actions if a.kind == "refresh_status"]

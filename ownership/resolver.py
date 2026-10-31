@@ -9,10 +9,15 @@
 #   therefore resolve the role to people. Testing OwnerEntraId directly is
 #   always wrong — it is never populated by the accept cascade.
 #
-#   Org Roles is the role authority. This resolver currently also supports a
-#   legacy directory-title fallback, which is not role recognition under V07:
-#     1. an Org Roles entry — by its name OR aliases → its members
-#     2. an Entra job title → everyone holding that job title (legacy behavior)
+#   Org Roles is the ONLY role authority (Bobby: a job title alone is never a role):
+#     1. an Org Roles entry — by its name OR an agreed alias → its members.
+#        Names are matched exactly as the role check (V07) matches them
+#        (doc_standards/roles.norm: case, punctuation, "&" / "/" read as "and"),
+#        so a role the check accepts is a role here too.
+#     2. an Entra job title is only a HINT: it is reported (kind "job_title",
+#        with the people as `hint_people`) so a screen can say "this is a job
+#        title, not a role", but it resolves to nobody and never makes a control
+#        Active or a person its owner. A name or alias in Org Roles always wins.
 #
 # The index is built once and cached (roles/groups change rarely), so batch
 # callers (Standards Map, Gap Analyzer) resolve hundreds of controls without
@@ -37,7 +42,8 @@ _cache: dict = {"index": None, "expires_at": 0.0}
 
 
 def _norm(s: str) -> str:
-    return " ".join((s or "").split()).strip().lower()
+    from doc_standards.roles import norm
+    return norm(s)
 
 
 class OwnershipIndex:
@@ -48,25 +54,27 @@ class OwnershipIndex:
     people entries: {"oid", "display_name", "email"}
     """
 
-    def __init__(self, groups: list[dict], job_titles: dict[str, list[dict]]):
+    def __init__(self, groups: list[dict], job_titles: dict[str, list[dict]], *, groups_loaded: bool = True):
         # role key (normalised) → (kind, canonical_name, people)
         self._map: dict[str, tuple[str, str, list[dict]]] = {}
+        # False when Org Roles could not be read: nothing may be judged Blocked on this index.
+        self.groups_loaded = groups_loaded
 
-        # Job titles first, so a group with the same name takes precedence.
-        for title, people in job_titles.items():
-            self._map[_norm(title)] = ("job_title", title, people)
-
+        # Org Roles first: every name, then every agreed alias (a name beats another role's alias,
+        # and the first role to claim a spelling keeps it — the same rule as RoleBook).
         for g in groups:
             name = g.get("name") or ""
-            members = g.get("members") or []
-            entry = ("group", name, members)
             if name:
-                self._map[_norm(name)] = entry
+                self._map.setdefault(_norm(name), ("group", name, g.get("members") or []))
+        for g in groups:
+            name = g.get("name") or ""
             for alias in (g.get("aliases") or []):
                 key = _norm(alias)
-                # An alias never overwrites a real group/title name.
-                if key and key not in self._map:
-                    self._map[key] = entry
+                if name and key:
+                    self._map.setdefault(key, ("group", name, g.get("members") or []))
+        # A job title only where no role claims the spelling — and only as a hint.
+        for title, people in job_titles.items():
+            self._map.setdefault(_norm(title), ("job_title", title, people))
 
     def resolve(self, role: str) -> dict:
         """
@@ -83,6 +91,10 @@ class OwnershipIndex:
             return {"resolved": False, "kind": "unresolved", "canonical": role,
                     "via_alias": False, "people": []}
         kind, canonical, people = hit
+        if kind == "job_title":
+            # Not a role: nobody is its owner. The people are only a hint for the screen.
+            return {"resolved": False, "kind": "job_title", "canonical": canonical,
+                    "via_alias": False, "people": [], "hint_people": people}
         return {
             "resolved": True,
             "kind": kind,
@@ -106,8 +118,8 @@ class OwnershipIndex:
         out: set[str] = set()
         if not oid:
             return out
-        for key, (_kind, _canon, people) in self._map.items():
-            if any((p.get("oid") or "") == oid for p in people):
+        for key, (kind, _canon, people) in self._map.items():
+            if kind == "group" and any((p.get("oid") or "") == oid for p in people):
                 out.add(key)
         return out
 
@@ -151,11 +163,13 @@ async def get_ownership_index(force: bool = False) -> OwnershipIndex:
         return _cache["index"]
 
     groups: list[dict] = []
+    groups_loaded = True
     try:
         from groups import service as groups_service
         groups = await groups_service.list_groups()
     except Exception as exc:
-        logger.info(f"Ownership index: groups unavailable ({exc})")
+        groups_loaded = False
+        logger.warning(f"Ownership index: Org Roles unavailable ({exc}) — no control will be re-judged on it")
 
     job_titles: dict[str, list[dict]] = {}
     try:
@@ -163,9 +177,10 @@ async def get_ownership_index(force: bool = False) -> OwnershipIndex:
     except Exception as exc:
         logger.warning(f"Ownership index: job titles unavailable ({exc})")
 
-    index = OwnershipIndex(groups, job_titles)
-    _cache["index"] = index
-    _cache["expires_at"] = now + _TTL_SECONDS
+    index = OwnershipIndex(groups, job_titles, groups_loaded=groups_loaded)
+    if groups_loaded:                       # never cache an index built without Org Roles
+        _cache["index"] = index
+        _cache["expires_at"] = now + _TTL_SECONDS
     return index
 
 

@@ -195,9 +195,9 @@ async def reassign_control_owner(
     user: CurrentUser = Depends(require_compliance_lead),
 ) -> dict:
     """
-    Reassign a legacy control's owner string. Defined controls change through
-    their source document; their role holders are managed in Org Roles.
-    The legacy resolver still accepts directory titles and determines Status.
+    Reassign an older control's Control owner. Defined controls change through their source
+    document. The owner must be ONE role in Org Roles; the status follows the same rule as every
+    control (Active only when it is a role in Org Roles), and the change is audited.
     """
     owner_role = (body.owner_role or "").strip()
     if not owner_role:
@@ -209,22 +209,33 @@ async def reassign_control_owner(
                 f"{current['ControlId']}'s Control owner is stated by "
                 f"{current['SourceDocument'] or 'its defining document'}, so it changes there, "
                 "through Document Lifecycle. Who holds the role is set in Org Roles."))
-        # Only activate if the role actually resolves to someone.
-        resolved = False
-        try:
-            from ownership.resolver import get_ownership_index
-            resolved = (await get_ownership_index()).has_owner(owner_role)
-        except Exception as exc:
-            logger.warning(f"Could not resolve '{owner_role}' while reassigning {item_id}: {exc}")
-            resolved = True  # don't block the edit if resolution is unavailable
+        from control_register.definitions import decide_status
+        from ownership.resolver import get_ownership_index
+        from review_queue.acceptance import owner_problem
+        owners = await get_ownership_index()
+        if not owners.groups_loaded:
+            raise HTTPException(status_code=503, detail=(
+                "Org Roles could not be read, so the new owner can't be checked. Nothing was changed; try again."))
+        hit = owners.resolve(owner_role)
+        problem = owner_problem(owner_role, lambda t: owners.resolve(t).get("kind") == "group")
+        if problem or hit.get("kind") != "group":
+            raise HTTPException(status_code=422, detail=(
+                f"“{owner_role}” {problem or 'is not a role in Org Roles'}. Choose one role that exists in "
+                "Org Roles, or create it there first."))
+        owner_role = hit["canonical"]
+        status, reason = decide_status({"accountable": owner_role}, owners.resolve)
 
         await update_list_item(_cr_list_id(), _CR_LIST_NAME, item_id, {
-            "OwnerRole": owner_role,
-            "Status":    "Active" if resolved else "Blocked",
+            "OwnerRole": owner_role, "Status": status, "BlockedReason": reason,
         })
+        from audit.trail import record
+        await record(user, "Control owner reassigned",
+                     f"“{current.get('OwnerRole') or 'none'}” → “{owner_role}”; status {status}.",
+                     item_id=item_id, item_type="Control", document_code=current.get("SourceDocument", ""),
+                     state_from=current.get("Status", ""), state_to=status)
         updated = await get_list_item(_cr_list_id(), _CR_LIST_NAME, item_id)
         result = _sp_to_control(updated)
-        result["OwnerResolved"] = resolved
+        result["OwnerResolved"] = bool(hit.get("people"))
         return result
     except HTTPException:
         raise

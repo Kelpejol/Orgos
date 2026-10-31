@@ -159,6 +159,19 @@ def plan_sync(index: LibraryIndex, register: list[dict], queue: list[dict],
                                                control_item_id=control_item_id,
                                                fields={"Status": status, "BlockedReason": reason}))
 
+        # Controls accepted from the older extraction (contracts, JDs, audits) have no definition:
+        # their OwnerRole is their Control owner, judged by the same rule, so a job title or any
+        # other text that is not a role in Org Roles never stays Active.
+        for item in register:
+            f = item.get("fields") or {}
+            if (f.get("ControlId") or "").strip() or f.get("Status") not in ("Active", "Blocked"):
+                continue
+            status, reason = decide_status({"accountable": f.get("OwnerRole") or ""}, resolve)
+            if (status, reason) != (f.get("Status") or "", f.get("BlockedReason") or ""):
+                plan.actions.append(SyncAction("refresh_status", f"legacy:{item['id']}", {},
+                                               control_item_id=str(item["id"]),
+                                               fields={"Status": status, "BlockedReason": reason}))
+
     defined = set(index.defined_ids) | set(index.contested_ids)
     plan.no_longer_defined = sorted(cid for cid in confirmed if cid not in defined)
     return plan

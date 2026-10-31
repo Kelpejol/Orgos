@@ -1322,8 +1322,8 @@ async def _finalize_document_approval(
         cdt_cover.effective_date = effective.strftime("%B %Y")
     if next_review:
         cdt_cover.next_review_due = next_review.strftime("%B %Y")
-    if not cdt_cover.final_approval:
-        cdt_cover.final_approval = approver_name or cdt_cover.final_approval
+    # The cover's Final approval names a ROLE (V07); the approving PERSON is recorded in the
+    # revision history row below, never written into the cover.
     cdt_history = cdt_history + [RevisionHistoryEntry(
         version=outcome.version,
         date=effective_date.strftime("%B %Y" if outcome.issues_new_version else "%d %B %Y"),
@@ -2044,6 +2044,14 @@ async def suggest_cover(
         suggestions = suggest_cover_facts(
             doc, register_docs, folder_path=resolved_path, approved_on=approved_on,
         )
+        try:
+            from doc_standards.roles import RoleBook
+            from groups import service as groups_service
+            from lifecycle.cover_suggest import check_roles_exist
+            book = RoleBook.from_groups(await groups_service.list_groups())
+            suggestions = check_roles_exist(suggestions, lambda t: book.find(t) is not None)
+        except Exception as exc:
+            logger.info(f"Cover role suggestions for {item_id} not checked against Org Roles: {exc}")
         return {
             "document_id": item_id,
             "suggestions": suggestions.as_dict(),

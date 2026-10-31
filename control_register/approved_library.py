@@ -272,6 +272,9 @@ async def sync_approved_library(focus_code: str = "", apply: bool = True,
         awaiting, defined_anywhere = awaiting_definition(index, folder_docs)
 
         plan = plan_sync(index, register, queue, owners.resolve)
+        if not getattr(owners, "groups_loaded", True):
+            # Without Org Roles every status would read Blocked: keep the statuses as they are.
+            plan.actions = [a for a in plan.actions if a.kind != "refresh_status"]
         plan.actions = [a for a in plan.actions
                         if a.control_id not in awaiting or a.kind == "refresh_status"]
         new_or_changed = plan.count("create_item") + plan.count("update_item")

@@ -1,10 +1,9 @@
 // =============================================================================
 // OwnerDisplay.jsx — shows an owner ROLE and who it actually resolves to.
 //
-// The Control owner is a role in Org Roles, resolved to its members.
-// The server also exposes a legacy job-title fallback; this display preserves
-// that kind without treating a directory title as role registration. It shows:
-//   • a kind badge (ROLE / JOB TITLE / UNASSIGNED)
+// The Control owner is a role in Org Roles, resolved to its members. A text that
+// is only a Microsoft job title is shown as NOT A ROLE: nobody owns it. It shows:
+//   • a kind badge (ROLE / NOT A ROLE / UNASSIGNED)
 //   • the people who hold it (click to expand)
 //   • an alias note when the document's wording matched via an alias
 //
@@ -16,7 +15,8 @@ import { useState } from "react";
 
 const KINDS = {
   group:      { label: "ROLE",      fg: "#3C3489", bg: "#EEEDFE", bd: "#AFA9EC" },
-  job_title:  { label: "JOB TITLE",  fg: "#0C447C", bg: "#E6F1FB", bd: "#85B7EB" },
+  // A job title is never a role (Bobby): shown so the officer sees why it isn't owned.
+  job_title:  { label: "NOT A ROLE (job title)", fg: "#8A5A00", bg: "#FDF3E2", bd: "#F0CE94" },
   unresolved: { label: "UNASSIGNED", fg: "#8A5A00", bg: "#FDF3E2", bd: "#F0CE94" },
 };
 

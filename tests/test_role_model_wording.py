@@ -23,7 +23,7 @@ def test_blocked_owner_messages_preserve_status_and_explain_the_document_fix(can
 
 @pytest.mark.parametrize("action,name,found,expected", [
     ("create", " ", None, "Role name is required."),
-    ("create", "Audit Lead", {"id": "other"}, "A role named 'Audit Lead' already exists."),
+    ("create", "Audit Lead", {"id": "other", "name": "Audit Lead"}, "“Audit Lead” is already in Org Roles as Audit Lead."),
     ("update", " ", None, "Role name cannot be empty."),
     ("update", "Audit Lead", {"id": "other"}, "A role named 'Audit Lead' already exists."),
 ])
@@ -59,13 +59,18 @@ async def test_definition_preview_names_org_roles_and_preserves_accept_as_blocke
     assert item["Candidate"] == candidate
 
 
-@pytest.mark.parametrize("owner", ["", "Unregistered Example Role"])
-async def test_legacy_preview_wording_does_not_change_its_status_policy(owner):
+@pytest.mark.parametrize("owner,status", [("", "Blocked"), ("Unregistered Example Role", "Blocked"),
+                                          ("Registered Role", "Active")])
+async def test_an_older_extraction_is_active_only_when_its_owner_is_a_role_in_org_roles(owner, status, monkeypatch):
+    from ownership import resolver
+    owners = resolver.OwnershipIndex([{"name": "Registered Role", "members": [{"oid": "p"}]}],
+                                     {"Unregistered Example Role": [{"oid": "q"}]})   # a job title is not a role
+    monkeypatch.setattr(resolver, "get_ownership_index", AsyncMock(return_value=owners))
     item = {"ControlStatement": "The reviewer shall retain the signed review.", "ProposedOwnerRole": owner}
     impact = await queue._zone1_impact(item, "Accept", queue._impact_shell("1", "Accept"))
     detail = impact["creates"][0]["detail"]
     assert "Control owner:" in detail
-    assert f"status: {'Active' if owner else 'Blocked'}" in detail
+    assert f"status: {status}" in detail
     if not owner:
         assert "No Control owner proposed" in " ".join(impact["warnings"])
 
@@ -157,3 +162,23 @@ async def test_chat_owner_question_records_current_retrieval_limitations_without
     people_lookup.assert_not_awaited()
     context = _context_from_compliance(result)
     assert "Control owner: Review Lead" in context and "held by" not in context
+
+
+async def test_a_spelling_of_an_existing_role_cannot_be_created_beside_it(monkeypatch):
+    monkeypatch.setattr(groups_service, "list_groups", AsyncMock(return_value=[
+        {"id": "1", "name": "IT and Security Lead", "aliases": [], "members": []}]))
+    with pytest.raises(ValueError, match="already in Org Roles as IT and Security Lead"):
+        await groups_service.create_group("IT & Security Lead", "", "", [], "", "")
+
+
+async def test_an_alias_that_already_means_another_role_or_is_a_field_name_is_refused(monkeypatch):
+    monkeypatch.setattr(groups_service, "list_groups", AsyncMock(return_value=[
+        {"id": "1", "name": "Head of IT", "aliases": [], "members": []},
+        {"id": "2", "name": "ISMS Lead", "aliases": [], "members": []}]))
+    monkeypatch.setattr(groups_service, "get_groups_list_id", AsyncMock(return_value="l"))
+    monkeypatch.setattr(groups_service, "_has_col", lambda c: True)
+    update = AsyncMock()
+    monkeypatch.setattr(groups_service, "update_list_item", update)
+    with pytest.raises(ValueError, match="already means ISMS Lead.*field"):
+        await groups_service.update_group("1", None, None, None, ["isms lead", "Control Owner"])
+    update.assert_not_awaited()

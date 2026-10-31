@@ -112,7 +112,9 @@ export default function ControlRegister() {
         <Field l="Source document" v={selected.SourceDocument} />
         {selected.SourceClause && <Field l="Source clause"  v={selected.SourceClause} />}
         <Field l="Control owner"      v={<OwnerDisplay item={selected} />} />
-        {isCompliance && (
+        {/* Only an older control (no Control ID) is reassigned here; a defined control's owner
+            is stated in its document and changes through Document Lifecycle. */}
+        {isCompliance && !selected.ControlId && (
           reassigning ? (
             <div style={{ margin: "6px 0 10px", padding: "10px 12px", borderRadius: 8,
                           background: "var(--color-background-secondary)",
@@ -163,15 +165,19 @@ export default function ControlRegister() {
         {selected.RiskImplication && <Field l="Risk if fails" v={selected.RiskImplication} color="#A32D2D" />}
         {selected.EscalationNote  && <Field l="Escalation"   v={selected.EscalationNote} />}
         <Field l="Status"          v={selected.Status || "Active"} />
-        <Field l="Confidence"      v={selected.ConfidenceScore ? `${Math.round(selected.ConfidenceScore * 100)}%` : "—"} />
-        <Field l="Created from"    v={selected.QueueItemId ? `Queue item ${selected.QueueItemId}` : "—"} />
+        {!selected.ControlId && selected.ConfidenceScore ? (
+          <Field l="Extraction confidence" v={`${Math.round(selected.ConfidenceScore * 100)}% (older AI extraction)`} />
+        ) : null}
 
         {selected.Status === "Blocked" && (
           <div style={{ marginTop: 14, padding: "10px 12px", background: "#FCEBEB",
                         borderRadius: 8, fontSize: 12, color: "#791F1F",
                         border: "1px solid #F09595" }}>
-            This control is Blocked. Check the Control owner "{selected.OwnerRole}" in Org Roles and
-            assign the people who hold it. If the owner name is wrong, choose a role that exists there.
+            <strong>Blocked.</strong>{" "}
+            {selected.BlockedReason || `The Control owner “${selected.OwnerRole}” is not a role in Org Roles.`}
+            {selected.ControlId
+              ? " The owner is stated in the defining document: fix it there through Document Lifecycle."
+              : " Choose a role that exists in Org Roles with Reassign owner."}
           </div>
         )}
       </div>

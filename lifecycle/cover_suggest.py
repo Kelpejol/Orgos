@@ -377,7 +377,7 @@ def suggest_owner(owner_role: str | None, owner_name: str | None) -> Suggestion:
             source=f"Only a person is recorded as owner ({owner_name.strip()})",
             note=(
                 "The cover names a ROLE, not a person — individuals are not named in "
-                "controlled text (Procedure 7.8). Enter the owner's controlled job title."
+                "controlled text (Procedure 7.8). Choose the owning role from Org Roles."
             ),
         )
     return _unresolved(source="No owner recorded", note="Name the owning role.")
@@ -532,6 +532,19 @@ class CoverSuggestions:
             )
             if getattr(self, name).confidence == Confidence.UNRESOLVED
         ]
+
+
+def check_roles_exist(suggestions: "CoverSuggestions", is_role) -> "CoverSuggestions":
+    """A suggested owner or approver that is not a role in Org Roles is never offered as settled:
+    its confidence drops to LOW with a note to create the role or choose another. `is_role` is a
+    callable (is this text a role in Org Roles?)."""
+    from dataclasses import replace
+    for attr in ("owner", "first_pass_approval", "final_approval"):
+        s = getattr(suggestions, attr)
+        if s.value and s.confidence in (Confidence.HIGH, Confidence.MEDIUM) and not is_role(s.value):
+            setattr(suggestions, attr, replace(s, confidence=Confidence.LOW, note=(
+                f"“{s.value}” is not a role in Org Roles yet. Create it there, or choose the role that holds it.")))
+    return suggestions
 
 
 def suggest_cover_facts(

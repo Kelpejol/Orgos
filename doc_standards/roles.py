@@ -165,6 +165,17 @@ def describes_a_group(text: str) -> bool:
     return t.endswith(" roles") or t.endswith(" role holders") or t in {"all staff", "everyone", "all employees", "all users"}
 
 
-def names_several(text: str) -> bool:
-    """A value that lists more than one role. ';' separates roles; a role's own name may contain 'and' or '/'."""
-    return ";" in (text or "")
+def names_several(text: str, is_role=None) -> bool:
+    """
+    A value that lists more than one role. ';' always separates roles. A role's own name may
+    contain ',', 'and', '&' or '/' ("Lead, Assessment Research, Psychometrics and AI"), so those
+    count only when `is_role` (a callable: is this text a role in Org Roles?) says the whole text
+    is not a role but at least two of its parts are ("CISO and DPO", "Head of IT, ISMS Lead").
+    """
+    t = (text or "").strip()
+    if ";" in t:
+        return True
+    if is_role is None or not t or is_role(t):
+        return False
+    parts = [p.strip(" .") for p in re.split(r",|\s+and\s+|\s*&\s*|\s*/\s*", t) if p.strip(" .")]
+    return len(parts) >= 2 and sum(1 for p in parts if is_role(p)) >= 2

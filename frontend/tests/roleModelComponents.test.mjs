@@ -47,13 +47,13 @@ async function component(path, extraExports = []) {
 
 const render = (Component, props) => renderToStaticMarkup(createElement(Component, props));
 
-test("role input distinguishes registered roles from unchanged directory suggestions", async () => {
+test("role input suggests Org Roles only — a directory job title is never offered as a role", async () => {
   const { default: Input } = await component("components/shared/JobTitleInput.jsx");
   const html = render(Input, { value: "", onChange() {} });
-  assert.match(html, /Enter a role in Org Roles/);
-  assert.match(html, /Registered Example \(role\)/);
-  assert.match(html, /Directory Example \(directory title; verify in Org Roles\)/);
-  assert.equal((html.match(/<option /g) || []).length, 2);
+  assert.match(html, /Choose a role in Org Roles/);
+  assert.match(html, /<option value="Registered Example">/);
+  assert.doesNotMatch(html, /Directory Example/);
+  assert.equal((html.match(/<option /g) || []).length, 1);
 });
 
 test("unresolved owner guidance points to Org Roles without asserting a directory title is authority", async () => {

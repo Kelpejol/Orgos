@@ -344,7 +344,8 @@ def v07(s: Subject) -> Outcome:
     problems = []
     for entry in named.values():
         text = entry["text"]
-        placeholder, several = role_matching.is_placeholder(text), role_matching.names_several(text)
+        placeholder = role_matching.is_placeholder(text)
+        several = role_matching.names_several(text, lambda t: book.find(t) is not None)
         if not (placeholder or several) and book.find(text):
             continue
         kinds = sorted({k for k, _ in entry["uses"]})

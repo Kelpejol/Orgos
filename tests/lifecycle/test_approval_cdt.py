@@ -72,7 +72,7 @@ async def test_approval_advances_cover_and_uses_published_copy():
     create_fields = mock_create.call_args.args[2]
     cover = CdtCoverFacts.from_json(create_fields["CDTCoverFacts"])
     assert cover.version == "01"                      # a first issue is 01, whatever the cover had typed
-    assert cover.final_approval == "Jane Approver"     # auto-populated
+    assert cover.final_approval == ""                  # a role field: never filled with a person's name
     history = RevisionHistoryEntry.list_from_json(create_fields["RevisionHistory"])
     assert len(history) == 2                          # original + the new approval row
     assert history[-1].version == "01"
