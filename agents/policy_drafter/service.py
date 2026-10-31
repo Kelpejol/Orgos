@@ -68,7 +68,9 @@ async def _generate_purpose(
     title: str, doc_type: str, department: str, notes: str,
     standards_mapping: str,
 ) -> str:
-    effective_standards = standards_mapping or "ISO 27001, ISO 9001, NDPA"
+    # Only the standards the requester named. None named is none — never a blanket default
+    # (it flowed into the Document Register as if the document mapped to all three).
+    effective_standards = (standards_mapping or "").strip()
     prompt = f"""You are a compliance document writer for Dragnet Solutions Limited, a Nigerian technology company.
 Write the Purpose section for a {doc_type} titled "{title}".
 Department: {department}
@@ -78,7 +80,7 @@ Brief from requestor: {notes or 'No additional brief provided'}
 Rules:
 - ONE paragraph, 3-5 sentences maximum
 - Opening must be: "This {doc_type} establishes..." or "The purpose of this {doc_type} is to..."
-- You MUST name the standards explicitly: write "{effective_standards}" somewhere in the text
+{('- You MUST name the standards explicitly: write "' + effective_standards + '" somewhere in the text') if effective_standards else '- Name no external standard: none was given for this document'}
 - Use only "shall" or "must" — NEVER "should" or "may"
 
 Write only the Purpose section text, no heading, no preamble."""
@@ -105,15 +107,17 @@ Write only the Scope section text, no heading, no preamble."""
 async def _generate_policy_statement(
     title: str, doc_type: str, notes: str, standards_mapping: str,
 ) -> str:
-    effective_standards = standards_mapping or "ISO 27001, ISO 9001, NDPA"
+    # Only the standards the requester named. None named is none — never a blanket default
+    # (it flowed into the Document Register as if the document mapped to all three).
+    effective_standards = (standards_mapping or "").strip()
     prompt = f"""You are writing the Policy Statement section for a {doc_type} titled "{title}" for Dragnet Solutions Limited.
 Brief: {notes or 'Standard policy controls'}
 
-REQUIRED STANDARDS: {effective_standards}
+REQUIRED STANDARDS: {effective_standards or 'none named — cite no standard clause'}
 
 MANDATORY RULES — violating any of these causes the document to FAIL quality review:
 1. BANNED WORDS: Never write "employees", "personnel", "staff", "management", "administration", "the team", "leadership", "stakeholders", "responsible parties", "appropriate personnel". Assign responsibility to a specific, plausible named role instead (e.g. "the ISMS Lead", "the Compliance Officer") — infer a role appropriate to the statement's subject matter.
-2. Every statement MUST end with a standards clause in parentheses, e.g. (ISO 27001 A.5.18) or (ISO 9001 8.1) or (NDPA S.39).
+2. {'Every statement MUST end with a standards clause in parentheses, e.g. (ISO 27001 A.5.18) or (ISO 9001 8.1) or (NDPA S.39).' if effective_standards else 'Do not cite standards clauses: none were named for this document.'}
 3. Every statement MUST use "shall" or "must" — never "should", "may", "where possible", "as appropriate".
 4. Every statement MUST assign responsibility to a specific named role, not a group.
 5. Write 5-8 numbered statements. Each must be specific and auditable.
@@ -254,7 +258,9 @@ async def draft_document(
     master_template_bytes = await load_master_template(doc_type)
 
     # Default standards if not provided — ensures CDI-09 passes
-    effective_standards = standards_mapping or "ISO 27001, ISO 9001, NDPA"
+    # Only the standards the requester named. None named is none — never a blanket default
+    # (it flowed into the Document Register as if the document mapped to all three).
+    effective_standards = (standards_mapping or "").strip()
 
     # ── Generate all sections via Ollama ─────────────────────────────────────
     logger.info("Generating Purpose...")
@@ -293,7 +299,7 @@ async def draft_document(
 Document Code: {doc_code}
 Version: 1.0
 Status: DRAFT
-Standards: {standards_mapping or 'ISO 27001, ISO 9001'}
+Standards: {standards_mapping or 'none named'}
 Department: {department}
 
 REVISION HISTORY

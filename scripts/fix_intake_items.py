@@ -60,8 +60,9 @@ async def run(apply: bool) -> int:
                 # The blanket default an old patch script wrote on items with no standards. The document
                 # states none, so none is the truth; left in place it would flow into the Document Register.
                 want["StandardsMapping"] = ""
+            # A code the file does not state is never blanked: an officer may have set it by hand.
             diff = {k: v for k, v in want.items()
-                    if (f.get(k) or "") != v and (v or k in ("DocumentCode", "StandardsMapping"))}
+                    if (f.get(k) or "") != v and (v or k == "StandardsMapping")}
             if diff:
                 changes.append((str(item["id"]), f.get("Title") or name, {k: (f.get(k) or "", v) for k, v in diff.items()}))
 

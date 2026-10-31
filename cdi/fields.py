@@ -465,3 +465,17 @@ def split_labelled(text: str) -> list[tuple[str, str]] | None:
         end = starts[k + 1].start() if k + 1 < len(starts) else len(text)
         pairs.append((m.group("label").strip(), text[m.end():end].strip()))
     return pairs
+
+
+def standards_named(text: str) -> str:
+    """The standards a document says it maps to, in the Register's vocabulary ("ISO 27001, NDPA").
+    Nothing is assumed: a document that states none gets none."""
+    t = text or ""
+    found = []
+    if re.search(r"\b27001\b", t):
+        found.append("ISO 27001")
+    if re.search(r"\b9001\b", t):
+        found.append("ISO 9001")
+    if re.search(r"\bNDP[AR]\b", t):
+        found.append("NDPA")
+    return ", ".join(found)

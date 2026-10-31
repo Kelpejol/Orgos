@@ -10,7 +10,9 @@ import logging
 from datetime import date, timedelta
 
 from config import settings
-from graph.client import get_list_items, create_list_item
+from control_register.sync import _document_type
+from graph.client import create_list_item, get_list_items, update_list_item
+from lifecycle.router import _approved_source
 
 logger = logging.getLogger(__name__)
 
@@ -44,8 +46,10 @@ async def check_document_review_dates() -> None:
         logger.error(f"Scheduled review: failed to read Document Register: {exc}")
         return
 
-    # Build set of document codes already in lifecycle with Scheduled Review trigger
+    # Document codes already in Lifecycle, whatever opened them (a scheduled review, a revision an
+    # owner started, intake): one document is revised once at a time.
     existing_lifecycle_codes: set[str] = set()
+    lifecycle_items: list[dict] = []
     if settings.is_list_configured(settings.document_lifecycle_list_id):
         try:
             lifecycle_items = await get_list_items(
@@ -55,8 +59,7 @@ async def check_document_review_dates() -> None:
             for li in lifecycle_items:
                 lf = li.get("fields", {})
                 if (
-                    lf.get("Trigger") == "Scheduled Review"
-                    and lf.get("Stage") not in ("Approved", None)
+                    lf.get("Stage") in ("Review", "Sensitisation", "Approval")
                     and lf.get("ApprovalStatus") != "Approved"
                 ):
                     code = lf.get("DocumentCode", "").strip()
@@ -112,7 +115,7 @@ async def check_document_review_dates() -> None:
         lc_fields: dict = {
             "Title":        f"Scheduled review — {f.get('Title', doc_code)}",
             "DocumentCode": doc_code,
-            "DocumentType": f.get("DocumentType", "Policy"),
+            "DocumentType": f.get("DocumentType") or _document_type(doc_code) or "Policy",
             "Department":   f.get("Department", ""),
             "Stage":        "Review",
             "Trigger":      "Scheduled Review",
@@ -131,13 +134,18 @@ async def check_document_review_dates() -> None:
             lc_fields["OwnerEntraId"] = owner_oid
         if owner_name:
             lc_fields["Owner"] = owner_name
-        if f.get("SharePointUrl"):
-            lc_fields["SharePointFileUrl"] = f.get("SharePointUrl")
-        if settings.is_list_configured(settings.document_lifecycle_list_id):
-            linked = f.get("LinkedDocumentRegisterItem", f.get("id", item.get("id", "")))
-            if linked:
-                lc_fields["LinkedDocumentRegisterItem"] = str(linked)
-                lc_fields["RevisionOf"] = str(linked)   # approval updates it in place
+        register_id = str(item.get("id", ""))
+        # Start from the approved SOURCE (live cover) when there is one, carrying the cover facts and
+        # history from the Register — exactly as a revision an owner starts by hand.
+        source = _approved_source(lifecycle_items, register_id)
+        if source or f.get("SharePointUrl"):
+            lc_fields["SharePointFileUrl"] = source or f.get("SharePointUrl")
+        for col in ("CDTCoverFacts", "RevisionHistory", "ApplicableStandards"):
+            if f.get(col):
+                lc_fields["StandardsMapping" if col == "ApplicableStandards" else col] = f[col]
+        if register_id:
+            lc_fields["LinkedDocumentRegisterItem"] = register_id
+            lc_fields["RevisionOf"] = register_id   # approval updates it in place
 
         try:
             if settings.is_list_configured(settings.document_lifecycle_list_id):
@@ -147,6 +155,12 @@ async def check_document_review_dates() -> None:
                     lc_fields,
                 )
                 triggered += 1
+                existing_lifecycle_codes.add(doc_code)
+                try:                       # the approved version still governs while it is reviewed
+                    await update_list_item(settings.document_register_list_id, "Document Register",
+                                           register_id, {"Status": "Under Review"})
+                except Exception as exc:
+                    logger.warning(f"Scheduled review: {doc_code} not flagged Under Review: {exc}")
                 logger.info(
                     f"Scheduled review: created lifecycle entry for {doc_code} "
                     f"(review due {review_date_str})"

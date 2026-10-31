@@ -683,12 +683,12 @@ const NewDocForm = ({ onSuccess, onCancel }) => {
           <label style={lbl}>Standards mapping</label>
           <input
             type="text" value={form.standards_mapping} onChange={set("standards_mapping")}
-            placeholder="Defaults to ISO 27001, ISO 9001, NDPA"
-            title="Which standards this document addresses. If left blank the system defaults to ISO 27001, ISO 9001, and NDPA. You can add specific clause references e.g. 'ISO 27001 A.5.18, NDPA S.39'."
+            placeholder="e.g. ISO 27001 A.5.18, NDPA S.39"
+            title="Which standards this document addresses, as the document states them. Leave blank if it maps to none; OrgOS reads them from the document's header when the file arrives."
             style={inp} onFocus={focus} onBlur={blur}
           />
           <div style={{ fontSize: 10, color: "var(--color-text-tertiary)", marginTop: 4 }}>
-            Blank → defaults to ISO 27001, ISO 9001, NDPA
+            Blank → none. OrgOS reads them from the document when the file is uploaded.
           </div>
         </div>
       </div>

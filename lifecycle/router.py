@@ -806,10 +806,11 @@ async def progress_doc(
                     status_code=422,
                     detail="Upload a file before progressing from Review.",
                 )
-            if doc.get("CDIStatus") == "Failed":
+            if doc.get("CDIStatus") in ("Failed", "Pending"):
                 # A stored result is only as good as the checker that wrote it
-                # (an intake item keeps its day-one result for good). Judge the
-                # file by the current checker before refusing to progress.
+                # (an intake item keeps its day-one result for good), and a rejected
+                # document is reset to Pending: judge the file by the current checker
+                # before letting it move on or refusing it.
                 await _refresh_stale_cdi(item_id, doc)
             if doc.get("CDIStatus") == "Failed":
                 raise HTTPException(
@@ -2547,6 +2548,18 @@ async def _refresh_stale_cdi(item_id: str, doc: dict) -> None:
     doc["CDIStatus"], doc["CDIFailures"] = status_, failures
 
 
+async def _refresh_standards(item_id: str, fields: dict, data: bytes, filename: str) -> None:
+    """Store the standards the file states, when it states any and they differ. Never raises."""
+    try:
+        from cdi.fields import standards_named
+        from cdi.parser import parse_document
+        stated = standards_named(parse_document(data, filename).header.standards_as_written)
+        if stated and stated != (fields.get("StandardsMapping") or ""):
+            await update_list_item(_get_list_id(), _LIST_NAME, item_id, {"StandardsMapping": stated})
+    except Exception as exc:
+        logger.info(f"Standards not re-read for lifecycle {item_id}: {exc}")
+
+
 async def _cdi_check_file(item_id: str, file_bytes: bytes, filename: str) -> tuple[str, str]:
     """Run the CDI Checker on a lifecycle item's file → (CDIStatus, CDIFailures)."""
     cdi_status   = "Pending"
@@ -2578,6 +2591,10 @@ async def _cdi_check_file(item_id: str, file_bytes: bytes, filename: str) -> tup
         # a document enters Lifecycle — not only when someone asks (doc_standards/role_check.py).
         from doc_standards.role_check import with_role_problems
         cdi_status, cdi_failures = await with_role_problems(cdi_status, cdi_failures, cdi_check_bytes, filename)
+        # The standards the document states, re-read whenever its file changes: approval copies
+        # them into the Document Register, so they must be the document's, not a stale value.
+        if item_data is not None:
+            await _refresh_standards(item_id, item_data.get("fields", {}) or {}, cdi_check_bytes, filename)
         if cdi_result.get("error"):
             logger.warning(f"CDI check error for lifecycle {item_id}: {cdi_result['error']}")
         logger.info(f"CDI check for lifecycle {item_id}: {cdi_status} — {cdi_result.get('fail_count', 0)} failures")

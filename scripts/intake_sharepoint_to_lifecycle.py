@@ -404,15 +404,7 @@ def _department_from_path(folder_path: str, filename: str) -> str:
     return "QI"          # the governance default; the note says it was a fallback
 
 
-def standards_from_text(text: str) -> str:
-    """The standards a document says it maps to, in the register's vocabulary.
-    Nothing is assumed: a document that states none gets none."""
-    t = text or ""
-    found = []
-    if re.search(r"\b27001\b", t): found.append("ISO 27001")
-    if re.search(r"\b9001\b", t): found.append("ISO 9001")
-    if re.search(r"\bNDP[AR]\b", t): found.append("NDPA")
-    return ", ".join(found)
+from cdi.fields import standards_named as standards_from_text   # one rule, shared with Lifecycle
 
 
 _STATUS_TAIL = re.compile(
@@ -806,8 +798,9 @@ async def create_lifecycle_entry(
                 "Trigger": fields["Trigger"],
                 "AIGenerated": fields["AIGenerated"],
                 "CDIStatus": fields["CDIStatus"],
-                "StandardsMapping": fields["StandardsMapping"],
             }
+            if fields.get("StandardsMapping"):            # a document that states none has none
+                bare["StandardsMapping"] = fields["StandardsMapping"]
             try:
                 item = await create_list_item(
                     settings.document_lifecycle_list_id,
