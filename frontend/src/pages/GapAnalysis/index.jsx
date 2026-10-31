@@ -80,6 +80,8 @@ function normalizePkg(raw) {
     // already-stored remediation packages (old key) still display.
     records:           toArr(raw.records ?? raw.evidence),
     roles:             toArr(raw.roles),
+    responsibilities:  toArr(raw.responsibilities),
+    suggestedRoles:    toArr(raw.roles_not_in_org_roles),
     risk:              toStr(raw.risk),
     target_date:       toStr(raw.target_date),
     verification:      toStr(raw.verification),
@@ -155,6 +157,19 @@ const RemediationPackage = ({ packageJson, onApprove, onClose, isPending, approv
         <div style={{ marginBottom: 10, padding: "7px 10px", background: "#FCEBEB",
                       borderRadius: 6, fontSize: 11, color: "#791F1F" }}>
           Risk if gap stays open: {pkg.risk}
+        </div>
+      )}
+
+      {(pkg.roles.length > 0 || pkg.responsibilities.length > 0 || pkg.suggestedRoles.length > 0) && (
+        <div style={{ fontSize: 12, marginBottom: 10, lineHeight: 1.6 }}>
+          {pkg.roles.length > 0 && <div><strong>Roles (Org Roles):</strong> {pkg.roles.join(", ")}</div>}
+          {pkg.responsibilities.length > 0 && <div><strong>Responsible:</strong> {pkg.responsibilities.join("; ")}</div>}
+          {pkg.suggestedRoles.length > 0 && (
+            <div style={{ color: "#8A5A00" }}>
+              <strong>Suggested, not in Org Roles:</strong> {pkg.suggestedRoles.join(", ")} — choose an existing role
+              or create it before acting on this.
+            </div>
+          )}
         </div>
       )}
 

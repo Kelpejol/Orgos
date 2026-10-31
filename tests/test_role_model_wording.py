@@ -137,9 +137,10 @@ def test_chat_control_and_document_labels_preserve_their_distinct_existing_owner
         assert "Control owner: Review Lead" in text and "Document owner: Avery Example" in text
 
 
-async def test_chat_owner_question_records_current_retrieval_limitations_without_live_calls(monkeypatch):
+async def test_chat_answers_who_owns_a_control_by_its_id_with_the_role_and_its_holders(monkeypatch):
     from agents.nl_search import compliance_search as search
     from agents.nl_search.response_generator import _context_from_compliance
+    from ownership import resolver
     monkeypatch.setattr(search.settings, "control_register_list_id", "example-controls")
     items = [{"id": str(i), "fields": {"ControlId": cid, "OwnerRole": role, "OwnerEntraId": "",
               "ControlStatement": statement, "Status": "Active"}}
@@ -149,19 +150,31 @@ async def test_chat_owner_question_records_current_retrieval_limitations_without
              ], 1)]
     monkeypatch.setattr(search, "get_list_items", AsyncMock(return_value=items))
     monkeypatch.setattr(search, "_graph_search_list", AsyncMock(return_value=[]))
-    monkeypatch.setattr(search, "_extract_entities", AsyncMock(return_value={"keywords": ["SWEEP-01"]}))
+    monkeypatch.setattr(search, "_extract_entities", AsyncMock(return_value={"keywords": ["owns"]}))
     for name in ("_search_compliance_calendar", "_search_gap_analysis", "_search_document_register",
                  "_search_strategic_risks", "_get_all_records"):
         monkeypatch.setattr(search, name, AsyncMock(return_value=[]))
-    people_lookup = AsyncMock(side_effect=AssertionError("Role-owned rows have no person OID"))
-    monkeypatch.setattr(search, "resolve_user", people_lookup)
+    owners = resolver.OwnershipIndex([{"name": "Review Lead", "members": [{"oid": "p", "display_name": "Ada Okafor"}]}], {})
+    monkeypatch.setattr(resolver, "get_ownership_index", AsyncMock(return_value=owners))
     result = await search.search_compliance("who owns control SWEEP-01")
-    # Characterization of D7, not a desired new contract: ID is not searched or carried through.
-    assert len(result["controls"]) == 2 and all("control_id" not in row for row in result["controls"])
-    assert result["controls"][0]["owner"]["display_name"] == "Review Lead"
-    people_lookup.assert_not_awaited()
+    [row] = result["controls"]                                  # exactly the control asked about
+    assert row["control_id"] == "SWEEP-01"
+    assert row["owner"]["role"] == "Review Lead" and row["owner"]["holders"] == ["Ada Okafor"]
     context = _context_from_compliance(result)
-    assert "Control owner: Review Lead" in context and "held by" not in context
+    assert "SWEEP-01" in context and "Review Lead — held by Ada Okafor" in context
+
+
+async def test_my_controls_finds_nothing_rather_than_everyones(monkeypatch):
+    from agents.nl_search import compliance_search as search
+    from ownership import resolver
+    monkeypatch.setattr(search.settings, "control_register_list_id", "example-controls")
+    items = [{"id": "1", "fields": {"ControlId": "A-01", "OwnerRole": "Review Lead", "Status": "Active",
+                                    "ControlStatement": "x"}}]
+    monkeypatch.setattr(search, "get_list_items", AsyncMock(return_value=items))
+    monkeypatch.setattr(resolver, "get_ownership_index",
+                        AsyncMock(return_value=resolver.OwnershipIndex([{"name": "Review Lead", "members": []}], {})))
+    rows = await search._search_controls([], None, question="my controls", user_oid="me", is_personal_query=True)
+    assert rows == []
 
 
 async def test_a_spelling_of_an_existing_role_cannot_be_created_beside_it(monkeypatch):

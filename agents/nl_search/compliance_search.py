@@ -337,6 +337,7 @@ def _map_control(item: dict) -> dict:
         "control_statement":f.get("ControlStatement") or f.get("Title", ""),
         "control_type":     f.get("ControlType", ""),
         "iso_clause":       f.get("ISOClause", ""),
+        "control_id":       f.get("ControlId", ""),
         "owner_role_title": f.get("OwnerRole", ""),
         "owner_oid":        f.get("OwnerEntraId", ""),
         "source_document":  f.get("SourceDocument", ""),
@@ -518,7 +519,7 @@ async def _search_gap_analysis(
     # Owner filter
     if is_personal_query and user_oid:
         filtered = [i for i in items if i.get("fields", {}).get("OwnerEntraId", "") == user_oid]
-        items = filtered if filtered else items
+        items = filtered   # a personal question is answered from the person's own items, even if none
 
     # Keyword filter — try Graph Search first for multi-line text, fall back to Python
     if keywords:
@@ -577,7 +578,7 @@ async def _search_strategic_risks(
 
     if is_personal_query and user_oid:
         filtered = [i for i in items if i.get("fields", {}).get("OwnerEntraId", "") == user_oid]
-        items = filtered if filtered else items
+        items = filtered   # a personal question is answered from the person's own items, even if none
 
     if keywords:
         search_hits = await _graph_search_list(list_id, "Strategic Risk Register", " ".join(keywords))
@@ -631,7 +632,7 @@ async def _search_compliance_calendar(
 
     if is_personal_query and user_oid:
         filtered = [i for i in items if i.get("fields", {}).get("OwnerEntraId", "") == user_oid]
-        items = filtered if filtered else items
+        items = filtered   # a personal question is answered from the person's own items, even if none
 
     if keywords:
         search_hits = await _graph_search_list(list_id, "Compliance Calendar", " ".join(keywords))
@@ -693,7 +694,7 @@ async def _search_document_register(
 
     if is_personal_query and user_oid:
         filtered = [i for i in items if i.get("fields", {}).get("OwnerEntraId", "") == user_oid]
-        items = filtered if filtered else items
+        items = filtered   # a personal question is answered from the person's own items, even if none
 
     if keywords:
         search_hits = await _graph_search_list(list_id, "Document Register", " ".join(keywords))
@@ -742,13 +743,26 @@ async def _search_controls(
     if not items:
         return []
 
+    # A question that names a Control ID ("who owns ACS-L3-03?") is answered from that control,
+    # exactly — before any keyword or semantic matching.
+    from cdi.codes import find_control_ids, is_control_id
+    asked = [c for c in find_control_ids((question or "").upper()) if is_control_id(c)]
+    if asked:
+        exact = [i for i in items if (i.get("fields", {}).get("ControlId") or "").strip().upper() in asked]
+        if exact:
+            return [_map_control(i) for i in exact]
+
     sv = set(ctrl_statuses)
     filtered = [i for i in items if i.get("fields", {}).get("Status", "") in sv]
     items = filtered if filtered else items
 
     if is_personal_query and user_oid:
-        filtered = [i for i in items if i.get("fields", {}).get("OwnerEntraId", "") == user_oid]
-        items = filtered if filtered else items
+        # A control is owned by a ROLE: "my controls" are those whose Control owner is a role the
+        # person holds in Org Roles. None is none — never everyone's controls.
+        from doc_standards.roles import norm
+        from ownership.resolver import get_ownership_index
+        mine = (await get_ownership_index()).roles_for_user(user_oid)
+        items = [i for i in items if norm(i.get("fields", {}).get("OwnerRole", "")) in mine]
 
     # ISO clause filter (Python)
     if iso_clause:
@@ -829,8 +843,9 @@ async def _vector_search_controls(question: str) -> list[dict]:
                 "control_statement":hit.get("document", ""),
                 "control_type":     meta.get("control_type", ""),
                 "iso_clause":       meta.get("iso_clause", ""),
+                "control_id":       meta.get("control_id", ""),
                 "owner_role_title": meta.get("owner_role", ""),
-                "owner_oid":        meta.get("owner_oid", ""),
+                "owner_oid":        "",       # an index entry never names a person as the owner
                 "source_document":  meta.get("document_code", ""),
                 "risk_statement":   "",
                 "status":           "Active",
@@ -900,7 +915,9 @@ async def search_compliance(
             if cid:
                 ev_by_ctrl.setdefault(cid, []).append(ev)
         for ctrl in enriched:
-            ctrl["records"] = ev_by_ctrl.get(ctrl["id"], [])[:_EVIDENCE_PER_CONTROL]
+            # A record made for a defined control is linked by its Control ID; an older one by row id.
+            recs = ev_by_ctrl.get(ctrl.get("control_id") or "", []) + ev_by_ctrl.get(ctrl["id"], [])
+            ctrl["records"] = recs[:_EVIDENCE_PER_CONTROL]
 
     # Resolve all OIDs in a single parallel batch
     all_oids = (
@@ -918,8 +935,19 @@ async def search_compliance(
             return owners[oid]
         return {"display_name": fallback or "Unassigned", "email": ""}
 
+    # A control's owner is its Control owner role, and the people who hold it in Org Roles.
+    from ownership.resolver import get_ownership_index
+    roles_index = await get_ownership_index()
     for ctrl in enriched:
-        ctrl["owner"] = _person(ctrl.get("owner_oid", ""), fallback=ctrl.get("owner_role_title", ""))
+        role = ctrl.get("owner_role_title", "")
+        hit = roles_index.resolve(role) if role else {"kind": "unresolved", "people": []}
+        holders = [p.get("display_name") or p.get("email") or "" for p in hit.get("people", [])]
+        ctrl["owner"] = {
+            "display_name": role or "No Control owner", "email": "", "role": role,
+            "holders": [h for h in holders if h],
+            "role_status": ("a role in Org Roles" if hit.get("kind") == "group"
+                            else "not a role in Org Roles" if role else "no Control owner named"),
+        }
     for ob in obligations:
         ob["owner"] = _person(ob.get("owner_oid", ""))
     for gap in gaps:

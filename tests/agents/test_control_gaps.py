@@ -148,3 +148,15 @@ def test_new_gaps_get_ids_that_continue_the_series():
     nxt = svc._gap_id_allocator([{"fields": {"GapId": f"GAP-ISO27001-{yy}-007"}}])
     assert nxt("ISO 27001") == f"GAP-ISO27001-{yy}-008" and nxt("ISO 27001") == f"GAP-ISO27001-{yy}-009"
     assert nxt("CDI") == f"GAP-CDI-{yy}-001"
+
+
+def test_a_remediation_package_never_presents_an_invented_role_or_a_field_name_as_a_role():
+    import json
+    import agents.gap_analyzer.service as svc
+    from doc_standards.roles import RoleBook
+    book = RoleBook.from_groups([{"id": "1", "name": "Information Security Officer", "aliases": ["ISO"]}])
+    out = json.loads(svc.validate_remediation_roles(json.dumps(
+        {"roles": ["iso", "Document Owner", "Chief Wizard"]}), book))
+    assert out["roles"] == ["Information Security Officer"]
+    assert out["responsibilities"] == ["the document owner of the document concerned"]
+    assert out["roles_not_in_org_roles"] == ["Chief Wizard"]

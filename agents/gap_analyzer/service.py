@@ -111,6 +111,41 @@ async def _load_gap_items() -> Optional[list[dict]]:
         return None
 
 
+def validate_remediation_roles(remediation_json: str, book) -> str:
+    """
+    A remediation package proposes; it does not assign. Its roles are checked against Org Roles:
+      • a role that exists is kept, by its Org Roles name;
+      • a field name ("Document Owner", "Control owner") is a responsibility, not a role — it is
+        moved to "responsibilities" ("the Document owner of the document concerned");
+      • anything else (an AI's plausible guess) is moved to "roles_not_in_org_roles", to be chosen
+        or created by a person — never shown as an assignment.
+    """
+    from doc_standards.roles import is_placeholder
+    try:
+        pkg = json.loads(remediation_json or "{}")
+    except (TypeError, ValueError):
+        return remediation_json
+    if not isinstance(pkg, dict):
+        return remediation_json
+    real, responsibilities, unknown = [], [], []
+    for r in pkg.get("roles") or []:
+        r = str(r or "").strip()
+        if not r:
+            continue
+        if is_placeholder(r):
+            responsibilities.append(f"the {r.lower()} of the document concerned")
+        elif book is not None and book.find(r) is not None:
+            real.append(book.find(r).name)
+        else:
+            unknown.append(r)
+    pkg["roles"] = list(dict.fromkeys(real))
+    if responsibilities:
+        pkg["responsibilities"] = list(dict.fromkeys(responsibilities))
+    if unknown:
+        pkg["roles_not_in_org_roles"] = list(dict.fromkeys(unknown))
+    return json.dumps(pkg)
+
+
 def _tracked_gap_keys(items: list[dict]) -> set[str]:
     """
     The GapKeys already tracked: open, in progress — or settled by a person (accepted as a risk),
@@ -512,6 +547,15 @@ async def run_gap_analysis(triggered_by: str = "system") -> dict:
         await _log_gap_analysis_run(summary, triggered_by=triggered_by)
         return summary
 
+    # The roles a package names are checked against Org Roles before it is written.
+    try:
+        from doc_standards.roles import RoleBook
+        from groups import service as groups_service
+        role_book = RoleBook.from_groups(await groups_service.list_groups())
+    except Exception as exc:
+        logger.warning(f"Org Roles unavailable; remediation roles are kept as suggestions: {exc}")
+        role_book = None
+
     # Part 2 — AI analysis + remediation for each new gap, then write to SharePoint
     written = 0
     for gap in new_gaps:
@@ -537,7 +581,7 @@ async def run_gap_analysis(triggered_by: str = "system") -> dict:
                 "Severity":            gap["severity"],
                 "Finding":             ai["finding_narrative"],
                 "Impact":              ai["audit_risk"],
-                "ProposedRemediation": ai["remediation_json"],
+                "ProposedRemediation": validate_remediation_roles(ai["remediation_json"], role_book),
                 "Status":              "Open",
                 "TargetDate":          target,
             }

@@ -390,7 +390,9 @@ async def _zone1_accept_cascade(item: dict, user: CurrentUser, overrides: dict) 
                 "document_code": item.get("SourceDocumentCode", ""),
                 "iso_clause":    iso_clause or "",
                 "control_type":  control_type or "",
-                "owner_oid":     user.oid,
+                # The control's owner is its Control owner ROLE — never the reviewer who accepted it.
+                "owner_role":    plan["control"].get("OwnerRole", ""),
+                "control_id":    plan["control"].get("ControlId", ""),
             }
             await embed_and_store_control(cr_id, control_stmt, embed_meta)
             created.append("NL Search: indexed")

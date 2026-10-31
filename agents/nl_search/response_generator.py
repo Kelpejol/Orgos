@@ -69,6 +69,12 @@ CRITICAL RULES:
    stands for, what a governance role or body does, what a standard covers, definitions of
    industry terms): answer from your domain knowledge — these are industry fundamentals,
    not Dragnet-specific data.
+1a. Ownership: a control is owned by ONE role, its Control owner, and the role is held by people
+   in Org Roles. Say who owns a control as "<role> — held by <people>", from the context. A role
+   marked "not a role in Org Roles" has nobody answerable: say so plainly. A Microsoft job title is
+   never a role, and "Control Owner", "Document Owner" or "Custodian Role" are field names, not
+   roles — never present any of them as the owner. If a personal question ("my controls") finds
+   nothing, say the person holds no role that owns any — never list other people's items.
 2. Follow-ups: if context is empty but the conversation history or memory context contains
    the relevant information (e.g. the user asks "can you explain that" after a prior answer),
    answer naturally from that history — you do not need fresh context to continue.
@@ -231,16 +237,20 @@ def _context_from_compliance(result: dict) -> str:
         person     = (owner.get("display_name") or "").strip()
         ev         = ctrl.get("records", [])
 
-        if role_title and person and person != role_title:
-            owner_str = f"{role_title} (held by {person})"
+        holders = owner.get("holders") or []
+        status = owner.get("role_status", "")
+        if role_title and holders:
+            owner_str = f"{role_title} — held by {', '.join(holders[:6])}"
+        elif role_title and status == "not a role in Org Roles":
+            owner_str = f"{role_title} (not a role in Org Roles — nobody is answerable yet)"
         elif role_title:
-            owner_str = role_title
-        elif person:
-            owner_str = person
+            owner_str = f"{role_title} (a role in Org Roles with nobody assigned yet)"
         else:
-            owner_str = "Unassigned"
+            owner_str = "No Control owner named"
 
         header = "[CONTROL"
+        if ctrl.get("control_id"):
+            header += f" {ctrl['control_id']}"
         if src:
             header += f": {src}"
         header += "]"

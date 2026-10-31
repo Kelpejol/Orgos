@@ -258,6 +258,13 @@ async def rebuild_index(
             detail="Set confirm=true to execute the rebuild.",
         )
 
+    return await rebuild_all()
+
+
+async def rebuild_all() -> dict:
+    """Rebuild both search collections from the registers (also scripts/rebuild_chat_index.py).
+    A control is stored with its Control ID and its Control owner ROLE — the owner is a role in
+    Org Roles, never the person who accepted the control."""
     from config import settings
     from graph.client import get_list_items
     from agents.nl_search.vector_store import embed_and_store_control, embed_and_store_procedural_step
@@ -284,7 +291,8 @@ async def rebuild_index(
                     "document_code": f.get("SourceDocument", ""),
                     "iso_clause":    f.get("ISOClause", ""),
                     "control_type":  f.get("ControlType", ""),
-                    "owner_oid":     f.get("OwnerEntraId", ""),
+                    "control_id":    f.get("ControlId", ""),
+                    "owner_role":    f.get("OwnerRole", ""),
                 }
                 ok = await embed_and_store_control(str(item.get("id", "")), stmt, meta)
                 if ok:
