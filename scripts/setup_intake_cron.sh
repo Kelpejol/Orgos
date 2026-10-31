@@ -26,16 +26,16 @@ if [ -z "$PYTHON" ]; then
   exit 1
 fi
 
-# ── Detect virtualenv (optional) ─────────────────────────────────────────────
-# If a virtual environment exists at orgos_env/, use its python so all
-# dependencies are available without activating the venv in the cron shell.
-VENV_PYTHON="$REPO_DIR/orgos_env/bin/python3"
-if [ -f "$VENV_PYTHON" ]; then
-  PYTHON="$VENV_PYTHON"
-  echo "Using venv python: $PYTHON"
-else
-  echo "Using system python: $PYTHON"
-fi
+# ── Detect virtualenv ────────────────────────────────────────────────────────
+# Use the project's virtual environment (myenv/, or the older orgos_env/) so all
+# dependencies are available without activating it in the cron shell.
+for VENV in myenv orgos_env venv .venv; do
+  if [ -f "$REPO_DIR/$VENV/bin/python3" ]; then
+    PYTHON="$REPO_DIR/$VENV/bin/python3"
+    break
+  fi
+done
+echo "Using python: $PYTHON"
 
 INTAKE_SCRIPT="$REPO_DIR/scripts/intake_sharepoint_to_lifecycle.py"
 LOG_DIR="$REPO_DIR/logs/intake"

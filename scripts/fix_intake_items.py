@@ -22,7 +22,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 INTAKE_TRIGGERS = {"SharePoint Intake", "CDI Fix"}
-PLACEHOLDER_STANDARDS = "ISO 27001, ISO 9001, NDPA"      # scripts/patch_bare_lifecycle_items.py's blanket default
+PLACEHOLDER_STANDARDS = "ISO 27001, ISO 9001, NDPA"      # the blanket default a retired patch script wrote
 
 
 async def run(apply: bool) -> int:

@@ -838,9 +838,10 @@ async def run_intake(
     if not settings.is_list_configured(settings.document_lifecycle_list_id):
         raise RuntimeError("DOCUMENT_LIFECYCLE_LIST_ID is not configured.")
 
-    # Fall back to env var if no --owner-email flag was passed
+    # No --owner-email: INTAKE_OWNER_EMAIL from .env (read through settings — a plain
+    # os.environ lookup never saw .env, so the documented setting did nothing).
     if not owner_email:
-        owner_email = os.environ.get("INTAKE_OWNER_EMAIL", "")
+        owner_email = settings.intake_owner_email or os.environ.get("INTAKE_OWNER_EMAIL", "")
 
     await startup()
     try:

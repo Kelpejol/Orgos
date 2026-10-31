@@ -8,6 +8,8 @@ import pytest
 import httpx
 import respx
 
+from config import settings   # the token address follows the tenant in .env, whatever it is
+
 from graph.auth import get_graph_access_token, invalidate_token_cache
 from graph.exceptions import (
     GraphAuthError,
@@ -32,7 +34,7 @@ class TestTokenAcquisition:
 
         with respx.mock:
             respx.post(
-                "https://login.microsoftonline.com/your-tenant-id-here/oauth2/v2.0/token"
+                settings.graph_token_url
             ).mock(
                 return_value=httpx.Response(
                     200,
@@ -65,7 +67,7 @@ class TestTokenAcquisition:
                 )
 
             respx.post(
-                "https://login.microsoftonline.com/your-tenant-id-here/oauth2/v2.0/token"
+                settings.graph_token_url
             ).mock(side_effect=mock_token_endpoint)
 
             await get_graph_access_token()
@@ -80,7 +82,7 @@ class TestTokenAcquisition:
 
         with respx.mock:
             respx.post(
-                "https://login.microsoftonline.com/your-tenant-id-here/oauth2/v2.0/token"
+                settings.graph_token_url
             ).mock(
                 return_value=httpx.Response(
                     401,

@@ -118,6 +118,9 @@ class Settings(BaseSettings):
     #   STANDARD_GATE=off | advisory | enforce
     standard_gate: str = Field(default="advisory")
 
+    # Who owns the Lifecycle items the SharePoint intake opens, when --owner-email is not given.
+    intake_owner_email: str = Field(default="")
+
     # Where OrgOS is reached from a browser, e.g. https://orgos.dragnet-solutions.com
     # Used to build the ready-made "read this document" link that Power Automate
     # puts in its Teams notifications. Falls back to the first allowed origin.

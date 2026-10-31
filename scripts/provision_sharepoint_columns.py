@@ -12,7 +12,9 @@
 #   python scripts/provision_sharepoint_columns.py --apply   # create missing cols
 #   python scripts/provision_sharepoint_columns.py --list "Gap Analysis" --apply
 #
-# Re-running is safe — existing columns are never modified or duplicated.
+# Re-running is safe — existing columns are never modified or duplicated. That also means a
+# CHOICE column that already exists keeps its old choices: add new values (e.g. "Standard"
+# for DocumentType, "Superseded" for ReviewStatus) in SharePoint's column settings by hand.
 # =============================================================================
 
 import argparse
@@ -77,7 +79,8 @@ LISTS: dict[str, dict] = {
         "display_name": "Document Register",
         "columns": {
             "DocumentCode":        (TEXT,   None),
-            "DocumentType":        (CHOICE, ["Policy", "Procedure", "SOP", "Form", "Guidelines"]),
+            "DocumentType":        (CHOICE, ["Policy", "Standard", "Procedure", "Specification", "SOP",
+                                              "Form", "Guidelines", "Guideline", "Manual"]),
             "Department":          (TEXT,   None),
             "Owner":               (TEXT,   None),
             "OwnerId":             (TEXT,   None),
@@ -88,6 +91,16 @@ LISTS: dict[str, dict] = {
             "LinkedControlsCount": (NUM,    None),
             "Status":              (CHOICE, ["Active", "Under Review", "Superseded", "Withdrawn"]),
             "SharePointUrl":       (TEXT,   None),
+            # the cover's facts and the revision history (CDT; approval stamps the cover from them)
+            "CDTCoverFacts":       (NOTE,   None),
+            "RevisionHistory":     (NOTE,   None),
+            # withdrawal provenance (grc/constants.py)
+            "WithdrawalReason":    (NOTE,   None),
+            "WithdrawnDate":       (DATE,   None),
+            "WithdrawnByEntraId":  (TEXT,   None),
+            "WithdrawnByName":     (TEXT,   None),
+            "ReplacedByCode":      (TEXT,   None),
+            "WithdrawalNote":      (NOTE,   None),
         },
     },
 
@@ -174,7 +187,15 @@ LISTS: dict[str, dict] = {
                 "False Positive", "Routed to Owner",
                 "Second Review Requested", "Pending Second Review",
                 "Blocked",  # DINT §7.5 — cascade failed, retry allowed
+                "Superseded",  # closed by the library read: the document now matches
             ]),
+            # control definitions read from approved documents (control_register/sync.py)
+            "ControlId":                 (TEXT,   None),
+            "ChangeKind":                (TEXT,   None),
+            "CandidateJson":             (NOTE,   None),
+            "DiffJson":                  (NOTE,   None),
+            # Assignment & Ownership items (one per problem between documents)
+            "ResolutionKey":             (TEXT,   None),
             "Decision":                  (TEXT,   None),
             "DecisionRationale":         (NOTE,   None),
             "ReviewedByEntraId":         (TEXT,   None),
@@ -224,6 +245,18 @@ LISTS: dict[str, dict] = {
             "RevisionReason":            (TEXT,   None),  # DINT §5.3.2 reason (Scheduled review, NC corrective action, ...)
             "SensitisationFeedback":     (NOTE,   None),
             "Stakeholders":              (NOTE,   None),
+            # CDT cover and versions
+            "CDTCoverFacts":             (NOTE,   None),
+            "RevisionHistory":           (NOTE,   None),
+            "RegisterBeforeApproval":    (NOTE,   None),   # so reversing a revision's approval restores the entry
+            # sensitisation and approval
+            "AmendmentSummary":          (NOTE,   None),
+            "RejectionCount":            (NUM,    None),
+            "StakeholderResponseCount":  (NUM,    None),
+            "SensitisationDeadline":     (DATE,   None),
+            "ReadDocumentUrl":           (TEXT,   None),
+            "ParentDocumentTitle":       (TEXT,   None),
+            "ParentDocumentUrl":         (TEXT,   None),
         },
     },
 
@@ -241,7 +274,7 @@ LISTS: dict[str, dict] = {
             "OwnerEntraId":     (TEXT,   None),
             "RiskImplication":  (NOTE,   None),
             "EscalationNote":   (NOTE,   None),
-            "Status":           (CHOICE, ["Active", "Blocked", "Superseded", "Withdrawn"]),
+            "Status":           (CHOICE, ["Active", "Blocked", "Under Review", "Superseded", "Withdrawn"]),
             "ConfidenceScore":  (NUM,    None),
             "QueueItemId":      (TEXT,   None),
             # written by the Zone 1 accept cascade (review_queue/router.py)
@@ -271,7 +304,7 @@ LISTS: dict[str, dict] = {
             "OwnerEntraId":        (TEXT,   None),
             "ValidationCriteria":  (NOTE,   None),
             "EvidenceLink":        (TEXT,   None),
-            "Status":              (CHOICE, ["Pending", "Submitted", "Accepted", "Rejected"]),
+            "Status":              (CHOICE, ["Pending", "Submitted", "Accepted", "Rejected", "Withdrawn"]),
             "LinkedControlId":     (TEXT,   None),
             "NextDue":             (DATE,   None),
             "LastCollected":       (DATE,   None),
