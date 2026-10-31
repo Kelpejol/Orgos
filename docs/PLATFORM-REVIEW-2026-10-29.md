@@ -21,6 +21,26 @@ None of these show up in the automated tests, which all pass.
 
 ---
 
+## Status after the fixes (31 October 2026)
+
+Every finding below was fixed, except those listed under "Not fixed". The suite passes in full
+(963 backend tests, 14 frontend), including the three sign-in tests that had always failed.
+
+| Batch | Commits | What changed |
+|---|---|---|
+| 1 + the role requirement | 590c8d5 | Published copy in its own folder, source kept, live cover restored (proven); revisions carry cover facts; approval by code updates the existing Register entry; unreadable entry stops approval; reversal restores a revision from a snapshot; one write gate; skip-approver checks first; role check on every file change, stored on the card; per-control / per-cover-field role fixes, every spelling, Accountable/Executing → Control owner; owners can open Lifecycle |
+| 2 | 87bc355 | Org Roles the one authority with one matching rule; aliases beat job titles; no re-judging without Org Roles; older controls re-checked; older accept and Reassign owner use Org Roles and are audited; near-duplicate roles and clashing aliases refused; role pickers Org Roles only; approver's name no longer written into the cover |
+| 3 | 137a76d, 1377f7f | Standards Map links records by Control ID and lights by computed state; accepted risks stay settled; gaps close themselves, refresh, get IDs; dropped controls → "Withdraw the control"; procedure copies never take over a Standard's control; evidence owner = Control owner; server checks who submits evidence; Audit Log for every decision; 2nd review fixed; WorkHub fixed |
+| Entry paths | 86c1259 | Standards re-read on every file change; no invented standards; scheduled review fixed; rejected documents re-checked |
+| 4 | bfbcc89 | Register edited only through approval (an admin for migration); Org Roles opens on Roles; labels; dead code removed |
+| 5 | c1d335b, 24915ea, 79ce194 | Chat ownership by role; remediation roles validated; purge backs up first, keeps business records, restore script; harmful scripts retired; configuration, cron, columns; sign-in tests; docs |
+
+**Not fixed (by design or waiting):** V05/V06 and the other unbuilt checks; publishing back to the
+library (Bobby #6); an Audit Log screen; the silent misses in REMAINING-WORK §2.6. **Nothing was
+run against the live site** — the walkthrough in REMAINING-WORK §3 is the live check.
+
+---
+
 ## Batch 1 — must fix before any purge (data safety and the way in)
 
 1. **Approval writes the published copy over the item's working copy.** (checked) The published file is
