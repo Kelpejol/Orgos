@@ -1,92 +1,51 @@
 # OrgOS — what is left to do
 
-*Agreed 22 Oct 2026. Grouped by what each item is waiting for. Update the status as things move.*
+*Updated 31 Oct 2026, after the platform review (docs/PLATFORM-REVIEW-2026-10-29.md) and its fixes.*
 
-Status: ✅ done · 🔨 being built · ⏳ waiting · ☐ not started
-
----
-
-## Done so far
-- ✅ One way in: controls enter only when a document is approved in Document Lifecycle.
-- ✅ Pilots: Identity, then the CDI Standard and its procedures.
-- ✅ Intake reads type, code, title, department and standards from the document instead of guessing.
-- ✅ Changing a role on Org Roles re-checks every control at once.
-- ✅ Edit in Word on a Lifecycle item.
-- ✅ Document Standards page: the standard, check a document, convert to CDT (13 of 24 checks; 5 conversion proofs).
-- ✅ The CDI checks as a gate in Lifecycle Review (advisory by default), and one version number with a change summary (22 Oct).
+Status: ✅ done · ⏳ waiting · ☐ not started
 
 ---
 
-## 1. Waiting on Bobby: 8 decisions
-| # | Decision | Blocks | Status |
-|---|---|---|---|
-| 1 | Do V01–V24 replace the old CDI-01 to 15 checker? | Switching the old checker off | ⏳ |
-| 2 | Were any documents approved before OrgOS (a "Legacy" tier)? | How strictly existing documents are held | ⏳ |
-| 3 | Who is **Control Owner**, and where is it recorded? | 8 Blocked controls | ✅ answered: one Control owner per control, in the control itself |
-| 4 | Do Document Owner, Control Owner and Custodian sit in the Role Register? | V07; resolving 24 controls | ✅ answered: Control owner and Document owner only; roles live in Org Roles |
-| 5 | Implement the two-step approval route (First Pass, Final) by domain? | V05, V06 | ⏳ |
-| 6 | Which libraries are the **published** and **archive** libraries? | Publishing approved copies properly | ⏳ |
-| 7 | Do "platform check Vnn" entries name the validation platform itself? | Resolving the executing role | ✅ no longer needed (no executing role) |
-| 8 | **The organogram** (via Daniel and Wani) | Not needed: Org Roles is loaded from the job descriptions and staff register | ✅ dropped |
+## Done
+- ✅ One way in: controls enter only when a document is approved in Document Lifecycle, read by Control ID.
+- ✅ Intake reads type, code, title, department and standards from the document; nothing is invented.
+- ✅ Document Standards page (14 of 24 checks; convert to CDT with 5 proofs); the checks are the Review gate (advisory by default).
+- ✅ One version number with a change summary; approval stamps the cover from the Register; the published copy has its own folder, so every later revision is stamped too; reversing a revision restores the Register entry.
+- ✅ Role model: one Control owner per control, a Document owner per document, **Org Roles is the only role authority** with one matching rule; loaded from the job descriptions and the staff register.
+- ✅ **Wrong roles are flagged the moment a document arrives**, and fixed **per control or cover field** (Fix CDI issues, Use this role); Accountable / Executing lines become "Control owner:".
+- ✅ Acceptance refuses multi-role or field-name owners; job titles never make a control Active.
+- ✅ Standards Map, gaps, evidence and WorkHub follow the real data (computed states, Control ID links, gaps that close and stay settled); dropped controls go to Assignment & Ownership.
+- ✅ Audit Log entries for every decision; Document Register edited only through approval (or an admin correcting a migrated entry).
+- ✅ Document owners can open Document Lifecycle and work on their own documents.
+- ✅ Chat answers "who owns X" with the role and the people who hold it.
+- ✅ A purge that backs everything up first, and a restore script.
+- ✅ The full test suite passes (963 backend, 14 frontend), including the three old sign-in tests.
 
-## 2. Was waiting on the organogram (no longer: Org Roles is loaded from the job descriptions and staff register)
-- ⏳ The Role Catalogue and Role Register: titles, holders, acting holders, vacancies.
-- ⏳ Controls with an official accountable role turn Active by themselves.
-- ⏳ Resolving a **person** for each role.
-- ⏳ Checks V05 to V07 (approval route, roles exist).
-- ⏳ Two-step approval (First Pass and Final Approval).
-- ⏳ Suggested role matches in the review queue (accepting one adds an alias).
+## 1. Waiting on Bobby
+| # | Decision | Blocks |
+|---|---|---|
+| 1 | Do V01–V24 replace the old CDI-01..15 checker? | Switching the old checker off |
+| 2 | Were any documents approved before OrgOS (a "Legacy" tier)? | How strictly existing documents are held |
+| 5 | The two-step approval route (First Pass, Final) by domain | V05, V06 |
+| 6 | Which libraries are the **published** and **archive** libraries? | Publishing approved copies back to the library |
+| — | Reissue the CDI Procedure with the Control owner wording (docs/FOR-BOBBY-ROLE-WORDING.md) | Dropping amendment A1 |
 
-## 3. To build
-**In progress (22 Oct): the role model change from Bobby.** One Control owner per control and a Document owner, no Accountable/Executing; roles checked against Org Roles with suggestions and a Create-role link. The full checklist of every part it touches is in **[ROLE-MODEL-CHANGE.md](ROLE-MODEL-CHANGE.md)**. It answers Bobby questions 3, 4 and 7, and removes the "executing role" item.
+## 2. To build
+1. ☐ **Bobby's demo page** (Control View): his nine fields per control, resolved or not, plus the gaps.
+2. ☐ Show the Records Catalogue's **retrieval instructions** on each control's records.
+3. ☐ Read the **check frequency** from the document (the "Monitoring" field), so records schedule themselves.
+4. ☐ An **Audit Log page** in OrgOS (the entries are written; there is no screen to read them yet).
+5. ☐ The checks not built yet: V13, V16 to V19, V21, V24 (V05, V06 wait on Bobby #5; V20 is enforced at approval but not shown as a check).
+6. ☐ Silent misses still possible: a control with fewer than 3 fields, scanned PDFs, files loose at the top of the library folder, a document that states roles only in sentences.
+7. ☐ Tests for the scheduled jobs, strategic risks, Org Roles routes, the purge and intake runs.
 
-**Core**
-1. ✅ Put the new checks into the Lifecycle Review gate, running beside the old ones until Bobby answers #1. *(Built 22 Oct: a "Document standard" panel on the Review card; mode `advisory` by default, `enforce` when you are ready; FLAGs decided by Compliance with a reason. To do on your side: add the `StandardsDecisions` column, and choose when to switch to `enforce` once Bobby answers #1.)*
-2. ✅ Fix versions: one number with no "R", a change summary for new versions, approval stamping the cover from the Register. *(Built 22 Oct. To do on your side: run `scripts/migrate_versions.py` to rewrite existing "R02" entries as "02". Publishing to the published and archive libraries still waits on Bobby #6, item 13.)*
+## 3. Yours to do (before the purge)
+- ☐ Push, pull on the server, `cd frontend && npm run build`, restart.
+- ☐ Add the new SharePoint columns and choice values (docs/GO-LIVE-CHECKLIST.md §2): run `python scripts/provision_sharepoint_columns.py` (dry run) then `--apply`, and add the new choice values by hand.
+- ☐ Run `python scripts/fix_intake_items.py` and, if right, `--apply` (removes the blanket "ISO 27001, ISO 9001, NDPA" from 42 items).
+- ☐ Try on one document: arrival → role problems on the card → Fix CDI issues per control → approve → accept → records → Standards Map.
+- ☐ Then the purge, in the order in docs/GO-LIVE-CHECKLIST.md §11 (`reset_data.py` backs up first).
+- ☐ Set up the **Power Automate** flow for late or missing evidence; confirm intake is scheduled (`crontab -l`).
 
-**Next**
-
-3. ☐ **Bobby's demo page**: the control view with his nine fields per control, resolved or not, plus the gaps.
-4. ☐ Show the Records Catalogue's **retrieval instructions** on each control's records.
-5. ☐ Read the **check frequency** from the document (CDI's "Monitoring" field), so records can schedule themselves.
-6. ☐ **Executing role handling**: a role versus a system, and who uploads the evidence.
-7. ☐ An **Audit Log page** in OrgOS.
-
-**Later**
-
-8. ☐ The checks not built yet: V13, V16 to V19, V21, V24 (V05 to V07 wait on the organogram; V20 comes with item 2).
-9. ☐ **Silent misses** the new checks don't report yet: a control with fewer than 3 fields (dropped silently), scanned PDFs, files loose at the top of the library folder, one Standard quietly overriding another.
-10. ☐ **Retiring things**: a document or control removed from the library is currently only reported, not withdrawn.
-11. ☐ Decide whether the old extractor tools stay (they also handle contracts, job descriptions and audits).
-12. ☐ Look into the 3 old Microsoft-sign-in tests that have always failed.
-13. ⏳ Publish approved copies to the published library and move the old version to the archive (needs Bobby #6).
-
-## 4. Yours to do
-- ☐ Send Bobby the questions.
-- ☐ **Trial one conversion** on the Document Standards page, open the working copy in Word, and report what you see.
-- ☐ Reject the 8 old-extractor items in Extraction Review.
-- ☐ Confirm **intake is scheduled** on the server (`crontab -l`).
-- ☐ Set check schedules on the CDI and Identity records.
-- ☐ Set up the **Power Automate** flow for late or missing evidence.
-- ☐ Still unconfirmed live: the Identity revision result (R02, nothing new in review) and Edit in Word.
-
-## 5. Document fixes for authors
-The engine can now say exactly what to fix.
-- 8 documents have no document code.
-- 23 documents define controls with no standards mapping; 17 lack another required field.
-- 29 file names carry "Draft", a version or a date.
-- 7 documents have controls with no risk statement, or a risk ID.
-- Three procedures still cite the retired control DP-002.
-- Four IT procedures reworded the IT Standard's controls.
-
-## 6. The rollout
-About 120 documents still to go through convert → fix → approve → accept, domain by domain: Policy first, then Standard, then Procedures. Identity and CDI are done; the other Information Security families are the natural next batch.
-
----
-
-**Order we agreed:** items 1 and 2 → Bobby's demo page → the rest, while Bobby answers and the organogram arrives.
-
-
----
-
-**Role model (Control owner / Document owner): built** (V07, suggestions, Use this role, Keep as alias, Create role, renames, tests). Wording for Bobby: `docs/FOR-BOBBY-ROLE-WORDING.md`. Remaining: reissue of the Procedure by Bobby; the Control View demo page.
+## 4. The rollout
+About 120 documents to go through convert → fix roles → approve → accept, domain by domain: Standards before the Procedures that carry them out. Most still write "Accountable / Executing" or a field name where a role belongs: the role check flags each one on arrival.

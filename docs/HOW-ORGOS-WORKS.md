@@ -205,7 +205,7 @@ A new page in the main menu, **Document Standards**, has three tabs.
 
 **What conversion will not do:** invent anything. A document that states no title or code, has no header block (its facts written as "Label: value" lines), has no template for its type (registers, forms), or opens with text it cannot place, is refused with the reason. On your real library, **84 of 123 documents convert with every proof holding; the other 39 are refused with the reason**, and no document fails a proof.
 
-**What is not built yet:** 11 of the 24 checks (V05 to V07 need the Role Register; V13, V16 to V21 and V24 are not written). The old CDI checker in Lifecycle Review still runs on upload; the new checks are not yet part of the Review gate.
+**What is not built yet:** 10 of the 24 checks. V05 and V06 wait for Bobby's decision on approval routes; V13, V16 to V21 and V24 are not written yet. Each says "not built" on screen and never passes. The checks are part of the Review gate (advisory by default), and the role check (V07) also runs by itself every time a document's file changes.
 
 ---
 
@@ -222,7 +222,8 @@ A document goes through three stages: **Review → Sensitisation → Approval.**
 - The **SharePoint intake script** (`scripts/intake_sharepoint_to_lifecycle.py`): picks up new files in ORGOS CONTROL LIBRARY, runs the CDI checks, and opens a Lifecycle entry for each. **This is how the library's drafts reach Lifecycle.** It's designed to run at 06:00 and 20:00 via `scripts/setup_intake_cron.sh`. Check whether it's installed on the server with `crontab -l`. If nothing about intake is listed, it isn't scheduled.
 
 ### Stage 1: Review (the owner)
-- The owner uploads the document. **The CDI checks run automatically** (section 3).
+- The owner uploads the document. **The CDI checks run automatically** (section 3), and so does the **role check**: every role the document names that is not in Org Roles shows on the card as "N roles not in Org Roles", the moment the file arrives (by intake, upload, revision or an edit).
+- **"Fix CDI issues"** lists each problem with its fix. A role problem is listed **once per place it is used** (each control's Control owner, each cover field, the Roles table), each with its own role picker, so two controls that wrote the same wrong role can each get the right one; "Use … everywhere" sets the same role for all of them. An older "Accountable / Executing: X; Y" line is rewritten as "Control owner: X". Only the role field changes, never the same words in running text, and OrgOS proves it before saving.
 - **A "Document standard" panel** on the Review card runs the CDI Procedure's own checks (V01–V24) on the file, on request, and says where each problem is. Compliance decides any flagged check, with a reason. By default it is **advisory**: it shows what would stop the document without stopping it. When the gate is switched to **enforce**, a blocking problem, or a flag nobody has decided, stops the move to Sensitisation and stops approval. The old CDI checks still run beside it. See the go-live checklist, section 10.
 - **Or edits it in the browser: "Edit in Word ↗"** opens the document in Word for the web, and it saves as you type.
   - Editing always happens on **this item's own working copy**. For a revision, OrgOS first copies the approved published file and edits the copy, so **the approved version is never changed**. A draft from the library folder is copied the same way.
@@ -242,11 +243,11 @@ A document goes through three stages: **Review → Sensitisation → Approval.**
 ### Stage 3: Approval (the approver)
 - **Approve** does the following:
   1. Stamps the cover from the Register: the version and dates follow the approver's choice (see "Versions" below), and a revision-history line is added.
-  2. Saves a **published copy** to the OrgOS site under *Lifecycle Documents*.
-  3. Creates or updates the **Document Register** entry (R01, R02…).
+  2. Saves a **published copy** to the OrgOS site under *Lifecycle Documents/{item}/Published*. The item keeps its own source (with the live cover), so the next revision's cover can be stamped again; a revision that started from a published copy has its live cover put back first (the body is proven unchanged).
+  3. Creates or updates the **Document Register** entry (01, 02…). A document whose code is already in the Register updates that entry, even if it wasn't opened as a revision; two live entries with one code are refused until one is withdrawn. If the entry can't be read, nothing is approved.
   4. **Reads the approved library with the new reader** (section 1). This document's new and changed controls go to Extraction Review, and problems against other approved documents go to Assignment & Ownership. If anything goes wrong (e.g. a published copy can't be downloaded), **nothing is written** and a note on the Lifecycle item says how to retry: `python scripts/sync_control_library.py --apply`.
 - **Reject** needs a reason (20+ characters). The document goes back to Review.
-- The owner can recall it, and Compliance can reverse an approval.
+- The owner can recall it, and Compliance can reverse an approval. Reversing a **revision** puts the Register entry back as it was before (from a snapshot taken at approval); only a first issue is withdrawn.
 
 ### Versions: one number, and what approval does to it
 There is **one** version number, written **01, 02, 03…** with no "R". It follows CDI Procedure §12 and §14.
@@ -459,11 +460,13 @@ These items **close themselves** on the next sync once the documents are fixed.
    - **Blocked**, with the reason, if not. Today most will be Blocked (section 10).
 2. **Evidence Tracker:** one *evidence obligation* per record the control names, e.g. "REC-0691 must exist for ACS-L3-01".
    - It starts **Unscheduled** until Compliance sets how often it's checked. OrgOS suggests a frequency for 62; it never guesses the rest.
-   - A **daily job at 07:30** sets each obligation's state: OK, Due soon, Late, Missing, Stale, Rejected.
+   - A **daily job at 07:30** sets each obligation's state: Current, Due soon, Awaiting first record, Late, Missing, Stale, Submitted, Rejected. States are computed, never typed in.
+   - Records are produced by the people who hold the control's **Control owner** role (or Compliance); the server refuses anyone else.
    - A Power Automate flow (still to be set up) can notify owners.
 3. **Audit Log:** who decided, when, why.
 4. **Gap Analysis** (runs every 3 days, or on demand): finds controls with no owner, missing fields, nobody carrying them out, unknown records, and so on. These gaps **close themselves** when fixed.
-5. **Standards Map:** green / amber / red per ISO / NDPA clause. It depends on **Mapping**, so controls with no mapping don't appear against any clause.
+5. **Standards Map:** green / amber / red per ISO / NDPA clause. It depends on **Mapping**, so controls with no mapping don't appear against any clause. A clause is red when a control is Blocked or has nobody holding its role, or a record is Missing, Late, Stale or Rejected; amber while records are unscheduled, awaiting their first copy, due soon or awaiting verification. Withdrawn controls count for nothing.
+6. **A control a document no longer defines** is raised in Assignment & Ownership: withdraw it, or keep it while its document is revised. A gap accepted as a risk is never raised again.
 
 ---
 
@@ -473,12 +476,12 @@ These items **close themselves** on the next sync once the documents are fixed.
 
 **How a document gets its roles right:**
 1. **Org Roles is the role register.** It is loaded from the job descriptions and the staff register; people are added to roles. There is no separate organogram step.
-2. **While a document is in Review, the Document standard panel (V07) lists every role it names that does not exist**, with the nearest existing roles. The author can **Use this role** (the document text is changed to the official name), choose another, **keep the wording as an alias** (Compliance), or **Create role** (opens Org Roles with the name filled in).
+2. **As soon as a document's file arrives, every role it names that does not exist is flagged on its card.** In Review the author fixes each one where it is used — per control, per cover field — in "Fix CDI issues" or the Document standard panel: **use** an existing role (the document text is changed to the official name, and an older Accountable / Executing line becomes "Control owner:"), **keep the wording as an alias** (Compliance), or **create the role** (opens Org Roles with the name filled in).
 3. **The next library sync re-checks every Blocked control** and turns it Active by itself if its role is now recognised. Nothing needs accepting again.
 4. **Real people become answerable:** evidence reminders and gaps go to the people who hold the role. When someone changes job, you change the role's members once and every control follows.
 5. **What's still Blocked is a real document problem** (no Control owner, a field name in its place, or a role that doesn't exist) and becomes a gap for the document owner.
 
-**What we need:** for each role, its title, department, who it reports to, who holds it (name or email), whether it's vacant, and who is acting in it and until when. Any format is fine.
+**One matching rule everywhere.** "IT & Security Lead", "IT/Security Lead" and "it and security lead" are the same role to the role check, to the Control Register's status, to evidence ownership and to the chat assistant. An agreed alias always beats a Microsoft job title with the same words. If Org Roles can't be read, no control is re-marked Blocked.
 
 ---
 

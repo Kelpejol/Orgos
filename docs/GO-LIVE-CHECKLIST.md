@@ -1,6 +1,6 @@
 # OrgOS GRC framework — go-live checklist
 
-Everything below is built and tested on the `dev` branch. Nothing has been written to SharePoint yet. Work through the steps in order; each one says who does it.
+Everything below is built and tested on the `dev` branch (963 backend tests, 14 frontend). Work through the steps in order; each one says who does it. Sections 12 and 13 are new (31 Oct): the columns the platform-review fixes need, and the purge.
 
 ---
 
@@ -143,10 +143,7 @@ After the first run, Gap Analysis and the review queue will show them; listed he
 
 ## 8. Still to build
 
-- **Role Catalogue:** roles with kind (positional, functional, team, system), status, reports-to and acting holders; role assignments by scope; seeded from Org Roles and the documents' Roles tables.
-- **Role resolution in the review queue** for unrecognised role spellings, and scored role suggestions a reviewer accepts with one click (accepting adds an alias, so the same spelling resolves next time).
-
-Once those are in, Blocked controls clear themselves on the next sync.
+See docs/REMAINING-WORK.md §2. (The Role Catalogue is not needed: Org Roles is the role register, and role spellings are fixed or agreed as aliases where the document is checked.)
 
 ---
 
@@ -175,3 +172,28 @@ Once those are in, Blocked controls clear themselves on the next sync.
 
 - Run `python scripts/migrate_versions.py` (a dry run that lists every change), then again with `--apply`, to rewrite existing Document Register entries from "R02" to "02". Nothing else about an entry changes. New approvals write the version plain.
 - From now on every approval asks how it treats the version (first issue, new version, correction, annual review). A new version cannot be approved without a change summary that says what changed and why.
+
+
+## 12. New columns and choice values (31 Oct fixes)
+
+Run `python scripts/provision_sharepoint_columns.py` (dry run), then `--apply`, to add the columns the code now writes. It never changes an existing column, so **choice values on existing columns must be added by hand** in the list's column settings:
+
+| List | Columns the script adds | Choice values to add by hand |
+|---|---|---|
+| Document Lifecycle | `CDTCoverFacts`, `RevisionHistory`, **`RegisterBeforeApproval`**, `AmendmentSummary`, `RejectionCount`, `StakeholderResponseCount`, `SensitisationDeadline`, `ReadDocumentUrl`, `ParentDocumentTitle`, `ParentDocumentUrl` | — |
+| AI Review Queue | `ControlId`, `ChangeKind`, `CandidateJson`, `DiffJson`, `ResolutionKey` | ReviewStatus: **Superseded** |
+| Document Register | `CDTCoverFacts`, `RevisionHistory`, the withdrawal columns | DocumentType: **Standard, Specification, Guideline, Manual** |
+| Control Register | — | Status: **Under Review** |
+| Evidence Tracker | — | Status: **Withdrawn** |
+
+Without `RegisterBeforeApproval`, reversing the approval of a revision still works but only rolls back the version and history, and says so.
+
+## 13. The purge, safely
+
+1. Stop cron (`crontab -e`, comment out the intake lines).
+2. `python scripts/reset_data.py` — a dry run that counts what would be cleared.
+3. `python scripts/reset_data.py --confirm` — **backs up first** into `backups/reset-<time>/` (every item of every list it clears, every Lifecycle file and every published copy, with `manifest.json`); if the backup fails nothing is deleted. It clears the document-derived lists only; Compliance Calendar, Contract Register, Strategic Risks need `--include-business-records`, the Audit Log `--include-audit-log`. Org Roles and the Records Catalogue are never touched. The intake checkpoint is moved into the backup.
+4. Follow the rebuild order it prints (intake → Review/role fixes → approval, Standards first → Extraction Review → evidence obligations and schedules → gap analysis → `python scripts/rebuild_chat_index.py --apply`).
+5. To put back a list documents can't rebuild: `python scripts/restore_backup.py backups/reset-<time> "Strategic Risk Register" --apply`.
+6. Turn cron back on.
+

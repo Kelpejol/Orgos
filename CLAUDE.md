@@ -1,16 +1,36 @@
 # CLAUDE.md — OrgOS: Complete Project Reference
 **Dragnet Solutions Limited | GRC Orchestration Module | DRG-AUTO-BRIEF-GRC-01-26**
 
-> **Current role model (24 October 2026):** Org Roles is the business-role register,
-> stored in **OrgOS Groups**, with members and agreed aliases. It was loaded from
-> job descriptions and staff-register titles; no organogram or separate Role
-> Catalogue is required. Each control states one **Control owner**; a document
-> cover states its **Document owner**. Directory job titles and ERP `org_roles`
-> access tags do not establish a business role. References below to the former
-> Tier-1 Role Register, its schemas and `/api/v1/grc/roles` routes are historical;
-> that register was retired. Older Accountable / Executing document forms remain
-> readable. See [ROLE-MODEL-SWEEP.md](docs/ROLE-MODEL-SWEEP.md) for remaining
-> implementation differences and decisions; this note supersedes older role guidance below.
+> **How OrgOS works now (31 October 2026) — this block wins over anything older below.**
+>
+> - **One way in.** Every document enters **Document Lifecycle** (intake of ORGOS CONTROL
+>   LIBRARY, a revision, a scheduled review, a review-queue task, the drafter). Review →
+>   Sensitisation → Approval. Files change only in Review (amendments also in Sensitisation),
+>   only on the item's own working copy, never after approval (`_writable_item`).
+> - **Approval** stamps the cover from the Register, publishes to
+>   `Lifecycle Documents/{id}/Published/` (the item keeps its marker source), updates the
+>   Register entry with the same code (a revision even without `RevisionOf`), and reads the
+>   approved library: definitions go to **Extraction Review** by Control ID (never AI);
+>   problems between documents, and controls no longer defined, go to **Assignment & Ownership**.
+> - **Roles.** **Org Roles** (list "OrgOS Groups": name, aliases, members) is the only role
+>   authority, matched by one rule (`doc_standards/roles.norm`) everywhere, including
+>   `ownership/resolver.py`. Each control has one **Control owner**; each cover a
+>   **Document owner**. A job title is never a role (a hint only); a field name is never a role.
+>   The role check (V07) runs on **every file change** and is stored on the card; fixes are
+>   **per control or cover field** (`doc_standards/role_fix.py`, Fix CDI issues,
+>   "Use this role"), and an Accountable / Executing line is rewritten as "Control owner:".
+> - **Checks.** V01–V24 (14 built) in the Document standard panel; `STANDARD_GATE` =
+>   off | advisory (default) | enforce. The old CDI-01..15 checker still runs beside them.
+> - **After acceptance.** Evidence obligations (`evidence/`, `/api/v1/records/*`) are owned by
+>   the Control owner; states are computed (Missing, Late, Stale…), never stored as "Overdue".
+>   The Standards Map links records by Control ID. Gaps close themselves; accepted risks stay
+>   settled. Decisions are written to the Audit Log (`audit/trail.py` for most).
+> - **Retired:** the Tier-1 Role Register and `/api/v1/grc/roles`, `sync_roles.py`,
+>   `cdi_triage.py`, `publish_approved_lifecycle.py`, `patch_bare_lifecycle_items.py`, the old
+>   AI Review Queue and Extractor pages. The old AI extractor runs only for contracts, job
+>   descriptions, regulatory documents and audits.
+> - **Purge:** `scripts/reset_data.py` backs everything up first; `scripts/restore_backup.py`.
+> - See docs/HOW-ORGOS-WORKS.md and docs/PLATFORM-REVIEW-2026-10-29.md.
 
 ---
 
@@ -231,9 +251,9 @@ OrgOS is Dragnet Solutions Limited's internal **GRC (Governance, Risk, and Compl
 │   ├── __init__.py
 │   └── router.py                   ← /api/v1/controls/*
 │
-├── evidence_tracker/               ← Evidence item lifecycle
+├── evidence/ + record_tracker/     ← Evidence obligations and their lifecycle
 │   ├── __init__.py
-│   └── router.py                   ← /api/v1/evidence/*
+│   └── router.py                   ← /api/v1/records/*
 │
 ├── standards_map/                  ← Live clause coverage traffic lights
 │   ├── __init__.py
@@ -258,14 +278,14 @@ OrgOS is Dragnet Solutions Limited's internal **GRC (Governance, Risk, and Compl
 │   └── grc/
 │       ├── __init__.py
 │       ├── test_document_register.py
-│       ├── test_role_register.py
 │       ├── test_compliance_calendar.py
 │       └── test_contract_register.py
 │
 ├── scripts/
 │   ├── bulk_extract.py             ← Batch extraction with checkpoint/resume
-│   ├── sync_roles.py               ← Sync roles from Entra ID / HR systems
-│   └── cdi_triage.py               ← Pre-validate docs against CDI standards
+│   ├── intake_sharepoint_to_lifecycle.py ← Library → Document Lifecycle
+│   ├── sync_control_library.py     ← Re-read the approved library
+│   ├── reset_data.py / restore_backup.py ← Purge with backup, and restore
 │
 └── frontend/
     ├── package.json
@@ -334,7 +354,7 @@ Single source of truth for all runtime configuration. **All other modules import
 |---|---|
 | Entra ID | tenant_id, client_id, client_secret |
 | SharePoint | sharepoint_site_id, sharepoint_site_url, compliance_site_url, compliance_library_name, compliance_starting_folder |
-| List IDs (Tier 1) | document_register_list_id, role_register_list_id, compliance_calendar_list_id, contract_register_list_id |
+| List IDs (Tier 1) | document_register_list_id, compliance_calendar_list_id, contract_register_list_id |
 | List IDs (Tier 2+) | ai_review_queue_list_id, document_lifecycle_list_id, control_register_list_id, evidence_tracker_list_id, audit_log_list_id, strategic_risk_register_list_id, gap_analysis_list_id |
 | Application | environment, allowed_origins, app_port, log_level, skip_auth |
 | Ollama | ollama_base_url, ollama_model, ollama_timeout |
@@ -359,7 +379,7 @@ All List IDs default to `"placeholder"` — the application starts cleanly with 
 
 ### 5.2 main.py — FastAPI Entry Point
 
-Creates the FastAPI `app` instance, registers CORS middleware, mounts all 14 routers, and defines health endpoints.
+Creates the FastAPI `app` instance, registers CORS middleware, mounts every router, and defines health endpoints.
 
 **Lifespan pattern (FastAPI 0.115+):**
 ```python
@@ -854,10 +874,10 @@ Each evidence item is linked to one control and tracks the collection/verificati
 **Evidence item statuses:** Pending → Submitted → Accepted | Rejected (Overdue is calculated)
 
 **Endpoints:**
-- `GET /api/v1/evidence` — All items; filter by `status`, `control_id`, `evidence_type`, `owner_oid`
-- `GET /api/v1/evidence/{id}` — Single item
-- `PATCH /api/v1/evidence/{id}/submit` — Owner submits: sets `evidence_link` (URL/path) + `submission_notes`; status → Submitted
-- `PATCH /api/v1/evidence/{id}/verify` — Compliance verifies: `decision` (Accepted/Rejected) + `reviewer_notes`; status → Accepted or Rejected
+- `GET /api/v1/records` — All items; filter by `status`, `control_id`, `evidence_type`, `owner_oid`
+- `GET /api/v1/records/{id}` — Single item
+- `PATCH /api/v1/records/{id}/submit` — Owner submits: sets `evidence_link` (URL/path) + `submission_notes`; status → Submitted
+- `PATCH /api/v1/records/{id}/verify` — Compliance verifies: `decision` (Accepted/Rejected) + `reviewer_notes`; status → Accepted or Rejected
 
 **Evidence item fields:** `evidence_description`, `evidence_type (EvidenceType)`, `source_system`, `evidence_format`, `frequency`, `collection_method`, `owner_role`, `validation_criteria`, `linked_control_id`, `status`, `evidence_link`, `due_date`
 
@@ -936,7 +956,7 @@ Tracks identified compliance gaps from two sources:
 
 Allows browsing the SharePoint Compliance document library and triggering extraction on any file.
 
-**Compliance library:** `settings.compliance_site_url` / `settings.compliance_library_name` / `settings.compliance_starting_folder` ("Policies, Procedures, Manuals, Guidelines, Frameworks, Handbook, SOP" in ORGOS LIBRARY)
+**Compliance library:** `settings.compliance_site_url` / `settings.compliance_library_name` / `settings.compliance_starting_folder` ("ORGOS CONTROL LIBRARY" in ORGOS LIBRARY)
 
 **Endpoints:**
 - `GET /api/v1/sharepoint/browse` — Root of the configured starting folder; returns folder/file listing with drive item IDs
@@ -1223,12 +1243,12 @@ Several statuses are **never stored in SharePoint** — they are pure functions 
    Returns: { control_id, evidence_id, audit_log_id }
 
 5. Evidence owner:
-   PATCH /api/v1/evidence/{id}/submit
+   PATCH /api/v1/records/{id}/submit
    Body: { evidence_link: "https://...", submission_notes: "..." }
    Evidence status → Submitted
 
 6. Compliance Lead:
-   PATCH /api/v1/evidence/{id}/verify
+   PATCH /api/v1/records/{id}/verify
    Body: { decision: "Accepted", reviewer_notes: "..." }
    Evidence status → Accepted
 
@@ -1378,10 +1398,10 @@ GET    /api/v1/controls/{id}
 
 ### Evidence Tracker
 ```
-GET    /api/v1/evidence                   ?status=&control_id=&evidence_type=&owner_oid=
-GET    /api/v1/evidence/{id}
-PATCH  /api/v1/evidence/{id}/submit
-PATCH  /api/v1/evidence/{id}/verify
+GET    /api/v1/records                   ?status=&control_id=&evidence_type=&owner_oid=
+GET    /api/v1/records/{id}
+PATCH  /api/v1/records/{id}/submit
+PATCH  /api/v1/records/{id}/verify
 ```
 
 ### Standards Map
@@ -1413,7 +1433,7 @@ POST   /api/v1/gap-analysis/{id}/accept-risk
 
 ### Ollama (Local LLM)
 
-OrgOS uses **Ollama** running locally for all LLM inference. There is no call to OpenAI, Anthropic, or any cloud LLM API.
+OrgOS uses **Ollama** (local) or **RunPod** serverless (`LLM_PROVIDER`) for LLM inference. There is no call to OpenAI, Anthropic, or any other cloud LLM API. Controls of controlled documents are read deterministically, never by an LLM.
 
 **Default model:** `llama3` (configurable via `OLLAMA_MODEL` env var). `llama3.2:1b` used in development for speed; `llama3` or `mistral` for better extraction quality.
 
@@ -1498,7 +1518,7 @@ SHAREPOINT_SITE_ID=<site-guid-from-graph-api>
 SHAREPOINT_SITE_URL=https://dragnetnigeria.sharepoint.com/sites/orgos
 COMPLIANCE_SITE_URL=https://dragnetnigeria.sharepoint.com/sites/everybody
 COMPLIANCE_LIBRARY_NAME=ORGOS LIBRARY
-COMPLIANCE_STARTING_FOLDER=Policies, Procedures, Manuals, Guidelines, Frameworks, Handbook, SOP
+COMPLIANCE_STARTING_FOLDER=ORGOS CONTROL LIBRARY
 
 # ── SharePoint List IDs (fill after creating lists) ─────────────
 DOCUMENT_REGISTER_LIST_ID=placeholder
@@ -1637,17 +1657,16 @@ python scripts/bulk_extract.py                        # All folders
 python scripts/bulk_extract.py --reset                # Clear checkpoint, start fresh
 ```
 
-### scripts/sync_roles.py — Role Sync
+### Other scripts (all dry run by default; `--apply` / `--confirm` to write)
 
-**Purpose:** Synchronise roles from Entra ID, SeamlessHR, or BitWiseFlow into the Role Register.
-
-**What it does:** Fetches current roles from source systems, compares with Role Register, creates/updates entries. Sets `SourceSystem` field to indicate provenance.
-
-### scripts/cdi_triage.py — CDI Pre-Validation
-
-**Purpose:** Run CDI compliance checks on documents before they enter the extraction pipeline.
-
-**What it does:** Validates document code format, checks required metadata, flags CDI violations so they can be fixed before extraction produces deficient results.
+- `intake_sharepoint_to_lifecycle.py` — library files → Document Lifecycle items (checks and the role check on arrival).
+- `sync_control_library.py` — re-read the approved library (controls to Extraction Review).
+- `sync_evidence_obligations.py` — evidence obligations from confirmed controls.
+- `import_roles_from_jds.py`, `import_staff_roles.py` — load Org Roles and their members.
+- `import_records_catalogue.py`, `build_cdi_reference.py`, `build_cdt_master_templates.py`.
+- `fix_intake_items.py`, `rerun_cdi_checks.py`, `migrate_versions.py` — corrections.
+- `reset_data.py` (backup first) and `restore_backup.py`; `rebuild_chat_index.py`.
+- `provision_sharepoint_columns.py` — create the columns the code writes.
 
 ---
 
@@ -1894,20 +1913,19 @@ onSuccess: () => queryClient.invalidateQueries(['documents'])
 - All 14+ pages implemented (Tier 1 fully wired, Tier 2+ in various states of connection)
 - Tier 1 registers (Document, Role, Compliance Calendar, Contract) fully connected
 - AI Review Queue, Standards Map, Gap Analysis, Control Register pages implemented
-- `Extractor/index.jsx` and `AssignmentOwnership/index.jsx` implemented but noted as "not fully wired in current prototype"
+- The old AI Review Queue and Extractor pages were removed (unreachable); Extraction Review and Assignment & Ownership are the review screens
 
 ### Scripts
 
 - `scripts/bulk_extract.py` — Checkpoint-based batch extraction
-- `scripts/sync_roles.py` — Role sync from HR/identity systems
-- `scripts/cdi_triage.py` — Pre-extraction CDI validation
+- `scripts/intake_sharepoint_to_lifecycle.py`, `scripts/sync_control_library.py`, and the others listed in section 14
 
 ### What Is Not Yet Built
 
 Based on code state:
 - No production deployment configuration (no Dockerfile, no docker-compose, no nginx config)
 - No CI/CD pipeline configuration
-- Tests only cover Tier 1 (grc/) and graph/ — agents, queue, lifecycle etc. have no tests
+- Tests (963) cover graph/, grc/, cdi/, doc_standards/, lifecycle/, control_register/, evidence/, review queue, gaps, Standards Map, roles and chat retrieval; not yet: the scheduled jobs, strategic risks, Org Roles routes, the purge and intake runs
 - No database migrations (not applicable — SharePoint is the store, but list schema provisioning scripts are absent)
 - No monitoring/observability integration (no Prometheus metrics, no structured logging to external sink)
 - Frontend has no build/deploy pipeline beyond `npm run build`
