@@ -22,7 +22,7 @@ import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from pydantic import BaseModel
 
-from auth.validator import CurrentUser, get_current_user, require_compliance_lead
+from auth.validator import ROLE_ADMIN, ROLE_COMPLIANCE, CurrentUser, get_current_user, require_compliance_lead
 from config import settings
 from graph.auth import get_graph_access_token
 from graph.client import (
@@ -36,6 +36,8 @@ from graph.client import resolve_user
 from evidence.obligations import ATTENTION, assess, may_upload, system_id_of
 
 logger = logging.getLogger(__name__)
+
+from audit.trail import record
 
 router = APIRouter(tags=["Record Tracker"])
 
@@ -96,7 +98,9 @@ def _obligation_view(f: dict) -> dict:
     Older one-per-control rows have no ObligationKey and no assessment.
     """
     if not f.get("ObligationKey"):
-        return {"IsObligation": False}
+        # An older row has no schedule; its state is still computed (Late once past its due date).
+        from standards_map.router import record_state
+        return {"IsObligation": False, "State": record_state(f)}
     a = assess(f)
     location = f.get("SourceSystem", "")
     return {
@@ -177,8 +181,7 @@ async def list_records(
         }
         state_order = {"Missing": 0, "Late": 1, "Rejected": 2, "Stale": 3, "Due soon": 4,
                        "Submitted": 5, "Awaiting first record": 6, "Unscheduled": 7, "Current": 8}
-        records.sort(key=lambda r: (state_order.get(r.get("State"), 9) if r.get("IsObligation")
-                                    else status_order.get(r["Status"], 9)))
+        records.sort(key=lambda r: state_order.get(r.get("State"), status_order.get(r["Status"], 9)))
         return records
     except Exception as exc:
         _handle(exc, "list records")
@@ -218,6 +221,23 @@ def _record_date(value: Optional[str]) -> str:
     if d > date.today():
         raise HTTPException(status_code=422, detail="record_date cannot be in the future.")
     return d.isoformat()
+
+
+async def _may_produce(fields: dict, user: CurrentUser) -> None:
+    """
+    A record is produced by the people who hold its Control owner role (Org Roles), or by
+    Compliance. The screen hides the button from everyone else; the server says no as well.
+    """
+    if ROLE_COMPLIANCE in user.roles or ROLE_ADMIN in user.roles:
+        return
+    from ownership.resolver import get_ownership_index
+    owners = await get_ownership_index()
+    if not owners.groups_loaded:
+        raise HTTPException(status_code=503, detail="Org Roles could not be read, so who may submit this record can't be checked. Try again.")
+    role = fields.get("OwnerRole") or ""
+    if not owners.owns(role, user.oid):
+        raise HTTPException(status_code=403, detail=(
+            f"Only someone who holds “{role or 'its owner role'}” in Org Roles, or Compliance, can submit this record."))
 
 
 def _may_submit(fields: dict) -> None:
@@ -296,6 +316,7 @@ async def submit_record(
     try:
         current_fields = (await get_list_item(_list_id(), _LIST_NAME, item_id)).get("fields", {}) or {}
         _may_submit(current_fields)
+        await _may_produce(current_fields, user)
 
         fields: dict = {
             "EvidenceLink":   body.record_link.strip(),
@@ -348,6 +369,7 @@ async def upload_record(
                 "there instead of uploading a copy — OrgOS references records at source."))
         pending_date = _record_date(record_date)
     _may_submit(current_fields)
+    await _may_produce(current_fields, user)
 
     try:
         record_url = await _upload_record_to_sharepoint(item_id, filename, file_bytes)
@@ -418,6 +440,9 @@ async def verify_record(
             fields["RejectionNote"] = body.rejection_note
 
         await update_list_item(_list_id(), _LIST_NAME, item_id, fields)
+        await record(user, "Record accepted" if body.accepted else "Record rejected",
+                     body.rejection_note or f"{cur.get('EvidenceLink', '')}", item_id=item_id, item_type="Record",
+                     document_code=cur.get("LinkedControlId", ""), state_from="Submitted", state_to=fields["Status"])
         updated = await get_list_item(_list_id(), _LIST_NAME, item_id)
         return _sp_to_record(updated)
     except HTTPException:
@@ -452,6 +477,8 @@ async def reassign_record_owner(
                 f"{cur.get('LinkedControlId')}, stated in its defining document. Change it there; "
                 "who holds the role is set in Org Roles."))
         await update_list_item(_list_id(), _LIST_NAME, item_id, {"OwnerRole": owner})
+        await record(user, "Record owner reassigned", f"“{cur.get('OwnerRole') or 'none'}” → “{owner}”",
+                     item_id=item_id, item_type="Record")
         updated = await get_list_item(_list_id(), _LIST_NAME, item_id)
         return _sp_to_record(updated)
     except HTTPException:
@@ -488,6 +515,9 @@ async def schedule_obligation(
         if not cur.get("ScheduledFrom"):
             fields["ScheduledFrom"] = date.today().isoformat()
         await update_list_item(_list_id(), _LIST_NAME, item_id, fields)
+        await record(user, "Record schedule set",
+                     f"Every {body.check_frequency_days} days; freshness {body.freshness_days or 'same as frequency'}",
+                     item_id=item_id, item_type="Record", document_code=cur.get("LinkedControlId", ""))
         return _sp_to_record(await get_list_item(_list_id(), _LIST_NAME, item_id))
     except HTTPException:
         raise

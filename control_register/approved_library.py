@@ -171,6 +171,130 @@ def _same_document(a: ParsedDocument, b: ParsedDocument) -> bool:
     return a.filename.lower() == b.filename.lower()
 
 
+_DEFINING_TYPES = {"STD"}
+
+
+def _type_of(code: str) -> str:
+    from cdi.codes import parse_doc_code
+    return parse_doc_code(code or "")[1]
+
+
+def _keep_standard_definitions(plan, register: list[dict]) -> None:
+    """
+    A control a Standard defined is never redefined by a procedure's short copy. When the Standard
+    drops it, the procedure's copy would otherwise become its "definition" (and be offered for
+    acceptance as a change). Instead the control is reported as no longer defined, for a person.
+    """
+    import json as _json
+    was_standard = set()
+    for item in register:
+        f = item.get("fields") or {}
+        try:
+            d = _json.loads(f.get("DefinitionJson") or "null") or {}
+        except ValueError:
+            d = {}
+        if (f.get("ControlId") and _type_of((d.get("defined_in") or {}).get("code") or f.get("SourceDocument", ""))
+                in _DEFINING_TYPES):
+            was_standard.add(f["ControlId"].strip())
+    kept = []
+    for a in plan.actions:
+        code = ((a.candidate or {}).get("defined_in") or {}).get("code", "") if a.candidate else ""
+        if (a.kind in ("create_item", "update_item") and a.control_id in was_standard
+                and code and _type_of(code) not in _DEFINING_TYPES):
+            if a.control_id not in plan.no_longer_defined:
+                plan.no_longer_defined.append(a.control_id)
+            continue
+        kept.append(a)
+    plan.actions = kept
+
+
+def plan_no_longer_defined(cids: list[str], register: list[dict], queue: list[dict]) -> list:
+    """
+    A confirmed control no approved document defines any more: raise it in Assignment & Ownership
+    ("Withdraw the control" or keep it), once. Until a person decides, it stays as it is — it may
+    be a document that is being revised. The item closes itself if the control is defined again.
+    """
+    from control_register.sync import PENDING, ZONE2_ITEM_TYPE, SyncAction, _latest_by_key
+    by_cid = {}
+    for item in register:
+        f = item.get("fields") or {}
+        if f.get("ControlId") and f.get("Status") not in ("Withdrawn", "Superseded"):
+            by_cid[f["ControlId"].strip()] = (str(item["id"]), f)
+    latest = _latest_by_key(queue)
+    actions = []
+    for cid in cids:
+        if cid not in by_cid:
+            continue
+        key = f"NO-LONGER-DEFINED:{cid}"
+        item = latest.get(key)
+        if item is not None and ((item.get("fields") or {}).get("ReviewStatus") or "") != "Superseded":
+            continue
+        _, f = by_cid[cid]
+        doc = f.get("SourceDocument", "")
+        actions.append(SyncAction("create_item", key, {}, fields={
+            "Title": f"{cid} is no longer defined by any approved document"[:255],
+            "OrphanClassification": "CONTROL_NO_LONGER_DEFINED",
+            "ResponsibilityStatement": (
+                f"{cid} is in the Control Register, but no approved document defines it any more "
+                f"(it was defined in {doc or 'a document'}). It is still Active and still owes evidence. "
+                "Withdraw it if it was removed on purpose; keep it if its document is being revised."),
+            "OrphanReason": f"Last defined in: {doc}",
+            "SourceDocumentCode": doc[:255],
+            "ControlId": cid,                 # with a ResolutionKey: a Zone 2 item about this control
+            "ItemType": ZONE2_ITEM_TYPE,
+            "ResolutionKey": key,
+            "ReviewStatus": "Pending Review",
+        }))
+    still_missing = set(cids)
+    for key, item in latest.items():
+        status = ((item.get("fields") or {}).get("ReviewStatus") or "").strip()
+        if key.startswith("NO-LONGER-DEFINED:") and key.split(":", 1)[1] not in still_missing and status in PENDING:
+            actions.append(SyncAction("close_item", key, {}, queue_item_id=str(item["id"]),
+                                      fields={"CascadeResult": "Closed by library sync: the control is defined again."}))
+    return actions
+
+
+def defined_counts(index: LibraryIndex, awaiting: dict) -> dict[str, int]:
+    """How many controls each approved document is the definition of (by base code). A control
+    waiting for its Standard is not counted against the procedure that copies it."""
+    counts: dict[str, int] = {}
+    for cid in index.defined_ids:
+        if cid in awaiting:
+            continue
+        definer = index.definition(cid)
+        if definer:
+            key = _base_code(definer[0].header.code or "")
+            if key:
+                counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
+async def _refresh_defined_counts(index: LibraryIndex, awaiting: dict) -> int:
+    """Every Register entry's "controls defined" count follows the library as it is now — when a
+    Standard takes over a control, the procedure that held it before drops it too. Best-effort."""
+    from graph.client import get_list_items, update_list_item
+    counts = defined_counts(index, awaiting)
+    changed = 0
+    try:
+        rows = await get_list_items(settings.document_register_list_id, "Document Register")
+    except Exception as exc:
+        logger.warning(f"Controls-defined counts not refreshed: {exc}")
+        return 0
+    for row in rows:
+        f = row.get("fields") or {}
+        if f.get("Status") not in ("Active", "Under Review"):
+            continue
+        want = counts.get(_base_code(f.get("DocumentCode") or ""), 0)
+        if int(f.get("LinkedControlsCount") or 0) != want:
+            try:
+                await update_list_item(settings.document_register_list_id, "Document Register",
+                                       str(row["id"]), {"LinkedControlsCount": want})
+                changed += 1
+            except Exception as exc:
+                logger.warning(f"Count for {f.get('DocumentCode')} not updated: {exc}")
+    return changed
+
+
 def awaiting_definition(approved: LibraryIndex,
                         folder_docs: list[ParsedDocument]) -> tuple[dict[str, str], set[str]]:
     """
@@ -184,7 +308,9 @@ def awaiting_definition(approved: LibraryIndex,
     full = LibraryIndex(approved.documents + others)
     approved_ids = {id(d) for d in approved.documents}
     out = {}
-    for cid in approved.defined_ids:
+    # A control two approved procedures both copy is not "defined twice" while its Standard is
+    # still in Lifecycle: it waits for the Standard like any other.
+    for cid in list(approved.defined_ids) + list(approved.contested_ids):
         definer = full.definition(cid)
         if definer and id(definer[0]) not in approved_ids:
             out[cid] = document_label(definer[0])
@@ -278,6 +404,7 @@ async def sync_approved_library(focus_code: str = "", apply: bool = True,
         plan.actions = [a for a in plan.actions
                         if a.control_id not in awaiting or a.kind == "refresh_status"]
         new_or_changed = plan.count("create_item") + plan.count("update_item")
+        _keep_standard_definitions(plan, register)
         catalogue = await _catalogue()
         resolutions = [
             a for a in plan_resolutions(index, queue, catalogue)
@@ -287,8 +414,12 @@ async def sync_approved_library(focus_code: str = "", apply: bool = True,
                  and a.control_id.rsplit(":", 1)[1] in defined_anywhere)
                 # compared against a procedure's copy, not the real definition
                 or (a.control_id.startswith("COPY-DIFFERS:")
+                    and a.control_id.rsplit(":", 1)[1] in awaiting)
+                # two copies of a control whose Standard is still in Lifecycle
+                or (a.control_id.startswith("DEFINED-TWICE:")
                     and a.control_id.rsplit(":", 1)[1] in awaiting)))
         ]
+        resolutions += plan_no_longer_defined(plan.no_longer_defined, register, queue)
         plan.actions += resolutions
 
         result.update({
@@ -313,4 +444,6 @@ async def sync_approved_library(focus_code: str = "", apply: bool = True,
         failures = await apply_sync(plan, progress=progress)
         result["written"] = True
         result["failures"] = failures
+        result["duplicate_controls"] = sorted(set(plan.duplicate_controls))
+        result["counts_updated"] = await _refresh_defined_counts(index, awaiting)
         return result

@@ -35,7 +35,7 @@ from control_register.definitions import (
 logger = logging.getLogger(__name__)
 
 ITEM_TYPE = "Extraction"                                # Zone 1
-PENDING = {"", "Pending Review", "Pending Second Review", "Blocked", "Routed to Owner"}
+PENDING = {"", "Pending Review", "Pending Second Review", "Second Review Requested", "Blocked", "Routed to Owner"}
 DECLINED = {"Rejected", "False Positive"}
 RETIRED_CONTROL = {"Withdrawn", "Superseded"}
 

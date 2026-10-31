@@ -30,6 +30,8 @@ from graph.exceptions import GraphAPIError, GraphNotFoundError
 
 logger = logging.getLogger(__name__)
 
+from audit.trail import record
+
 router = APIRouter(prefix="/api/v1/gap-analysis", tags=["Gap Analysis"])
 
 _LIST_NAME = "Gap Analysis"
@@ -308,6 +310,8 @@ async def update_gap_status(
         if body.target_date:          fields["TargetDate"]        = body.target_date
 
         await update_list_item(_list_id(), _LIST_NAME, item_id, fields)
+        await record(user, f"Gap status: {body.status}", body.resolution_notes or "", item_id=item_id, item_type="Gap",
+                     state_to=body.status)
         updated = await get_list_item(_list_id(), _LIST_NAME, item_id)
         return _sp_to_gap(updated)
     except Exception as exc:
@@ -486,6 +490,8 @@ async def accept_risk(
                 f"Rationale: {body.rationale}"
             ),
         })
+        await record(user, "Gap accepted as risk", f"{risk_id}: {body.rationale}", item_id=item_id, item_type="Gap",
+                     document_code=gap.get("GapId", ""), state_from=gap["Status"], state_to="Accepted risk")
 
         updated = await get_list_item(_list_id(), _LIST_NAME, item_id)
         return {

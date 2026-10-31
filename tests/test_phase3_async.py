@@ -100,7 +100,8 @@ def test_traffic_amber_when_evidence_submitted_not_verified():
 
 
 def test_traffic_red_when_evidence_overdue_or_rejected():
-    assert _calculate_traffic_light([_CTRL], [{"Status": "Overdue"}], _OWN) == "Red"
+    # "Overdue" is never stored: a record past its due date and not accepted is computed Late.
+    assert _calculate_traffic_light([_CTRL], [{"Status": "Pending", "DueDate": "2020-01-01"}], _OWN) == "Red"
     assert _calculate_traffic_light([_CTRL], [{"Status": "Rejected"}], _OWN) == "Red"
 
 

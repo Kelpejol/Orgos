@@ -55,6 +55,7 @@ const SC = {
   Routed: { bg: "#E6F1FB", tx: "#0C447C", bd: "#85B7EB" },
   "False Positive": { bg: "#F1EFE8", tx: "#595952", bd: "#B4B2A9" },
   "Second Review Requested": { bg: "#EEEDFE", tx: "#3C3489", bd: "#AFA9EC" },
+  "Pending Second Review":   { bg: "#EEEDFE", tx: "#3C3489", bd: "#AFA9EC" },
 
   // Lifecycle stages
   Review: { bg: "#FAEEDA", tx: "#633806", bd: "#FAC775" },

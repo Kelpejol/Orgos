@@ -388,6 +388,13 @@ async def reject_item(
 
     try:
         q_fields = await _get_queue_item(item_id)
+        from review_queue.router import _DECIDABLE_STATUSES
+        current = (q_fields.get("ReviewStatus") or "").strip()
+        if current not in _DECIDABLE_STATUSES:
+            # An accepted item's control is in the register: rejecting the item would leave it there
+            # while the queue says otherwise. Reverse the decision properly instead.
+            raise HTTPException(status_code=409, detail=(
+                f"This item is already decided ({current}). It can't be rejected now."))
         new_status = "Rejected" if body.reject_type == "Reject" else "False Positive"
 
         await update_list_item(_q_list_id(), _Q_LIST_NAME, item_id, {
@@ -434,7 +441,7 @@ async def request_second_review(
     try:
         q_fields = await _get_queue_item(item_id)
         await update_list_item(_q_list_id(), _Q_LIST_NAME, item_id, {
-            "ReviewStatus":      "Second Review Requested",
+            "ReviewStatus":      "Pending Second Review",
             "Decision":          "Request Second Review",
             "DecisionRationale": body.rationale,
             "ReviewedByEntraId": user.oid,
@@ -457,7 +464,7 @@ async def request_second_review(
             rationale=body.rationale,
             cascade_result="Flagged for second reviewer." + reviewer_summary,
             state_from="Pending Review",
-            state_to="Second Review Requested",
+            state_to="Pending Second Review",
         )
 
         return {"status": "second_review_requested", "item_id": item_id}

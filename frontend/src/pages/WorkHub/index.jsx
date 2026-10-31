@@ -17,8 +17,16 @@ const usePendingQueue = () =>
   useQuery({
     queryKey: ["queue", "pending-wh"],
     queryFn: () =>
-      apiClient.get("/api/v1/queue/items", { params: { status: "Pending Review" } }).then((r) => r.data),
+      apiClient.get("/api/v1/queue/items", { params: { review_status: "Pending Review" } }).then((r) => r.data),
     staleTime: 60_000,
+  });
+
+const useControls = (enabled) =>
+  useQuery({
+    queryKey: ["controls", "wh"],
+    queryFn: () => apiClient.get("/api/v1/controls").then((r) => r.data),
+    staleTime: 60_000,
+    enabled,
   });
 
 const useLifecycleDocs = () =>
@@ -28,11 +36,16 @@ const useLifecycleDocs = () =>
     staleTime: 60_000,
   });
 
+// "Overdue" is never stored: a record's state is computed (Missing, Late, Stale, Rejected need attention).
+const ATTENTION = new Set(["Missing", "Late", "Stale", "Rejected"]);
+const needsAttention = (r) => r.IsObligation
+  ? ATTENTION.has(r.State)
+  : r.Status === "Rejected" || (["Pending", "Submitted"].includes(r.Status) && r.DueDate && r.DueDate.slice(0, 10) < new Date().toISOString().slice(0, 10));
+
 const useOverdueRecords = () =>
   useQuery({
-    queryKey: ["records", "overdue"],
-    queryFn: () =>
-      apiClient.get("/api/v1/records", { params: { status: "Overdue" } }).then((r) => r.data),
+    queryKey: ["records", "attention"],
+    queryFn: () => apiClient.get("/api/v1/records").then((r) => (r.data || []).filter(needsAttention)),
     staleTime: 60_000,
   });
 
@@ -54,7 +67,7 @@ const useOpenGaps = () =>
   useQuery({
     queryKey: ["gaps", "open"],
     queryFn: () =>
-      apiClient.get("/api/v1/gap-analysis", { params: { status: "Open" } }).then((r) => r.data),
+      apiClient.get("/api/v1/gap-analysis", { params: { status_filter: "Open" } }).then((r) => r.data),
     staleTime: 60_000,
   });
 
@@ -161,6 +174,7 @@ export default function WorkHub({ go }) {
   const overdueObligQ= useOverdueObligations();
   const expiringQ    = useExpiringContracts();
   const gapsQ        = useOpenGaps();
+  const controlsQ    = useControls(isCompliance);
 
   const allEvid    = overdueEvidQ.data  || [];
   const allOblig   = overdueObligQ.data || [];
@@ -181,7 +195,15 @@ export default function WorkHub({ go }) {
     : allOblig;
 
   const stalled      = useMemo(() => allLife.filter((d) => (d.DaysInStage || 0) > 14), [allLife]);
-  const criticalGaps = useMemo(() => allGaps.filter((g) => g.severity === "Critical"), [allGaps]);
+  const criticalGaps = useMemo(() => allGaps.filter((g) => g.Severity === "Critical"), [allGaps]);
+  const blocked      = useMemo(() => (controlsQ.data || []).filter((c) => c.Status === "Blocked"), [controlsQ.data]);
+  // Documents in Review whose roles are not in Org Roles (the role check runs whenever the file changes).
+  const roleProblems = useMemo(() => allLife.filter((d) => {
+    if (d.Stage !== "Review" || !d.CDIFailures) return false;
+    try { return JSON.parse(d.CDIFailures).some((f) => (f.check_id || f.check) === "V07"); } catch { return false; }
+  }), [allLife]);
+  const myDocs       = useMemo(() => allLife.filter((d) => d.OwnerEntraId === oid && d.ApprovalStatus !== "Approved"
+    && ["Review", "Sensitisation"].includes(d.Stage)), [allLife, oid]);
 
   if (overdueEvidQ.isLoading || overdueObligQ.isLoading) {
     return <LoadingState message="Loading work hub..." />;
@@ -193,7 +215,7 @@ export default function WorkHub({ go }) {
     // Blocking — shown to all roles (scoped)
     myEvid.length > 0   && { key: "evid",    color: "#A32D2D", bg: "#FFF8F8", bd: "#F09595", icon: "◎",
       count: myEvid.length,
-      title: `record item${myEvid.length > 1 ? "s" : ""} overdue`,
+      title: `record${myEvid.length > 1 ? "s" : ""} missing, late, stale or rejected`,
       message: isStandard
         ? `You have ${myEvid.length} overdue record item${myEvid.length > 1 ? "s" : ""} assigned to you. Submit as soon as possible.`
         : `${myEvid.length} control${myEvid.length > 1 ? "s are" : " is"} missing a record. ` +
@@ -211,12 +233,34 @@ export default function WorkHub({ go }) {
           (myOblig.length > 3 ? ` +${myOblig.length - 3} more.` : "."),
       action: "View calendar", nav: "cal" },
 
+    // Everyone: the documents I own that are still being worked on
+    myDocs.length > 0 && { key: "mydocs", color: "#0C447C", bg: "#F4F9FE", bd: "#85B7EB", icon: "◷",
+      count: myDocs.length,
+      title: `of my document${myDocs.length > 1 ? "s" : ""} in Review or Sensitisation`,
+      message: myDocs.slice(0, 3).map((d) => `${d.Title || d.DocumentCode} (${d.Stage})`).join(", ") +
+        (myDocs.length > 3 ? ` +${myDocs.length - 3} more.` : "."),
+      action: "Open lifecycle", nav: "lifecycle" },
+
     // Compliance/Admin only
+    isCompliance && blocked.length > 0 && { key: "blocked", color: "#791F1F", bg: "#FCEBEB", bd: "#F09595", icon: "⊘",
+      count: blocked.length,
+      title: `control${blocked.length > 1 ? "s" : ""} Blocked`,
+      message: blocked.slice(0, 3).map((c) => `${c.ControlId || c.Title}: ${c.BlockedReason || "owner not in Org Roles"}`).join(" · ") +
+        (blocked.length > 3 ? ` +${blocked.length - 3} more.` : ""),
+      action: "Control Register", nav: "control" },
+
+    isCompliance && roleProblems.length > 0 && { key: "roles", color: "#8A5A00", bg: "#FDF3E2", bd: "#F0CE94", icon: "⚑",
+      count: roleProblems.length,
+      title: `document${roleProblems.length > 1 ? "s" : ""} in Review naming roles not in Org Roles`,
+      message: roleProblems.slice(0, 3).map((d) => d.Title || d.DocumentCode).join(", ") +
+        (roleProblems.length > 3 ? ` +${roleProblems.length - 3} more.` : "") + " — fix them with “Fix CDI issues” on each card.",
+      action: "View lifecycle", nav: "lifecycle" },
+
     isCompliance && criticalGaps.length > 0 && { key: "gaps", color: "#791F1F", bg: "#FCEBEB", bd: "#F09595", icon: "⊗",
       count: criticalGaps.length,
-      title: `critical gap${criticalGaps.length > 1 ? "s" : ""} — no controls at all`,
-      message: `These clauses will fail any external audit. ` +
-        criticalGaps.slice(0, 3).map((g) => g.iso_clause || g.ISOClause || g.gap_id || "").filter(Boolean).join(", ") +
+      title: `critical gap${criticalGaps.length > 1 ? "s" : ""} open`,
+      message: `These will fail an external audit. ` +
+        criticalGaps.slice(0, 3).map((g) => g.Clause || g.GapId || "").filter(Boolean).join(", ") +
         (criticalGaps.length > 3 ? ` +${criticalGaps.length - 3} more.` : "."),
       action: "Gap analysis", nav: "gap" },
 
@@ -238,7 +282,7 @@ export default function WorkHub({ go }) {
     isCompliance && allQueue.length > 0 && { key: "queue", color: "#633806", bg: "#FAEEDA", bd: "#FAC775", icon: "◈",
       count: allQueue.length,
       title: `item${allQueue.length > 1 ? "s" : ""} pending in extraction review`,
-      message: "Extracted controls and findings are waiting for compliance team review.",
+      message: "Controls from approved documents, and problems between documents, are waiting for review.",
       action: "Open queue", nav: "extraction" },
 
   ].filter(Boolean);
@@ -271,7 +315,7 @@ export default function WorkHub({ go }) {
       {/* Stats */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(130px, 1fr))", gap: 10, marginBottom: 24 }}>
         <Stat
-          label={isStandard ? "My overdue records" : "Overdue records"}
+          label={isStandard ? "My records needing attention" : "Records needing attention"}
           value={myEvid.length}
           color={myEvid.length > 0 ? "#A32D2D" : undefined}
         />
@@ -287,6 +331,10 @@ export default function WorkHub({ go }) {
         {isCompliance && (
           <Stat label="Expiring contracts" value={allExpire.length}
             color={allExpire.length > 0 ? "#BA7517" : undefined} />
+        )}
+        {isCompliance && (
+          <Stat label="Blocked controls" value={blocked.length}
+            color={blocked.length > 0 ? "#A32D2D" : undefined} />
         )}
         {isCompliance && (
           <Stat label="Open gaps" value={allGaps.length}

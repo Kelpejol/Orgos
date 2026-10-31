@@ -25,7 +25,7 @@ from evidence.service import state_changes
 from records_catalogue.model import RecordEntry
 
 TODAY = date(2026, 10, 19)
-USER = CurrentUser(oid="u", name="Verifier", email="u@x", tenant_id="t", roles=["OrgOS.Admin"])
+USER = CurrentUser(oid="u", name="Verifier", email="u@x", tenant_id="t", roles=["compliance"])
 
 
 def definition(cid="CDI-001", evidence=(("REC-0623", "Register"),), trigger="On creation.",
@@ -50,7 +50,7 @@ def test_one_obligation_per_record_id_with_the_catalogues_name_and_home():
     assert ob.key == "CDI-001|REC-0623"
     assert (ob.record_name, ob.custodian, ob.system_id) == (
         "Controlled Document Register", "Document Controller", "S01")
-    assert ob.owner_role == "Document Owner"          # who produces it: the executing role
+    assert ob.owner_role == "Compliance Executive"    # who produces it: the Control owner (the accountable role)
 
 
 def test_a_withdrawn_duplicate_record_makes_no_obligation():
@@ -83,7 +83,7 @@ def test_reconciling_creates_then_changes_nothing():
 def test_a_schedule_and_submission_set_by_people_survive_a_sync():
     rows = _rows(plan_obligations(_controls(definition()), [], CATALOGUE),
                  CheckFrequencyDays=91.0, LastRecordDate="2026-09-01", Status="Accepted")
-    changed = plan_obligations(_controls(definition(executing="Records Officer")), rows, CATALOGUE)
+    changed = plan_obligations(_controls(definition(accountable="Records Officer")), rows, CATALOGUE)
     [action] = changed
     assert action.fields == {"OwnerRole": "Records Officer"}       # only the generated field
 
@@ -218,3 +218,19 @@ async def test_an_obligations_owner_comes_from_its_control():
         with pytest.raises(rt.HTTPException) as exc:
             await rt.reassign_record_owner("5", rt.ReassignRecordOwner(owner_role="CEO"), user=USER)
     assert exc.value.status_code == 422
+
+
+
+async def test_someone_who_does_not_hold_the_owner_role_cannot_submit_a_record():
+    from unittest.mock import AsyncMock, patch
+    from fastapi import HTTPException
+    from ownership.resolver import OwnershipIndex
+    import record_tracker.router as rt
+    owners = OwnershipIndex([{"name": "Compliance Executive", "members": [{"oid": "holder"}]}], {})
+    stranger = CurrentUser(oid="stranger", name="S", email="s@x", tenant_id="t", roles=[])
+    holder = CurrentUser(oid="holder", name="H", email="h@x", tenant_id="t", roles=[])
+    with patch("ownership.resolver.get_ownership_index", new=AsyncMock(return_value=owners)):
+        with pytest.raises(HTTPException) as e:
+            await rt._may_produce({"OwnerRole": "Compliance Executive"}, stranger)
+        assert e.value.status_code == 403
+        await rt._may_produce({"OwnerRole": "Compliance Executive"}, holder)       # the role holder may

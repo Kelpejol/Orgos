@@ -20,6 +20,7 @@
 import json
 import logging
 from datetime import date, timedelta
+from typing import Optional
 
 from agents.llm_client import llm_generate
 from config import settings
@@ -44,10 +45,20 @@ SEVERITY_DAYS = {"Critical": 30, "Major": 60, "Minor": 90}
 #  Data loaders
 # =============================================================================
 
+# Gaps this analyzer writes and therefore may close itself when the condition is gone.
+# (Coverage and obligation gaps from the registers, and gaps raised by hand, are not its own.)
+ANALYZER_CATEGORIES = {"Missing artefact", "Ownership gap", "Evidence gap", "Implementation gap"}
+# A gap a person has settled: never raised again for the same condition.
+SETTLED = {"Accepted risk", "Accepted Risk", "Closed with rationale"}
+_RETIRED_CONTROL = {"Withdrawn", "Superseded"}
+
+
 async def _load_controls() -> list[dict]:
+    """The LIVE controls: a withdrawn or superseded control covers no clause and owes no evidence."""
     items = await get_list_items(
         settings.control_register_list_id, "Control Register"
     )
+    items = [i for i in items if (i.get("fields") or {}).get("Status") not in _RETIRED_CONTROL]
     return [
         {
             "id":         str(i["id"]),
@@ -89,24 +100,50 @@ async def _load_records() -> list[dict]:
     ]
 
 
-async def _load_existing_gap_keys() -> set[str]:
-    """
-    Return the GapKey values of all currently open or in-progress gaps.
-    Used to prevent duplicate findings on repeated runs.
-    """
+async def _load_gap_items() -> Optional[list[dict]]:
+    """Every row of the Gap Analysis list, or None if it can't be read."""
     if not settings.is_list_configured(settings.gap_analysis_list_id):
-        return set()
+        return []
     try:
-        items = await get_list_items(settings.gap_analysis_list_id, "Gap Analysis")
-        return {
-            i.get("fields", {}).get("GapKey", "")
-            for i in items
-            if i.get("fields", {}).get("Status", "Open") in ("Open", "In progress")
-            and i.get("fields", {}).get("GapKey", "")
-        }
+        return await get_list_items(settings.gap_analysis_list_id, "Gap Analysis")
     except Exception as exc:
-        logger.warning(f"Could not load existing gaps for deduplication: {exc}")
-        return set()
+        logger.warning(f"Could not load existing gaps: {exc}")
+        return None
+
+
+def _tracked_gap_keys(items: list[dict]) -> set[str]:
+    """
+    The GapKeys already tracked: open, in progress — or settled by a person (accepted as a risk),
+    which must not come back as a new Open gap on the next run.
+    """
+    return {
+        (i.get("fields") or {}).get("GapKey", "")
+        for i in items
+        if (i.get("fields") or {}).get("Status", "Open") in ({"Open", "In progress"} | SETTLED)
+        and (i.get("fields") or {}).get("GapKey", "")
+    }
+
+
+async def _load_existing_gap_keys() -> set[str]:
+    """The GapKeys already tracked (open, in progress, or accepted as a risk)."""
+    return _tracked_gap_keys(await _load_gap_items() or [])
+
+
+def _gap_id_allocator(items: list[dict]):
+    """Next GapId per standard and year (GAP-{STANDARD}-{YY}-{NNN}), counting what exists."""
+    year = date.today().strftime("%y")
+    used: dict[str, int] = {}
+    for i in items:
+        gid = (i.get("fields") or {}).get("GapId", "") or ""
+        prefix, _, n = gid.rpartition("-")
+        if prefix and n.isdigit():
+            used[prefix] = max(used.get(prefix, 0), int(n))
+
+    def next_id(standard: str) -> str:
+        prefix = f"GAP-{(standard or 'GEN').replace(' ', '').replace('-', '')}-{year}"
+        used[prefix] = used.get(prefix, 0) + 1
+        return f"{prefix}-{used[prefix]:03d}"
+    return next_id
 
 
 # =============================================================================
@@ -334,26 +371,26 @@ async def _log_gap_analysis_run(summary: dict, triggered_by: str = "system") -> 
         logger.warning(f"Could not write Gap Analyzer run to Audit Log: {exc}")
 
 
-async def _close_resolved_control_gaps(current_keys: set[str]) -> int:
+async def _close_resolved_control_gaps(current_keys: set[str], items: Optional[list[dict]] = None) -> int:
     """
-    Close open CDI control-framework gaps whose problem is gone. Their checks
-    are exact (a role now recognised, a procedure now citing the control), so
-    OrgOS can confirm the fix itself. Clause gaps stay for a person to close.
+    Close the open gaps this analyzer raised whose condition no longer holds — a control now
+    mapped to the clause, a role now recognised, a record now accepted. Its checks are exact, so
+    OrgOS can confirm the fix itself. Gaps it did not raise (coverage and obligation gaps from the
+    registers, gaps raised by hand or from an audit) are left for a person.
     """
-    from agents.gap_analyzer.control_gaps import STANDARD
     from graph.client import update_list_item
 
     if not settings.is_list_configured(settings.gap_analysis_list_id):
         return 0
-    try:
-        items = await get_list_items(settings.gap_analysis_list_id, "Gap Analysis")
-    except Exception as exc:
-        logger.warning(f"Could not load gaps to close resolved ones: {exc}")
-        return 0
+    if items is None:
+        items = await _load_gap_items()
+        if items is None:
+            return 0
     closed = 0
     for item in items:
         f = item.get("fields", {})
-        if (f.get("Standard") == STANDARD and f.get("Status", "Open") in ("Open", "In progress")
+        ours = (f.get("GapCategory") or (f.get("GapKey", "").split("|") + ["", "", ""])[2]) in ANALYZER_CATEGORIES
+        if (ours and f.get("Status", "Open") in ("Open", "In progress")
                 and f.get("GapKey") and f["GapKey"] not in current_keys):
             try:
                 await update_list_item(settings.gap_analysis_list_id, "Gap Analysis", str(item["id"]), {
@@ -365,6 +402,32 @@ async def _close_resolved_control_gaps(current_keys: set[str]) -> int:
             except Exception as exc:
                 logger.error(f"Could not close resolved gap {item['id']}: {exc}")
     return closed
+
+
+async def _refresh_open_gaps(gaps: list[dict], items: list[dict]) -> int:
+    """An open gap OrgOS states itself (control-framework gaps) keeps up with what it found:
+    more controls now Blocked, a different list of records. Clause gaps keep their reviewed text."""
+    from graph.client import update_list_item
+
+    open_by_key = {(i.get("fields") or {}).get("GapKey"): i for i in items
+                   if (i.get("fields") or {}).get("Status", "Open") in ("Open", "In progress")}
+    refreshed = 0
+    for gap in gaps:
+        item = open_by_key.get(gap["gap_key"])
+        stated = gap.get("stated")
+        if not item or not stated:
+            continue
+        f = item.get("fields") or {}
+        update = {k: v for k, v in (("Finding", stated["finding_narrative"]),
+                                    ("ProposedRemediation", stated["remediation_json"]),
+                                    ("Severity", gap["severity"])) if f.get(k) != v}
+        if update:
+            try:
+                await update_list_item(settings.gap_analysis_list_id, "Gap Analysis", str(item["id"]), update)
+                refreshed += 1
+            except Exception as exc:
+                logger.error(f"Could not refresh gap {item['id']}: {exc}")
+    return refreshed
 
 
 async def run_gap_analysis(triggered_by: str = "system") -> dict:
@@ -387,9 +450,17 @@ async def run_gap_analysis(triggered_by: str = "system") -> dict:
         f"Loaded: {len(controls)} controls, {len(records)} record items"
     )
 
-    # Load existing open gap keys for deduplication
-    existing_keys = await _load_existing_gap_keys()
-    logger.info(f"Existing open gap keys: {len(existing_keys)}")
+    # Existing gaps: tracked ones are not raised again; IDs continue from what exists.
+    gap_items = await _load_gap_items()
+    if gap_items is None:
+        summary = {"status": "error", "gaps_found": 0, "gaps_written": 0, "gaps_skipped": 0,
+                   "message": "The Gap Analysis list could not be read, so nothing was written "
+                              "(writing blind would duplicate every open gap)."}
+        await _log_gap_analysis_run(summary, triggered_by=triggered_by)
+        return summary
+    existing_keys = _tracked_gap_keys(gap_items)
+    next_gap_id = _gap_id_allocator(gap_items)
+    logger.info(f"Existing tracked gap keys: {len(existing_keys)}")
 
     # Part 1 — find gaps
     # Resolve the Control owner's holders once. The shared resolver's legacy
@@ -400,7 +471,8 @@ async def run_gap_analysis(triggered_by: str = "system") -> dict:
     from agents.gap_analyzer.control_gaps import find_control_gaps, find_evidence_gaps
     gaps = (_find_gaps(controls, records, ownership) + find_control_gaps(controls)
             + find_evidence_gaps([r["fields"] for r in records]))
-    closed = await _close_resolved_control_gaps({g["gap_key"] for g in gaps})
+    closed = await _close_resolved_control_gaps({g["gap_key"] for g in gaps}, gap_items)
+    refreshed = await _refresh_open_gaps(gaps, gap_items)
     logger.info(f"Gap finding complete: {len(gaps)} gaps found before deduplication")
 
     if not gaps:
@@ -410,6 +482,8 @@ async def run_gap_analysis(triggered_by: str = "system") -> dict:
             "gaps_written": 0,
             "gaps_skipped": 0,
             "gaps_closed":  closed,
+            "gaps_refreshed": refreshed,
+        "gaps_refreshed": refreshed,
             "message":      "No gaps found. Register data covers all required clauses.",
         }
         await _log_gap_analysis_run(summary, triggered_by=triggered_by)
@@ -428,6 +502,8 @@ async def run_gap_analysis(triggered_by: str = "system") -> dict:
             "gaps_written": 0,
             "gaps_skipped": skipped,
             "gaps_closed":  closed,
+            "gaps_refreshed": refreshed,
+        "gaps_refreshed": refreshed,
             "message": (
                 f"Gap analysis complete. {len(gaps)} gaps found, "
                 f"all already tracked as open. No new gaps written."
@@ -451,6 +527,7 @@ async def run_gap_analysis(triggered_by: str = "system") -> dict:
             target = (date.today() + timedelta(days=days)).isoformat()
 
             fields = {
+                "GapId":               next_gap_id(gap["standard"]),
                 "Title":               ai["finding_narrative"][:255],
                 "Standard":            gap["standard"],
                 "Clause":              gap["clause"],
@@ -487,6 +564,7 @@ async def run_gap_analysis(triggered_by: str = "system") -> dict:
         "gaps_written": written,
         "gaps_skipped": skipped,
         "gaps_closed":  closed,
+        "gaps_refreshed": refreshed,
         "severity":     severity_counts,
         "message": (
             f"Gap analysis complete. {len(new_gaps)} new gaps written "

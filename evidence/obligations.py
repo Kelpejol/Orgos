@@ -116,7 +116,9 @@ def obligations_for(definition: dict, catalogue: Optional[dict] = None) -> list[
     """
     out: dict[str, Obligation] = {}
     cid = definition["control_id"]
-    owner = (definition.get("executing") or definition.get("accountable") or "").strip()
+    # The Control owner produces the evidence. For an older "Accountable / Executing" control the
+    # accountable role is its Control owner (as the control's own status is judged).
+    owner = (definition.get("accountable") or "").strip()
     suggestion = suggest_frequency(definition.get("trigger", ""))
     for ref in definition.get("evidence") or []:
         rid = ref.get("record_id")

@@ -267,7 +267,9 @@ ZONE1_DECISIONS = {
 # a cascade and create duplicate downstream records. "Blocked" is included so a
 # genuinely failed cascade can be retried; "Pending Second Review" so a second
 # reviewer can still act.
-_DECIDABLE_STATUSES = {"", "Pending Review", "Pending Second Review", "Blocked"}
+# "Second Review Requested" was written by an older version of "Request 2nd review"; such items are
+# still decidable.
+_DECIDABLE_STATUSES = {"", "Pending Review", "Pending Second Review", "Second Review Requested", "Blocked"}
 
 
 class Zone1Overrides(BaseModel):
@@ -556,8 +558,10 @@ async def _create_strategic_risk_from_zone2(
         "EscalationNote": rationale,
         "Notes":          f"Queue item escalated by {user.name or user.oid}.",
     }
+    from strategic_risks.router import _next_risk_id
+    fields["RiskId"] = await _next_risk_id()           # RSK-YY-NNN, like every other risk
     risk = await create_list_item(_sr_id(), _SR_LIST, fields)
-    return f"Strategic Risk Register: {risk['id']}"
+    return f"Strategic Risk Register: {fields['RiskId']} (item {risk['id']})"
 
 
 @router.patch("/items/{item_id}/decide")
@@ -696,7 +700,15 @@ ZONE2_DECISIONS = {
     "Select governing document",
     "Escalate to ExCo",
     "Merge",
+    "Withdraw control",
 }
+
+
+def _type_for(code: Optional[str], fallback: str = "Policy") -> str:
+    """The document type a Lifecycle task needs, read from the document's code ('DRG-IT-STD-X' →
+    Standard) — a task for a Standard or a Procedure must not be filed as a Policy."""
+    from control_register.sync import _document_type
+    return _document_type(code or "") or fallback
 
 
 class Zone2DecideBody(BaseModel):
@@ -747,10 +759,10 @@ async def _zone2_cascade(
     elif decision == "Add to existing policy":
         try:
             lifecycle_id = await _create_lifecycle_task(
-                title=f"Revise policy {linked_doc_code or source_doc}: {stmt[:160]}",
+                title=f"Revise {linked_doc_code or source_doc}: {stmt[:160]}",
                 trigger="Gap Remediation",
                 document_code=linked_doc_code,
-                document_type="Policy",
+                document_type=_type_for(linked_doc_code or source_doc),
                 notes=notes("Revise existing policy/procedure to include this responsibility."),
                 user=user,
             )
@@ -809,7 +821,7 @@ async def _zone2_cascade(
                 title=f"Conflict resolution for governing document: {stmt[:160]}",
                 trigger="Gap Remediation",
                 document_code=linked_doc_code,
-                document_type="Policy",
+                document_type=_type_for(linked_doc_code or source_doc),
                 notes=notes("Confirm the governing document and revise conflicting document(s)."),
                 user=user,
             )
@@ -823,7 +835,7 @@ async def _zone2_cascade(
                 title=f"Merge conflicting requirements: {stmt[:180]}",
                 trigger="Gap Remediation",
                 document_code=linked_doc_code or source_doc,
-                document_type="Policy",
+                document_type=_type_for(linked_doc_code or source_doc),
                 notes=notes("Merge conflicting requirements into one approved requirement."),
                 user=user,
             )
@@ -836,6 +848,29 @@ async def _zone2_cascade(
             created.append(await _create_strategic_risk_from_zone2(item, rationale, user))
         except Exception as exc:
             raise CascadeError("Strategic Risk Register", created, exc)
+
+    elif decision == "Withdraw control":
+        # A control no approved document defines any more: withdrawn (never deleted). Its evidence
+        # obligations are retired by the evidence sync, which skips withdrawn controls.
+        cid = (item.get("ControlId") or "").strip()
+        try:
+            rows = await get_list_items(_cr_id(), _CR_LIST)
+            target = next((r for r in rows if ((r.get("fields") or {}).get("ControlId") or "").strip() == cid), None)
+            if not cid or target is None:
+                raise ValueError(f"control {cid or '(none)'} is not in the Control Register")
+            await update_list_item(_cr_id(), _CR_LIST, str(target["id"]), {
+                "Status": "Withdrawn",
+                "BlockedReason": f"Withdrawn: no approved document defines it any more. {rationale}"[:255],
+            })
+            created.append(f"Control Register: {cid} withdrawn")
+        except Exception as exc:
+            raise CascadeError("Control Register", created, exc)
+        try:
+            from evidence.service import sync_obligations
+            await sync_obligations()
+            created.append("Record Tracker: obligations re-synced")
+        except Exception as exc:
+            logger.warning(f"Obligations not re-synced after withdrawing {cid}: {exc}")
 
     elif decision == "Intentional":
         created.append("Intentional accountability gap accepted with rationale.")

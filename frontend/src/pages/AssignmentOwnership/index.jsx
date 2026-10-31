@@ -75,6 +75,16 @@ const COMMON = [
   { key: "Request Second Review", label: "Request 2nd review",  desc: "Escalate to another compliance team member" },
 ];
 const LIBRARY_FINDINGS = {
+  CONTROL_NO_LONGER_DEFINED: {
+    label: "No longer defined",
+    heading: "A confirmed control that no approved document defines any more",
+    consequence: "Until decided, it stays Active, keeps owing evidence and counts on the Standards Map. Closes itself if a document defines it again.",
+    decisions: [
+      { key: "Withdraw control", label: "Withdraw the control", desc: "It was removed on purpose: withdraw it (kept in the register as Withdrawn) and stop its evidence", primary: true },
+      { key: "Intentional", label: "Keep it for now", desc: "Its document is being revised, or it is defined somewhere OrgOS does not read" },
+      ...COMMON,
+    ],
+  },
   RESTATEMENT_DIFFERS: {
     label: "Copy differs from its Standard",
     heading: "A procedure has reworded a control it copies from its Standard",

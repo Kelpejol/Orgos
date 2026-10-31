@@ -29,25 +29,48 @@ router = APIRouter(prefix="/api/v1/standards", tags=["Standards Map"])
 _MAP_CACHE_TTL_SECONDS = 15.0
 _map_cache: dict[str, tuple[float, list]] = {}
 
+_RETIRED_CONTROL = {"Withdrawn", "Superseded"}
+# A record that needs attention now (evidence/obligations.ATTENTION) turns a clause Red; one that
+# is not settled yet turns it Amber.
+_RED_STATES = {"Missing", "Late", "Stale", "Rejected"}
+_AMBER_STATES = {"Unscheduled", "Awaiting first record", "Due soon", "Submitted"}
+
+
+def record_state(fields: dict) -> str:
+    """
+    Where a record stands today, computed — never a stored "Overdue". An obligation (a record a
+    defined control names) is assessed by evidence/obligations.assess. An older record (from the
+    older extraction) has no schedule: it is Late when its due date has passed and it is not accepted.
+    """
+    from evidence.obligations import assess
+    if fields.get("ObligationKey"):
+        return assess(fields).state
+    status = fields.get("Status") or "Pending"
+    if status in ("Rejected", "Accepted", "Submitted", "Withdrawn"):
+        return {"Accepted": "Current"}.get(status, status)
+    due = str(fields.get("NextDue") or fields.get("DueDate") or "")[:10]
+    from datetime import date
+    if due and due < date.today().isoformat():
+        return "Late"
+    return "Awaiting first record"
+
+
 def _calculate_traffic_light(
     controls: list[dict],
     clause_records: list[dict],
     ownership=None,
 ) -> str:
     """
-    Calculate traffic light per DINT Section 5.4.
-    Green:  all controls have accepted records, all owners assigned, nothing overdue
-    Amber:  record due soon (≤7 days), submitted but not verified, or new control with no record yet
-    Red:    record overdue, no controls, owner unassigned, record rejected
-    Returns: "Green" | "Amber" | "Red"
-
-    `clause_records` must already be scoped to `controls` (the caller indexes
-    records by control id — this avoids an O(controls × records) scan here).
-
-    Ownership is judged by resolving the Control owner's OwnerRole to people
-    via `ownership`, whose legacy directory-title fallback remains — NOT by OwnerEntraId,
-    which the accept cascade never populates.
+    The light for one clause (DINT 5.4), from the controls that map to it and their records:
+      Red    no live control; a control Blocked or with nobody holding its Control owner role;
+             a record Missing, Late, Stale or Rejected
+      Amber  a control with no record yet; a record unscheduled, awaiting its first record,
+             due soon, or submitted and awaiting verification
+      Green  otherwise
+    Withdrawn and superseded controls don't count. `clause_records` must already be scoped to
+    `controls`. Ownership is judged through Org Roles (`ownership`), never OwnerEntraId.
     """
+    controls = [c for c in controls if c.get("Status") not in _RETIRED_CONTROL]
     if not controls:
         return "Red"
 
@@ -59,27 +82,24 @@ def _calculate_traffic_light(
             if not ownership.has_owner(owner_role):
                 return "Red"
         elif not owner_role:
-            # No index available — fall back to "a role is named at all".
             return "Red"
 
     if not clause_records:
         return "Amber"  # Controls exist but no record defined yet
 
-    for r in clause_records:
-        status = r.get("Status", "Pending")
-        if status == "Overdue":
-            return "Red"
-        if status == "Rejected":
-            return "Red"
-
-    for r in clause_records:
-        status = r.get("Status", "Pending")
-        if status in ("Pending", "Due Soon"):
-            return "Amber"
-        if status == "Submitted":
-            return "Amber"  # Awaiting verification
-
+    states = [record_state(r) for r in clause_records]
+    if any(s in _RED_STATES for s in states):
+        return "Red"
+    if any(s in _AMBER_STATES for s in states):
+        return "Amber"
     return "Green"
+
+
+def _records_for(control: dict, records_by_control: dict[str, list[dict]]) -> list[dict]:
+    """A control's records. A record made for a defined control is linked by its Control ID; one
+    from the older extraction by the control's row id. Both are found, neither twice."""
+    keys = dict.fromkeys(k for k in (control.get("ControlId"), control.get("id")) if k)
+    return [r for k in keys for r in records_by_control.get(str(k), [])]
 
 
 # =============================================================================
@@ -108,7 +128,9 @@ async def _registers() -> tuple[list[dict], dict[str, list[dict]]]:
 
 
 def _controls_for(row: catalogue.Clause, controls: list[dict]) -> list[dict]:
-    return [c for c in controls if any(catalogue.covers(row, r) for r in c["_refs"])]
+    """The LIVE controls that map to this clause — a withdrawn or superseded control covers nothing."""
+    return [c for c in controls
+            if c.get("Status") not in _RETIRED_CONTROL and any(catalogue.covers(row, r) for r in c["_refs"])]
 
 
 @router.get("/map")
@@ -143,7 +165,7 @@ async def get_standards_map(
             if standard and row.standard != standard:
                 continue
             clause_controls = _controls_for(row, controls)
-            clause_records = [r for c in clause_controls for r in records_by_control.get(c["id"], [])]
+            clause_records = [r for c in clause_controls for r in _records_for(c, records_by_control)]
             result.append({
                 "standard": row.standard,
                 "clause": row.clause,
@@ -197,13 +219,14 @@ async def get_clause_detail(
 
         controls, records_by_control = await _registers()
         clause_controls = _controls_for(row, controls)
-        clause_records = [r for c in clause_controls for r in records_by_control.get(c["id"], [])]
+        clause_records = [r for c in clause_controls for r in _records_for(c, records_by_control)]
 
         def fmt_control(f: dict) -> dict:
             return {
                 "id": f["id"],
                 "ControlStatement": f.get("ControlStatement", ""),
                 "ControlType": f.get("ControlType", ""),
+                "ControlId": f.get("ControlId", ""),
                 "OwnerRole": f.get("OwnerRole", ""),
                 "OwnerEntraId": f.get("OwnerEntraId", ""),
                 "RiskImplication": f.get("RiskImplication", ""),
@@ -226,6 +249,7 @@ async def get_clause_detail(
                 "OwnerRole": f.get("OwnerRole", ""),
                 "LinkedControlId": f.get("LinkedControlId", ""),
                 "LastCollected": f.get("LastCollected", ""),
+                "State": record_state(f),          # where it stands today: what the light is based on
             }
 
         from ownership.resolver import get_ownership_index

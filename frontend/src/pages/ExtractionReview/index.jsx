@@ -900,7 +900,8 @@ export default function ExtractionReview() {
   const acceptedCount = items.filter(i => i.ReviewStatus === "Accepted").length;
   const rejectedCount = items.filter(i => i.ReviewStatus === "Rejected").length;
   const falsePositiveCount = items.filter(i => i.ReviewStatus === "False Positive").length;
-  const secondReviewCount = items.filter(i => i.ReviewStatus === "Second Review Requested").length;
+  const isSecondReview = (i) => ["Pending Second Review", "Second Review Requested"].includes(i.ReviewStatus);
+  const secondReviewCount = items.filter(isSecondReview).length;
   const blockedCount = items.filter(i => i.ReviewStatus === "Blocked").length;
 
   const filtered = useMemo(() => {
@@ -913,7 +914,7 @@ export default function ExtractionReview() {
           : filter === "false_positive"
             ? items.filter(i => i.ReviewStatus === "False Positive")
             : filter === "second_review"
-              ? items.filter(i => i.ReviewStatus === "Second Review Requested")
+              ? items.filter(isSecondReview)
               : filter === "blocked"
                 ? items.filter(i => i.ReviewStatus === "Blocked")
                 : items;

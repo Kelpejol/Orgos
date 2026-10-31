@@ -26,6 +26,8 @@ from groups.service import GroupsListNotProvisioned
 
 logger = logging.getLogger(__name__)
 
+from audit.trail import record
+
 router = APIRouter(prefix="/api/v1/groups", tags=["Groups"])
 
 
@@ -106,6 +108,8 @@ async def create_group(
             creator_name=user.name or "",
             aliases=body.aliases,
         )
+        await record(user, "Role created", f"{result.get('name')}; aliases: {', '.join(result.get('aliases') or []) or 'none'}",
+                     item_id=result.get("id", ""), item_type="Org Role")
         recheck_soon()
         return result
     except Exception as exc:
@@ -120,6 +124,8 @@ async def update_group(
 ) -> dict:
     try:
         result = await service.update_group(group_id, body.description, body.category, body.name, body.aliases)
+        changed = {k: v for k, v in body.model_dump().items() if v is not None}
+        await record(user, "Role changed", f"{result.get('name')}: {changed}", item_id=group_id, item_type="Org Role")
         recheck_soon()
         return result
     except Exception as exc:
@@ -134,6 +140,8 @@ async def add_members(
 ) -> dict:
     try:
         result = await service.add_members(group_id, [m.model_dump() for m in body.members])
+        names = ", ".join((m.display_name or m.oid) for m in body.members if getattr(m, "oid", ""))
+        await record(user, "People added to role", f"{result.get('name')}: {names}", item_id=group_id, item_type="Org Role")
         recheck_soon()
         return result
     except Exception as exc:
@@ -148,6 +156,7 @@ async def remove_member(
 ) -> dict:
     try:
         result = await service.remove_member(group_id, oid)
+        await record(user, "Person removed from role", f"{result.get('name')}: {oid}", item_id=group_id, item_type="Org Role")
         recheck_soon()
         return result
     except Exception as exc:
@@ -161,6 +170,8 @@ async def delete_group(
 ) -> None:
     try:
         await service.soft_delete_group(group_id)
+        await record(user, "Role withdrawn", f"Role {group_id} withdrawn (kept, never deleted).",
+                     item_id=group_id, item_type="Org Role")
         recheck_soon()
     except Exception as exc:
         _handle(exc, f"delete role {group_id}")

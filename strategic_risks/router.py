@@ -24,6 +24,8 @@ from graph.exceptions import GraphAPIError, GraphNotFoundError
 
 logger = logging.getLogger(__name__)
 
+from audit.trail import record
+
 router = APIRouter(prefix="/api/v1/risks", tags=["Strategic Risk Register"])
 
 _LIST_NAME = "Strategic Risk Register"
@@ -301,6 +303,8 @@ async def create_risk(
 
     try:
         item = await create_list_item(_list_id(), _LIST_NAME, fields)
+        await record(user, "Strategic risk created", f"{fields.get('RiskId', '')} {fields.get('Title', '')}",
+                     item_id=str(item.get("id", "")), item_type="Strategic Risk", state_to=fields.get("Status", ""))
         return _sp_to_risk(item)
     except Exception as exc:
         _handle(exc, "create risk")
@@ -358,6 +362,9 @@ async def update_risk(
                 updates["AcceptedDate"] = date.today().isoformat()
 
         await update_list_item(_list_id(), _LIST_NAME, item_id, updates)
+        await record(user, "Strategic risk updated", ", ".join(f"{k}: {v}" for k, v in updates.items())[:1000],
+                     item_id=item_id, item_type="Strategic Risk", state_from=current_status,
+                     state_to=updates.get("Status", current_status))
         updated = await get_list_item(_list_id(), _LIST_NAME, item_id)
         return _sp_to_risk(updated)
     except HTTPException:

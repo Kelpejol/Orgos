@@ -6,18 +6,44 @@
 # =============================================================================
 
 import logging
+import os
+import tempfile
+
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
-from apscheduler.triggers.interval import IntervalTrigger
 
 logger = logging.getLogger(__name__)
 
 # Singleton — imported by main.py and any module that needs to add jobs
 scheduler = AsyncIOScheduler(timezone="Africa/Lagos")
 
+# Only ONE process on the server runs the jobs. With several uvicorn workers each would start
+# its own scheduler and every job would run once per worker (duplicate gaps, duplicate reviews).
+_LOCK_PATH = os.path.join(tempfile.gettempdir(), "orgos-scheduler.lock")
+_lock_handle = None
+
+
+def _claim_scheduler_lock() -> bool:
+    global _lock_handle
+    try:
+        import fcntl
+    except ImportError:                      # not a POSIX host: nothing to share the jobs with
+        return True
+    handle = open(_LOCK_PATH, "w")
+    try:
+        fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        handle.close()
+        return False
+    _lock_handle = handle                    # held for the life of the process
+    return True
+
 
 def start_scheduler() -> None:
-    """Register all scheduled jobs and start the scheduler."""
+    """Register all scheduled jobs and start the scheduler (in one process only)."""
+    if not _claim_scheduler_lock():
+        logger.info("APScheduler not started in this process: another worker runs the jobs.")
+        return
     from jobs.scheduled_review import check_document_review_dates
     from jobs.sensitisation_deadline import check_sensitisation_deadlines
     from jobs.gap_analysis_job import run_scheduled_gap_analysis
@@ -52,10 +78,11 @@ def start_scheduler() -> None:
         misfire_grace_time=3600,
     )
 
-    # Every 3 days — run Gap Analyzer against confirmed register data
+    # Every third day at 06:30 WAT — run Gap Analyzer against confirmed register data. A calendar
+    # rule, not "3 days after start": an interval restarted its count at every app restart.
     scheduler.add_job(
         run_scheduled_gap_analysis,
-        IntervalTrigger(days=3),
+        CronTrigger(day="*/3", hour=6, minute=30),
         id="gap-analysis-three-day-check",
         replace_existing=True,
         misfire_grace_time=3600,
@@ -65,7 +92,7 @@ def start_scheduler() -> None:
     logger.info(
         "APScheduler started — jobs: evidence-obligations-daily (07:30 WAT), "
         "document-review-check (08:00 WAT), "
-        "sensitisation-deadline-check (09:00 WAT), gap-analysis-three-day-check (every 3 days)"
+        "sensitisation-deadline-check (09:00 WAT), gap-analysis-three-day-check (every third day, 06:30 WAT)"
     )
 
 

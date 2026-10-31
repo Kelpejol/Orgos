@@ -116,18 +116,35 @@ def test_a_changed_definition_is_not_reported_as_a_conflict_with_itself():
     assert len(_scan_conflict_pairs([a, {**b, "ControlId": ""}], 0.72)) == 1
 
 
-async def test_an_open_control_gap_closes_once_its_condition_is_gone_and_clause_gaps_stay():
+async def test_the_analyzers_own_gaps_close_once_their_condition_is_gone_and_others_stay():
     from unittest.mock import AsyncMock, patch
     import agents.gap_analyzer.service as svc
     items = [
         {"id": "1", "fields": {"Standard": "CDI", "GapKey": "CDI|TST-01|Implementation gap", "Status": "Open"}},
         {"id": "2", "fields": {"Standard": "CDI", "GapKey": "CDI|TST-02|Implementation gap", "Status": "Open"}},
         {"id": "3", "fields": {"Standard": "ISO 27001", "GapKey": "ISO 27001|A.5.1|Missing artefact", "Status": "Open"}},
+        {"id": "4", "fields": {"Standard": "ISO 27001", "GapKey": "ISO 27001|A.5.2|CoverageGap|DRG-X", "Status": "Open"}},
+        {"id": "5", "fields": {"Standard": "CDI", "GapKey": "CDI|TST-03|Implementation gap", "Status": "Accepted risk"}},
     ]
     with patch.object(type(svc.settings), "is_list_configured", return_value=True), \
-         patch.object(svc, "get_list_items", new=AsyncMock(return_value=items)), \
          patch("graph.client.update_list_item", new=AsyncMock()) as update:
-        closed = await svc._close_resolved_control_gaps({"CDI|TST-02|Implementation gap"})
-    assert closed == 1
-    [call] = update.call_args_list
-    assert call.args[2] == "1" and call.args[3]["Status"] == "Closed"
+        closed = await svc._close_resolved_control_gaps({"CDI|TST-02|Implementation gap"}, items)
+    assert closed == 2                                             # a control gap AND a clause gap now covered
+    assert sorted(c.args[2] for c in update.call_args_list) == ["1", "3"]
+    # a register coverage gap is not the analyzer's; an accepted risk is settled
+
+
+def test_a_gap_accepted_as_a_risk_is_not_raised_again():
+    import agents.gap_analyzer.service as svc
+    keys = svc._tracked_gap_keys([{"fields": {"GapKey": "K", "Status": "Accepted risk"}},
+                                  {"fields": {"GapKey": "C", "Status": "Closed"}}])
+    assert keys == {"K"}
+
+
+def test_new_gaps_get_ids_that_continue_the_series():
+    import agents.gap_analyzer.service as svc
+    from datetime import date
+    yy = date.today().strftime("%y")
+    nxt = svc._gap_id_allocator([{"fields": {"GapId": f"GAP-ISO27001-{yy}-007"}}])
+    assert nxt("ISO 27001") == f"GAP-ISO27001-{yy}-008" and nxt("ISO 27001") == f"GAP-ISO27001-{yy}-009"
+    assert nxt("CDI") == f"GAP-CDI-{yy}-001"
