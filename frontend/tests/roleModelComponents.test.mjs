@@ -169,7 +169,9 @@ test("assignment keeps document-gap, JD, conflict and library decisions", async 
   assert.ok(module.JDToDocDecisions.some(d => d.key === "Create new document"));
   assert.ok(module.DocToJDDecisions.some(d => d.key === "Add to existing JD"));
   assert.ok(module.ConflictDecisions.some(d => d.key === "Select governing document"));
-  assert.equal(Object.keys(module.LIBRARY_FINDINGS).length, 5);
+  assert.equal(Object.keys(module.LIBRARY_FINDINGS).length, 6);
+  // a control no approved document defines any more can be withdrawn here
+  assert.ok(module.LIBRARY_FINDINGS.CONTROL_NO_LONGER_DEFINED.decisions.some(d => d.key === "Withdraw control"));
 });
 
 test("document role link retains the source code and explains how to revise an absent document", async () => {
