@@ -138,3 +138,10 @@ def test_a_revision_starts_from_the_latest_approved_source():
                          "ApprovedDate": "2026-09-01", "SharePointFileUrl": "other"}}]
     assert lr._approved_source(items, "7") == "newest"
     assert lr._approved_source(items, "9") == ""
+
+
+def test_an_unclaimed_intake_card_is_visible_to_everyone_and_a_claimed_one_only_to_its_people():
+    unclaimed = {"OwnerEntraId": "", "Owner": "System (SharePoint Intake)", "Stakeholders": []}
+    mine = {"OwnerEntraId": "me", "Stakeholders": []}
+    theirs = {"OwnerEntraId": "them", "Stakeholders": []}
+    assert lr._involves(unclaimed, "anyone") and lr._involves(mine, "me") and not lr._involves(theirs, "me")

@@ -525,6 +525,10 @@ async def _get_document_text(doc: dict) -> str:
 # =============================================================================
 
 def _involves(doc: dict, oid: str) -> bool:
+    # An unclaimed card (opened by SharePoint intake, owned by nobody yet) is visible to everyone,
+    # so whoever owns the document can find it and claim it.
+    if not doc.get("OwnerEntraId") and doc.get("ApprovalStatus") != "Approved":
+        return True
     if oid and oid in (doc.get("OwnerEntraId"), doc.get("ApproverEntraId")):
         return True
     stakeholders = doc.get("Stakeholders") or []
@@ -548,7 +552,7 @@ async def list_docs(
         docs  = list(await asyncio.gather(*[_sp_to_doc(i) for i in items]))
 
         # Compliance sees every document; anyone else sees the documents they own, approve or
-        # were asked to comment on.
+        # were asked to comment on, and the unclaimed ones they may claim.
         if not (ROLE_COMPLIANCE in user.roles or ROLE_ADMIN in user.roles):
             docs = [d for d in docs if _involves(d, user.oid)]
         if stage:
