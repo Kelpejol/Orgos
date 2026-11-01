@@ -611,6 +611,7 @@ async def provision(
 
             # ── Existing choice columns missing new choice values ─────────────
             # (e.g. ReviewStatus gained "Blocked" for cascade failures)
+            choices_outstanding = False
             for col_name in present:
                 type_key, choices = required[col_name]
                 if type_key != CHOICE or not choices:
@@ -627,6 +628,7 @@ async def provision(
                         f"{DIM(f'Choice values to add: {new_values}')}"
                     )
                     total_missing += 1
+                    choices_outstanding = True
                 else:
                     try:
                         await _update_choice_column(client, list_id, col_obj["id"], merged)
@@ -637,14 +639,20 @@ async def provision(
                         total_created += 1
                     except PermissionError403:
                         print(f"      {RED('✗ FAILED')}   {col_name:45s}  {RED('403 — missing Sites.Manage.All permission')}")
+                        print(f"           add by hand: list settings → {col_name} → choices: {', '.join(new_values)}")
                         total_failed += 1
+                        choices_outstanding = True
                         _permission_error_seen = True
                     except Exception as exc:
                         print(f"      {RED('✗ FAILED')}   {col_name:45s}  {RED(str(exc))}")
                         total_failed += 1
+                        choices_outstanding = True
 
             if not missing:
-                print(f"    {GREEN('✓')}  All required columns present\n")
+                if choices_outstanding:
+                    print(f"    {YELLOW('!')}  Every column exists, but the choice values above are still missing\n")
+                else:
+                    print(f"    {GREEN('✓')}  All required columns present\n")
                 continue
 
             print(f"    {YELLOW('MISSING')}  {len(missing)} column(s):")

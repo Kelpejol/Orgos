@@ -590,15 +590,22 @@ async def get_list_items(
     if select_fields:
         params["$select"] = f"id,{select_fields}"
 
+    # A filter on a column SharePoint has not indexed is refused (400) unless this header is sent.
+    # OrgOS's lists are small (well under the 5,000-item threshold where it can fail), so the
+    # header is always sent with a filter: no column has to be indexed by hand.
+    headers = {"Prefer": "HonorNonIndexedQueriesWarningMayFailRandomly"} if odata_filter else None
+
     all_items: list[dict] = []
     next_link: Optional[str] = url
 
     # Follow @odata.nextLink for pagination
     while next_link:
         if next_link == url:
-            data = await _request("GET", url, params=params, context=f"Get items from {list_name}")
+            data = await _request("GET", url, params=params, context=f"Get items from {list_name}",
+                                  extra_headers=headers)
         else:
-            data = await _request("GET", next_link, context=f"Get items from {list_name} (page)")
+            data = await _request("GET", next_link, context=f"Get items from {list_name} (page)",
+                                  extra_headers=headers)
 
         all_items.extend(data.get("value", []))
         next_link = data.get("@odata.nextLink")
