@@ -4,12 +4,12 @@
 #   GET  /api/v1/doc-standards/standard          the standard (everyone)
 #   POST /api/v1/doc-standards/check             upload a file, see how it fares (everyone)
 #   POST /api/v1/doc-standards/convert/preview   read a file or Lifecycle item, show the proofs (Compliance)
-#   POST /api/v1/doc-standards/convert/download  the converted file (Compliance)
 #   POST /api/v1/doc-standards/convert/apply     convert a Lifecycle item in place (Compliance)
 #
 # Checking writes nothing anywhere. Previewing writes nothing. Only /apply
-# changes anything, and only a Lifecycle item still in Review: the original
-# file is never overwritten — the item is pointed at a new working copy.
+# changes anything, and only a Lifecycle item still in Review: the converted
+# document is saved over the item's own file (its history stays in SharePoint).
+# There is no download: a converted file outside the library would be a copy.
 # =============================================================================
 
 from __future__ import annotations
@@ -21,7 +21,6 @@ import re
 from typing import Optional
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from fastapi.responses import Response
 from pydantic import BaseModel
 
 from auth.validator import CurrentUser, get_current_user, require_compliance_lead
@@ -35,7 +34,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/doc-standards", tags=["Document Standards"])
 
 MAX_BYTES = 15 * 1024 * 1024
-DOCX = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
 
 
 async def _read_upload(file: UploadFile, allowed: tuple[str, ...]) -> tuple[bytes, str]:
@@ -87,19 +85,20 @@ def _code_conflict(fields: dict, plan) -> str:
 
 async def _lifecycle_source(item_id: str) -> tuple[bytes, str, CdtCoverFacts, dict]:
     """The file, name and cover facts of a Lifecycle item that can still be converted."""
-    from graph.client import download_file_from_sharepoint, get_list_item
-    from lifecycle.router import _LIST_NAME, _filename_from_sharepoint_url, _get_list_id
+    from graph.client import get_list_item
+    from lifecycle.router import _LIST_NAME, _get_list_id, _read_doc, _sync_with_file
     try:
         fields = (await get_list_item(_get_list_id(), _LIST_NAME, item_id)).get("fields", {}) or {}
     except Exception:
         raise HTTPException(status_code=404, detail="That Lifecycle item was not found.")
+    # A file edited in SharePoint is read again first, so its code is compared with the code the
+    # file states now, not the one the card had before the edit.
+    await _sync_with_file(item_id, fields)
     if fields.get("Stage") != "Review" or fields.get("ApprovalStatus") == "Approved":
         raise HTTPException(status_code=409, detail="Only a document still in Review can be converted.")
-    url = fields.get("SharePointFileUrl")
-    if not url:
+    if not fields.get("SharePointFileUrl"):
         raise HTTPException(status_code=422, detail="That item has no file yet.")
-    data, content_type = await download_file_from_sharepoint(url)
-    name = _filename_from_sharepoint_url(url, content_type)
+    data, name = await _read_doc(fields)
     try:
         cover = CdtCoverFacts.from_json(fields.get("CDTCoverFacts", ""))
     except ValueError:
@@ -125,24 +124,6 @@ async def convert_preview(file: Optional[UploadFile] = File(None), item_id: Opti
         plan.ok, plan.reason = False, conflict
         plan.source_bytes = plan.preview_bytes = b""
     return {**plan.as_dict(), "source": source}
-
-
-@router.post("/convert/download")
-async def convert_download(file: UploadFile = File(...), kind: str = Form("reading"),
-                           user: CurrentUser = Depends(require_compliance_lead)) -> Response:
-    """The converted file of an upload. `reading` is filled in, to read and check;
-    `source` still has its cover placeholders, which is the form the system keeps."""
-    if kind not in ("reading", "source"):
-        raise HTTPException(status_code=422, detail="kind must be 'reading' or 'source'.")
-    data, name = await _read_upload(file, (".docx",))
-    plan = await service.plan_conversion(data, name)
-    if not plan.ok:
-        raise HTTPException(status_code=422, detail=plan.reason)
-    payload = plan.preview_bytes if kind == "reading" else plan.source_bytes
-    out = re.sub(r'[\\/:*?"<>|]+', "", plan.title).strip() or "document"
-    suffix = "" if kind == "source" else " (reading copy)"
-    return Response(content=payload, media_type=DOCX,
-                    headers={"Content-Disposition": f'attachment; filename="{out}{suffix}.docx"'})
 
 
 class RoleAlias(BaseModel):
@@ -192,15 +173,15 @@ class ApplyConversion(BaseModel):
 @router.post("/convert/apply")
 async def convert_apply(body: ApplyConversion, user: CurrentUser = Depends(require_compliance_lead)) -> dict:
     """
-    Convert a Lifecycle item in Review. The original file is not touched: the
-    converted file becomes the item's own working copy, named as its title, and
-    the cover facts are saved on the item so the Register is the master from
-    here on. Refused unless every proof holds.
+    Convert a Lifecycle item in Review. The converted document is saved over the
+    item's own file (the file as it was stays in its SharePoint version history)
+    and the file is renamed as its title; the cover facts are saved on the item
+    so the Register is the master from here on. Refused unless every proof holds.
     """
-    from graph.client import update_list_item
+    from graph.client import get_list_item, update_list_item
+    from lifecycle import document_file
     from lifecycle.router import (_LIST_NAME, _audit_lifecycle_action, _cdi_check_file, _get_list_id,
-                                  _sp_to_doc, _upload_to_sharepoint)
-    from graph.client import get_list_item
+                                  _remember_file, _require_live_writes, _save_file, _sp_to_doc)
     data, name, cover, fields = await _lifecycle_source(body.item_id)
     plan = await service.plan_conversion(data, name, cover)
     if plan.ok and (conflict := _code_conflict(fields, plan)):
@@ -208,15 +189,22 @@ async def convert_apply(body: ApplyConversion, user: CurrentUser = Depends(requi
     if not plan.ok:
         raise HTTPException(status_code=422, detail={"message": plan.reason, "plan": plan.as_dict()})
 
+    _require_live_writes()
     filename = re.sub(r'[\\/:*?"<>|]+', "", plan.title).strip() + ".docx"      # V23: the file is named as its title
     try:
-        url = await _upload_to_sharepoint(body.item_id, filename, plan.source_bytes)
-        update = {"SharePointFileUrl": url, "CDTCoverFacts": plan.facts.to_json(), "Title": plan.title,
+        saved = await _save_file(body.item_id, fields, plan.source_bytes)
+        if saved.name != filename:
+            try:
+                saved = await document_file.rename(saved, filename)
+                await _remember_file(body.item_id, saved, fields, plan.source_bytes)
+            except Exception as exc:              # the name is taken in that folder: keep the old name
+                logger.info("Converted item %s keeps the file name %s: %s", body.item_id, saved.name, exc)
+        update = {"CDTCoverFacts": plan.facts.to_json(), "Title": plan.title,
                   "Revised": True, "CDIStatus": "Pending", "CDIFailures": ""}
         if not fields.get("DocumentCode"):
             update["DocumentCode"] = plan.code
         await update_list_item(_get_list_id(), _LIST_NAME, body.item_id, update)
-        status_, failures = await _cdi_check_file(body.item_id, plan.source_bytes, filename)
+        status_, failures = await _cdi_check_file(body.item_id, plan.source_bytes, saved.name)
         await update_list_item(_get_list_id(), _LIST_NAME, body.item_id,
                                {"CDIStatus": status_, "CDIFailures": failures})
     except HTTPException:
@@ -227,6 +215,7 @@ async def convert_apply(body: ApplyConversion, user: CurrentUser = Depends(requi
     await _audit_lifecycle_action(
         {**fields, "id": body.item_id}, user, "Converted to CDT",
         f"{len(plan.taken_out)} header row(s) replaced by the cover; {len(plan.stays)} kept; "
-        f"proofs: {', '.join(p.name for p in plan.proofs)}. The original file is unchanged.")
+        f"proofs: {', '.join(p.name for p in plan.proofs)}. Saved over the document's file; "
+        "the file as it was is in its SharePoint version history.")
     updated = await _sp_to_doc(await get_list_item(_get_list_id(), _LIST_NAME, body.item_id))
     return {"ok": True, "item": updated, "plan": plan.as_dict()}

@@ -45,9 +45,14 @@ class Env:
         self.update = p("lifecycle.router.update_list_item", new_callable=AsyncMock)
         self.create = p("lifecycle.router.create_list_item", new_callable=AsyncMock, return_value={"id": "99", "fields": {}})
         p("lifecycle.router.get_list_item", new=AsyncMock(side_effect=self.get_item))
-        p("lifecycle.router.download_file_from_sharepoint", new=AsyncMock(return_value=(b"SRC", "x.docx")))
         p("lifecycle.router.resolve_user", new=AsyncMock(return_value={"display_name": "Jane Approver", "email": "j@x"}))
-        self.upload = p("lifecycle.router._upload_to_sharepoint", new=AsyncMock(return_value="https://sp/pub.docx"))
+        from lifecycle import document_file
+        from tests.lifecycle.conftest import FakeLibrary
+        self.library = FakeLibrary()
+        self.library.add("https://sp/source.docx", b"SRC", "x.docx")
+        for name in ("locate", "read", "save"):
+            p(f"lifecycle.document_file.{name}", new=getattr(self.library, name))
+        self.stack.enter_context(patch.object(type(lr.settings), "document_writes_live", property(lambda s: True)))
         self.merge = p("lifecycle.router.merge", return_value=type("R", (), {"document": b"M", "sha256": "x", "doc_code": "c"})())
         p("lifecycle.router._background_extract_and_flag", new_callable=AsyncMock)
         return self
@@ -61,7 +66,7 @@ class Env:
         return calls[0].args[3]
 
     def nothing_written(self):
-        return not self.update.await_count and not self.create.await_count and not self.upload.await_count
+        return not self.update.await_count and not self.create.await_count and not self.library.saves
 
 
 async def approve(env, doc=None, **kw):

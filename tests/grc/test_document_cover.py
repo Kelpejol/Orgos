@@ -105,15 +105,17 @@ class TestPreviewRegisterDocumentPdf:
         with patch("grc.router.service.get_document", new_callable=AsyncMock) as mock_get, \
              patch("grc.router.download_file_from_sharepoint", new_callable=AsyncMock) as mock_dl, \
              patch("grc.router.merge") as mock_merge, \
-             patch("grc.router.resolve_compliance_drive", new_callable=AsyncMock) as mock_drive, \
-             patch("grc.router.ensure_drive_folder", new_callable=AsyncMock), \
-             patch("grc.router.upload_bytes_to_drive", new_callable=AsyncMock), \
-             patch("grc.router.convert_drive_item_to_pdf", new_callable=AsyncMock) as mock_convert:
+             patch("lifecycle.preview.resolve_compliance_drive", new_callable=AsyncMock) as mock_drive, \
+             patch("lifecycle.preview.ensure_drive_folder", new_callable=AsyncMock), \
+             patch("lifecycle.preview.upload_bytes_to_drive", new_callable=AsyncMock) as mock_upload, \
+             patch("lifecycle.preview.delete_drive_item", new_callable=AsyncMock) as mock_delete, \
+             patch("lifecycle.preview.convert_drive_item_to_pdf", new_callable=AsyncMock) as mock_convert:
 
             mock_get.return_value = _document_read()
             mock_dl.return_value = (b"SOURCE-BYTES", "x.docx")
             mock_merge.return_value = type("R", (), {"document": merged_bytes, "sha256": "x", "doc_code": "x"})()
             mock_drive.return_value = ("site-id", "drive-id")
+            mock_upload.return_value = {"id": "scratch-1"}
             mock_convert.return_value = b"%PDF-FAKE"
 
             resp = client.get("/api/v1/grc/documents/8/preview.pdf")
@@ -122,6 +124,7 @@ class TestPreviewRegisterDocumentPdf:
         assert resp.headers["content-type"] == "application/pdf"
         mock_merge.assert_called_once()
         assert mock_merge.call_args.args[0] == b"SOURCE-BYTES"
+        mock_delete.assert_awaited_once_with("drive-id", "scratch-1")     # no copy is left behind
 
     def test_preview_404_when_no_file_linked(self):
         with patch("grc.router.service.get_document", new_callable=AsyncMock) as mock_get:

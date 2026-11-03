@@ -6,9 +6,11 @@
 # source means they can change it by typing in it — and that change would never
 # meet the CDI check that an upload runs.
 #
-# Microsoft Graph does the conversion (it needs a real driveItem, not raw
-# bytes), so the copy is written to a scratch folder purely to be converted.
-# The source is never touched.
+# Microsoft Graph does the conversion, and it needs a real driveItem, not raw
+# bytes. A file read as it is is converted where it is (render_file_pdf): no
+# copy. Only a document whose cover is filled in for reading has no file of
+# its own; it is written to a scratch folder, converted, and deleted at once,
+# so no second copy of a document is ever left in SharePoint.
 # =============================================================================
 
 from __future__ import annotations
@@ -21,6 +23,8 @@ from fastapi import HTTPException
 from config import settings
 from graph.client import (
     convert_drive_item_to_pdf,
+    delete_drive_item,
+    drive_item_pdf,
     ensure_drive_folder,
     resolve_compliance_drive,
     upload_bytes_to_drive,
@@ -53,19 +57,37 @@ def allowed_sharepoint_url(url: str) -> bool:
 async def render_pdf(content: bytes, filename: str, scratch_name: str) -> bytes:
     """
     `content` as PDF bytes. A PDF is returned unchanged; anything else is
-    converted by Graph. `scratch_name` names the disposable copy, so repeated
-    renders of the same document overwrite one another instead of piling up.
+    converted by Graph from a scratch file named `scratch_name`, which is
+    deleted as soon as it has been converted.
     """
     if filename.lower().endswith(".pdf"):
         return content
     try:
         _, drive_id = await resolve_compliance_drive()
         await ensure_drive_folder(drive_id, PREVIEW_FOLDER)
-        await upload_bytes_to_drive(drive_id, PREVIEW_FOLDER, scratch_name, content)
-        return await convert_drive_item_to_pdf(drive_id, f"{PREVIEW_FOLDER}/{scratch_name}")
+        scratch = await upload_bytes_to_drive(drive_id, PREVIEW_FOLDER, scratch_name, content)
+        try:
+            return await convert_drive_item_to_pdf(drive_id, f"{PREVIEW_FOLDER}/{scratch_name}")
+        finally:
+            try:
+                await delete_drive_item(drive_id, scratch.get("id", ""))
+            except Exception as exc:
+                logger.info(f"The scratch file {scratch_name} was not deleted: {exc}")
     except Exception as exc:
         logger.warning(f"PDF conversion failed for {filename}: {exc}")
         raise HTTPException(
             status_code=503,
-            detail="Could not render this document for reading. Download it instead.",
+            detail="Could not render this document for reading. Open it in SharePoint instead.",
+        )
+
+
+async def render_file_pdf(drive_id: str, item_id: str, filename: str) -> bytes:
+    """A document's own file as PDF, converted where it is: nothing is copied."""
+    try:
+        return await drive_item_pdf(drive_id, item_id)
+    except Exception as exc:
+        logger.warning(f"PDF conversion failed for {filename}: {exc}")
+        raise HTTPException(
+            status_code=503,
+            detail="Could not render this document for reading. Open it in SharePoint instead.",
         )

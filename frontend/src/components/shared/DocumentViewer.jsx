@@ -6,8 +6,9 @@
 // opaque octet-stream. Reading a document should not mean downloading one.
 //
 // The backend renders the document as a PDF (cover facts merged in, so no raw
-// {{ markers }}) and serves it inline; this shows it in an iframe. Downloading
-// is still available, as a deliberate action rather than a side effect.
+// {{ markers }}) and serves it inline; this shows it in an iframe. There is no
+// download: a downloaded file is a second copy nothing keeps in step with the
+// library. "Open in SharePoint" opens the one file, where it lives.
 // =============================================================================
 
 import { useEffect, useState } from "react";
@@ -17,7 +18,8 @@ const BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 // `doc.id` reads a lifecycle document (cover facts merged in). `fileUrl` reads
 // any document in Dragnet's SharePoint by its URL — the registers hold a URL,
 // not a lifecycle id, and both should mean the same thing: read it.
-export default function DocumentViewer({ doc = {}, fileUrl, onClose, onDownload }) {
+export default function DocumentViewer({ doc = {}, fileUrl, onClose }) {
+  const openUrl = fileUrl || doc.SharePointFileUrl || "";
   const [url, setUrl] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(true);
@@ -80,11 +82,11 @@ export default function DocumentViewer({ doc = {}, fileUrl, onClose, onDownload 
             </div>
           </div>
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexShrink: 0 }}>
-            {onDownload && (
-              <button onClick={onDownload}
+            {openUrl && (
+              <a href={openUrl} target="_blank" rel="noreferrer"
                 style={btn("transparent", "var(--color-text-secondary)", "1.5px solid var(--color-border-tertiary)")}>
-                Download
-              </button>
+                Open in SharePoint
+              </a>
             )}
             <button onClick={onClose} style={{ fontSize: 22, lineHeight: 1, border: "none",
               background: "transparent", color: "var(--color-text-tertiary)", cursor: "pointer" }}>×</button>
@@ -102,8 +104,8 @@ export default function DocumentViewer({ doc = {}, fileUrl, onClose, onDownload 
             <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column",
               alignItems: "center", justifyContent: "center", gap: 12, padding: 24, textAlign: "center" }}>
               <div style={{ color: "#fff", fontSize: 13, maxWidth: 420, lineHeight: 1.5 }}>{error}</div>
-              {onDownload && (
-                <button onClick={onDownload} style={btn("#fff", "#1C1E21")}>Download it instead</button>
+              {openUrl && (
+                <a href={openUrl} target="_blank" rel="noreferrer" style={btn("#fff", "#1C1E21")}>Open it in SharePoint instead</a>
               )}
             </div>
           )}

@@ -321,8 +321,6 @@ export const lifecycleApi = {
     }
     return response.json();
   },
-  downloadUrl: (id) =>
-    `${BASE_URL}/api/v1/lifecycle/documents/${id}/download`,
 };
 
 // =============================================================================

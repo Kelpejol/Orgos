@@ -1,8 +1,8 @@
 # =============================================================================
 # tests/lifecycle/test_role_fix_endpoint.py — "Use this role" on a Lifecycle item
 #
-# The change is made on the item's own working copy, only to a role that exists
-# in Org Roles, and is refused rather than guessed when nothing could be changed.
+# The change is saved over the document's own file (no copy), only to a role that
+# exists in Org Roles, and is refused rather than guessed when nothing could be changed.
 # =============================================================================
 
 from unittest.mock import AsyncMock, PropertyMock, patch
@@ -15,7 +15,7 @@ from auth.validator import CurrentUser
 from tests.cdi.builders import DocBuilder
 
 OWNER = CurrentUser(oid="owner", name="Owner", email="o@x", tenant_id="t", roles=[])
-COPY = "https://x.sharepoint.com/sites/orgos/_layouts/15/Doc.aspx?sourcedoc=%7BB%7D&file=IDL.docx&action=default"
+FILE = "https://x.sharepoint.com/sites/everybody/_layouts/15/Doc.aspx?sourcedoc=%7BB%7D&file=IDL.docx&action=default"
 OLD, NEW = "Info Sec Officer", "Information Security Officer"
 GROUPS = [{"id": "g1", "name": NEW, "aliases": [], "description": ""}]
 
@@ -30,28 +30,29 @@ def doc_bytes():
     return b.bytes()
 
 
+@pytest.fixture(autouse=True)
+def _the_file(library):
+    library.add(FILE, doc_bytes(), "IDL.docx")
+
+
 async def _fix(to_role=NEW, from_role=OLD, data=None, cover="", **scope):
-    item = {"fields": {"Stage": "Review", "OwnerEntraId": "owner", "SharePointFileUrl": COPY,
+    item = {"fields": {"Stage": "Review", "OwnerEntraId": "owner", "SharePointFileUrl": FILE,
                        "DocumentCode": "DRG-ISMS-STD-TST", "CDTCoverFacts": cover}}
-    meta = {"name": "IDL.docx", "webUrl": COPY, "parentReference": {"path": "/drives/d/root:/Lifecycle Documents/42"}}
     with patch.object(lr, "get_list_item", new=AsyncMock(return_value=item)), \
-         patch.object(lr, "sharepoint_item_metadata", new=AsyncMock(return_value=meta)), \
-         patch.object(lr, "download_file_from_sharepoint", new=AsyncMock(return_value=(data or doc_bytes(), "x"))), \
-         patch.object(lr, "_upload_to_sharepoint", new=AsyncMock(return_value=COPY)) as upload, \
          patch.object(lr, "update_list_item", new=AsyncMock()) as update, \
          patch.object(lr, "_audit_lifecycle_action", new=AsyncMock()) as audit, \
          patch("groups.service.list_groups", new=AsyncMock(return_value=GROUPS)), \
          patch.object(lr, "_cdi_check_file", new=AsyncMock(return_value=("Passed", ""))), \
          patch.object(type(lr.settings), "document_writes_live", new_callable=PropertyMock, return_value=True):
         result = await lr.role_fix("42", lr.RoleFixBody(from_role=from_role, to_role=to_role, **scope), OWNER)
-    return result, upload, update, audit
+    return result, None, update, audit
 
 
-async def test_the_role_is_changed_on_the_working_copy_and_audited():
-    result, upload, update, audit = await _fix()
+async def test_the_role_is_changed_in_the_document_s_own_file_and_audited(library):
+    result, _, update, audit = await _fix()
     assert result["changed"] >= 1 and result["to_role"] == NEW
-    name, saved = upload.await_args.args[1], upload.await_args.args[2]
-    assert name == "IDL.docx" and saved != doc_bytes()
+    assert [url for url, _data in library.saves] == [FILE] and library.created == []
+    assert library.files[FILE]["data"] != doc_bytes()
     audit.assert_awaited_once()
 
 

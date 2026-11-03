@@ -6,11 +6,15 @@
 > - **One way in.** Every document enters **Document Lifecycle** (intake of ORGOS CONTROL
 >   LIBRARY, a revision, a scheduled review, a review-queue task, the drafter). Review →
 >   Sensitisation → Approval. Files change only in Review (amendments also in Sensitisation),
->   only on the item's own working copy, never after approval (`_writable_item`).
-> - **Approval** stamps the cover from the Register, publishes to
->   `Lifecycle Documents/{id}/Published/` (the item keeps its marker source), updates the
->   Register entry with the same code (a revision even without `RevisionOf`), and reads the
->   approved library: definitions go to **Extraction Review** by Control ID (never AI);
+>   never after approval (`_writable_item`).
+> - **One file per document: the library file.** Every change OrgOS makes is saved over it
+>   (`lifecycle/document_file.py`, `_save_file`); SharePoint's version history is the backup.
+>   No copies, no downloads. A file edited outside OrgOS is noticed (every 10 minutes, and
+>   before view/progress/approval: `_sync_with_file`) and checked again; code, title, type
+>   and standards are re-read from the file (`_refresh_from_file`). `FileState` column.
+> - **Approval** stamps the cover from the Register over that same file, updates the
+>   Register entry with the same code (a revision even without `RevisionOf`; refused if the
+>   Register holds that code for a different title), and reads the approved library: definitions go to **Extraction Review** by Control ID (never AI);
 >   problems between documents, and controls no longer defined, go to **Assignment & Ownership**.
 > - **Roles.** **Org Roles** (list "OrgOS Groups": name, aliases, members) is the only role
 >   authority, matched by one rule (`doc_standards/roles.norm`) everywhere, including
@@ -29,7 +33,8 @@
 >   `cdi_triage.py`, `publish_approved_lifecycle.py`, `patch_bare_lifecycle_items.py`, the old
 >   AI Review Queue and Extractor pages. The old AI extractor runs only for contracts, job
 >   descriptions, regulatory documents and audits.
-> - **Purge:** `scripts/reset_data.py` backs everything up first; `scripts/restore_backup.py`.
+> - **Purge:** `scripts/return_document_copies.py` first (old OrgOS copies back into the
+>   library), then `scripts/reset_data.py` (backs the lists up first); `scripts/restore_backup.py`.
 > - See docs/HOW-ORGOS-WORKS.md and docs/PLATFORM-REVIEW-2026-10-29.md.
 
 ---

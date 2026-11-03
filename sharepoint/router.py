@@ -155,9 +155,9 @@ async def view_sharepoint_document(
 ):
     from fastapi import Response
 
-    from graph.client import download_file_from_sharepoint
-    from lifecycle.preview import PDF_MEDIA, allowed_sharepoint_url, render_pdf
-    from lifecycle.router import _filename_from_sharepoint_url
+    from graph.client import download_drive_item, sharepoint_item_metadata
+    from lifecycle.document_file import DocFile
+    from lifecycle.preview import PDF_MEDIA, allowed_sharepoint_url, render_file_pdf
 
     if not allowed_sharepoint_url(url):
         raise HTTPException(
@@ -166,17 +166,17 @@ async def view_sharepoint_document(
         )
 
     try:
-        content, content_type = await download_file_from_sharepoint(url)
+        f = DocFile.from_item(await sharepoint_item_metadata(url))
     except Exception as exc:
-        logger.warning(f"Could not fetch {url} for viewing: {exc}")
+        logger.warning(f"Could not find {url} for viewing: {exc}")
         raise HTTPException(status_code=404, detail="That document could not be fetched.")
 
-    # The stored URL is usually a Word viewer link (".../Doc.aspx?file=X.docx"),
-    # whose last path segment is the viewer page, not the file.
-    filename = _filename_from_sharepoint_url(url, content_type)
-    # One scratch copy per document, so repeated reads overwrite rather than pile up.
-    scratch = f"view_{abs(hash(url))}.docx"
-    content = await render_pdf(content, filename, scratch)
+    # Converted where it is: the file is never copied to be read.
+    filename = f.name or "document.pdf"
+    if filename.lower().endswith(".pdf"):
+        content = await download_drive_item(f.drive_id, f.item_id)
+    else:
+        content = await render_file_pdf(f.drive_id, f.item_id, filename)
 
     return Response(
         content=content,

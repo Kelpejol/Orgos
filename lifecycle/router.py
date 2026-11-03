@@ -14,7 +14,6 @@ from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
 from urllib.parse import parse_qs, quote, unquote, urlparse
 
-import httpx
 from fastapi import (
     APIRouter, Depends, File, HTTPException,
     UploadFile, status,
@@ -26,32 +25,27 @@ from agents.cdi_checker.service import is_valid_doc_code, run_cdi_check
 from agents.llm_client import llm_generate
 from auth.validator import ROLE_ADMIN, ROLE_COMPLIANCE, CurrentUser, get_current_user, require_compliance_lead
 from config import settings
-from graph.auth import get_graph_access_token
 from graph.client import (
-    convert_drive_item_to_pdf,
     create_list_item,
-    download_file_from_sharepoint,
-    ensure_drive_folder,
+    latest_version_id,
+    restore_drive_item_version,
     get_list_item,
     get_list_items,
-    sharepoint_item_metadata,
-    resolve_compliance_drive,
     resolve_sp_user_lookup_id,
     resolve_user,
     update_list_item,
-    upload_bytes_to_drive,
 )
 from graph.exceptions import GraphAPIError, GraphNotFoundError
 from lifecycle.cover_suggest import REVIEW_PERIOD_DAYS, library_path_from_url, prefill_insert, suggest_cover_facts
 from lifecycle.domains import APPROVAL_ROUTES, Domain
 from lifecycle.cover_detect import detect_cover
-from lifecycle.preview import PDF_MEDIA, render_pdf
+from lifecycle.preview import PDF_MEDIA, render_file_pdf, render_pdf
 from lifecycle.graft import graft_cover_onto_document
 from lifecycle.merge import MergeError, merge, scan_markers
 from lifecycle.schemas import CdtCoverFacts, MergeContext, RevisionHistoryEntry, StandardEntry
 from lifecycle.templates import InvalidTemplateError, TemplateNotFoundError, load_master_template
 from doc_standards import gate as standard_gate
-from lifecycle import versioning
+from lifecycle import document_file, versioning
 
 logger = logging.getLogger(__name__)
 
@@ -232,6 +226,7 @@ async def _sp_to_doc(item: dict) -> dict:
         "RejectionReason":          f.get("RejectionReason", ""),
         "RejectionCount":           int(f.get("RejectionCount", 0) or 0),
         "SharePointFileUrl":        f.get("SharePointFileUrl", ""),
+        "FileState":                f.get("FileState", ""),
         "CDIFailures":              f.get("CDIFailures", ""),
         "StandardsDecisions":       f.get("StandardsDecisions", ""),
         "LinkedGapId":              f.get("LinkedGapId", ""),
@@ -341,14 +336,49 @@ async def _register_target(doc: dict) -> str:
     if not code or not settings.is_list_configured(settings.document_register_list_id):
         return ""
     rows = await get_list_items(settings.document_register_list_id, "Document Register")
-    live = [str(r.get("id")) for r in rows
+    live = [r for r in rows
             if str((r.get("fields") or {}).get("DocumentCode") or "").strip().upper() == code
             and (r.get("fields") or {}).get("Status", "Active") in _LIVE_REGISTER_STATUSES]
     if len(live) > 1:
         raise HTTPException(status_code=409, detail=(
-            f"{code} is in the Document Register more than once (entries {', '.join(live)}). "
-            "Withdraw the duplicate before approving."))
-    return live[0] if live else ""
+            f"{code} is in the Document Register more than once (entries "
+            f"{', '.join(str(r.get('id')) for r in live)}). Withdraw the duplicate before approving."))
+    if not live:
+        return ""
+    # Matched by code alone: make sure it is the same document. A code typed wrong (or a stale one)
+    # would otherwise overwrite another document's entry and retire that document's controls.
+    registered = str((live[0].get("fields") or {}).get("Title") or "")
+    if _titles_disagree(str(doc.get("Title") or ""), registered):
+        raise HTTPException(status_code=409, detail=(
+            f"{code} is already in the Document Register as “{registered}”, but this document is "
+            f"“{doc.get('Title') or ''}”. Approving would replace that entry with this document. If the code "
+            "is wrong, correct it in the document (OrgOS reads it from the file). If this document really "
+            "replaces that one, start it as a revision of that entry from the Document Register."))
+    return str(live[0].get("id"))
+
+
+def _code_conflict(doc: dict, register_fields: dict) -> str:
+    """Why this item can't update that Register entry ("" if it can): a revision keeps its code.
+    A legacy serial or year on either side ("-01-26") is not a different code."""
+    from cdi.codes import parse_doc_code
+    mine, theirs = str(doc.get("DocumentCode") or ""), str(register_fields.get("DocumentCode") or "")
+    if not mine or not theirs or parse_doc_code(mine) == parse_doc_code(theirs):
+        return ""
+    return (f"The document's code is {mine}, but the Document Register entry it revises is {theirs}. "
+            "A revision keeps its code: correct the code in the document (OrgOS reads it from the file).")
+
+
+def _titles_disagree(a: str, b: str) -> bool:
+    """Two titles that are plainly different documents (not a reworded or tidied title)."""
+    from difflib import SequenceMatcher
+
+    def words(t: str) -> str:
+        t = re.sub(r"[^a-z0-9 ]+", " ", (t or "").lower())
+        return " ".join(w for w in t.split() if w not in {"draft", "the", "and", "of", "for"})
+    x, y = words(a), words(b)
+    if not x or not y or x in y or y in x:
+        return False
+    return SequenceMatcher(None, x, y).ratio() < 0.6
 
 
 async def _register_entry_for(doc: dict) -> tuple[str, dict]:
@@ -509,10 +539,8 @@ async def _get_document_text(doc: dict) -> str:
         return ""
     try:
         from agents.extractor.service import extract_text_from_docx, extract_text_from_pdf
-        from graph.client import download_file_from_sharepoint
-        file_bytes, content_type = await download_file_from_sharepoint(url)
-        name = _filename_from_sharepoint_url(url, content_type).lower()
-        if name.endswith(".pdf"):
+        file_bytes, name = await _read_doc(doc)
+        if name.lower().endswith(".pdf"):
             return await extract_text_from_pdf(file_bytes)
         return await extract_text_from_docx(file_bytes)
     except Exception as exc:
@@ -523,6 +551,19 @@ async def _get_document_text(doc: dict) -> str:
 # =============================================================================
 #  Endpoints
 # =============================================================================
+
+async def _current_item(item_id: str) -> dict:
+    """
+    The item as it is now: if its file was changed in SharePoint since it was last checked, the
+    checks run again and the code, title, type and standards are re-read from the file first.
+    Stage moves and approval use this, so they never act on what the card said before the edit.
+    """
+    item = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
+    fields = item.get("fields", {}) or {}
+    if fields.get("ApprovalStatus") != "Approved" and await _sync_with_file(item_id, fields):
+        item = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
+    return item
+
 
 def _involves(doc: dict, oid: str) -> bool:
     # An unclaimed card (opened by SharePoint intake, owned by nobody yet) is visible to everyone,
@@ -631,13 +672,18 @@ async def create_doc(
         _handle_error(exc, "create lifecycle document")
 
 
-def _approved_source(items: list[dict], register_id: str) -> str:
-    """The file of the most recently approved Lifecycle item for this Register entry."""
+def _last_approved(items: list[dict], register_id: str) -> dict:
+    """The fields of the most recently approved Lifecycle item for this Register entry ({} if none)."""
     approved = [(i.get("fields") or {}) for i in items
                 if str((i.get("fields") or {}).get("LinkedDocumentRegisterItem", "")) == str(register_id)
                 and (i.get("fields") or {}).get("ApprovalStatus") == "Approved"]
     approved.sort(key=lambda f: str(f.get("ApprovedDate") or ""))
-    return (approved[-1].get("SharePointFileUrl") or "") if approved else ""
+    return approved[-1] if approved else {}
+
+
+def _approved_source(items: list[dict], register_id: str) -> str:
+    """The file of the most recently approved Lifecycle item for this Register entry."""
+    return _last_approved(items, register_id).get("SharePointFileUrl") or ""
 
 
 @router.post("/documents/revise", status_code=201)
@@ -745,11 +791,12 @@ async def revise_doc(
         for col in ("CDTCoverFacts", "RevisionHistory"):
             if reg.get(col):
                 fields[col] = reg[col]
-        # Start from the approved item's SOURCE (live cover markers) when there is one, so the
-        # cover can be stamped again; else the published file (its cover is made live at approval).
-        source = _approved_source(existing, body.document_register_id)
-        if source or reg.get("SharePointUrl"):
-            fields["SharePointFileUrl"] = source or reg["SharePointUrl"]
+        # The revision works on the document's one file: the file the last approval stamped (its
+        # cover is made live again at the next approval), found by its ids if it was renamed.
+        last = _last_approved(existing, body.document_register_id)
+        source = last.get("SharePointFileUrl") or reg.get("SharePointUrl") or ""
+        if source:
+            fields["SharePointFileUrl"] = source
         if body.gap_reference:
             fields["LinkedGapId"] = body.gap_reference.strip()
         if body.nc_reference:
@@ -770,6 +817,12 @@ async def revise_doc(
                 f"{body.document_register_id} could not be flagged Under Review: {exc}"
             )
 
+        if item_id and source:
+            # Check the file as it is now (and remember which file it is), so the card starts
+            # with real results rather than the last approval's.
+            await _sync_with_file(item_id, {"SharePointFileUrl": source,
+                                            document_file.FILE_STATE: last.get(document_file.FILE_STATE, "")},
+                                  force=True)
         if item_id:
             item = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
         return await _sp_to_doc(item)
@@ -793,7 +846,7 @@ async def progress_doc(
       Approval: blocked — use POST /approve to complete.
     """
     try:
-        item = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
+        item = await _current_item(item_id)
         doc  = await _sp_to_doc(item)
 
         if doc["Stage"] != body.current_stage:
@@ -1002,7 +1055,7 @@ async def approval_impact(
     they confirm (DINT §5.3.1 approval preview).
     """
     try:
-        item = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
+        item = await _current_item(item_id)
         doc  = await _sp_to_doc(item)
 
         impact: dict = {
@@ -1049,7 +1102,12 @@ async def approval_impact(
                 impact["warnings"].append(
                     "Advisory: " + message + " The standard is not being enforced yet, so this does not stop the approval.")
 
-        revision_of, reg_fields = await _register_entry_for(doc)
+        try:
+            revision_of, reg_fields = await _register_entry_for(doc)
+        except HTTPException as exc:
+            return blocked(str(exc.detail))
+        if revision_of and (conflict := _code_conflict(doc, reg_fields)):
+            return blocked(conflict)
         current_version = versioning.display_version(reg_fields.get("CurrentVersion", "")) if revision_of else ""
         try:
             outcome = versioning.plan(
@@ -1230,10 +1288,10 @@ def _check_publishable(doc: dict) -> None:
 
 async def _with_live_cover(item_id: str, doc: dict, source_bytes: bytes, filename: str) -> bytes:
     """
-    The source with a live (marker) cover. A source that is a published copy — a revision
-    started from the approved file — has its cover put back on the master template, proven
-    to leave the body unchanged, and saved as this item's own source. Anything that is not a
-    merged CDT cover is returned as it is: a document that never had a cover is not given one here.
+    The source with a live (marker) cover, in memory only. A file whose cover was stamped at an
+    earlier approval has its cover put back on the master template, proven to leave the body
+    unchanged, so approval can stamp the new version and dates. Anything that is not a merged
+    CDT cover is returned as it is: a document that never had a cover is not given one here.
     """
     from lifecycle.retemplate import RetemplateError, restore_live_cover
 
@@ -1251,9 +1309,6 @@ async def _with_live_cover(item_id: str, doc: dict, source_bytes: bytes, filenam
         logger.warning(f"Lifecycle {item_id}: the cover could not be made live again, so it keeps "
                        f"its previous version and dates ({exc}).")
         return source_bytes
-    if settings.document_writes_live:
-        url = await _upload_to_sharepoint(item_id, filename, restored)
-        await update_list_item(_get_list_id(), _LIST_NAME, item_id, {"SharePointFileUrl": url})
     return restored
 
 
@@ -1302,6 +1357,8 @@ async def _finalize_document_approval(
             raise HTTPException(status_code=502, detail=(
                 f"The Document Register entry this revises ({revision_of}) could not be read ({exc}). "
                 "Nothing was approved; try again."))
+        if conflict := _code_conflict(doc, existing_fields):
+            raise HTTPException(status_code=409, detail=conflict)
     try:
         outcome = versioning.plan(
             version_decision, change_summary or "",
@@ -1336,33 +1393,41 @@ async def _finalize_document_approval(
         approved_by=approver_name or str(approver_oid),
     )]
 
-    published_url = doc.get("SharePointFileUrl", "")  # fallback: reuse the source as-is
+    # The approved document is the library file itself, with its cover stamped: saved over the
+    # same file, so SharePoint keeps the draft in the file's history and there is no second copy.
+    published_url = doc.get("SharePointFileUrl", "")
     if doc.get("SharePointFileUrl"):
         try:
-            source_bytes, content_type = await download_file_from_sharepoint(doc["SharePointFileUrl"])
-            # download_file_from_sharepoint returns (bytes, CONTENT TYPE) — not a
-            # filename. Using the content type as the name uploaded the published
-            # copy to ".../application/vnd.openxmlformats…" and left the Register
-            # pointing at a folder.
-            filename = _filename_from_sharepoint_url(doc["SharePointFileUrl"], content_type)
-            # A revision that started from a published copy has no markers left, so the
-            # cover could not be stamped with the new version and dates. Put the live cover back
-            # first (proven: the body is unchanged), and keep it as this item's source.
-            source_bytes = await _with_live_cover(item_id, doc, source_bytes, filename)
+            f = await document_file.locate(doc)
+            source_bytes = await document_file.read(f)
+            filename = f.name or f"{doc['DocumentCode']}.docx"
+            # A cover stamped at an earlier approval has no markers left, so the new version and
+            # dates could not be stamped. Put the live cover back first (in memory; proven: the
+            # body is unchanged).
+            live_bytes = await _with_live_cover(item_id, doc, source_bytes, filename)
             merge_ctx = MergeContext.from_lifecycle_dict({
                 **doc, "CDTCoverFacts": cdt_cover.to_json(),
                 "RevisionHistory": RevisionHistoryEntry.list_to_json(cdt_history),
             })
-            result = merge(source_bytes, merge_ctx)
-            # The published copy goes in its own folder: written next to the source under the
-            # same name, it replaced the source, and the next revision had no markers to stamp.
-            published_url = await _upload_to_sharepoint(
-                item_id, filename or f"{doc['DocumentCode']}.docx", result.document, subfolder="Published")
+            stamped = merge(live_bytes, merge_ctx).document
+            published_url = f.web_url or published_url
+            if settings.document_writes_live:
+                # The version the file had before approval, so reversing it can put it back; and the
+                # version approved, which the approved library reads (lifecycle/document_file.py): a
+                # revision in progress changes the same file, and its draft must never count as approved.
+                before = await latest_version_id(f.drive_id, f.item_id)
+                saved = await document_file.save(f, stamped) if stamped != source_bytes else f
+                published_url = saved.web_url or published_url
+                approved = await latest_version_id(saved.drive_id, saved.item_id) if saved is not f else before
+                await _remember_file(item_id, saved, dict(doc), stamped,
+                                     before_approval=before if saved is not f else "", approved_version=approved)
+            else:
+                logger.info(f"DOCUMENT_WRITE_MODE=dev — the cover of {item_id} was stamped in memory; "
+                            "the SharePoint file was not changed.")
         except Exception as exc:
             logger.warning(
-                f"CDT merge at approval failed for lifecycle {item_id} — publishing the "
-                f"unmerged source instead (cover markers will still show as {{ }} in the "
-                f"Register copy until this is fixed): {exc}"
+                f"Stamping the cover at approval failed for lifecycle {item_id}; the file is published "
+                f"as it is (cover markers may still show as {{ }} until this is fixed): {exc}"
             )
 
     new_version = outcome.version
@@ -1484,16 +1549,13 @@ async def _finalize_document_approval(
         "ApprovedDate":               effective_date.isoformat(),
         "ApproverEntraId":            approver_oid,
         "LinkedDocumentRegisterItem": register_item_id,
-        # CDT: persist the advanced cover facts + appended history row on the
-        # lifecycle item too, and its file pointer if the merge produced a
-        # published copy — this item is now terminal (Approved), so there is
-        # no future merge expected against it; reflecting the final state here
-        # keeps its own record consistent with the register entry it created.
+        # CDT: the advanced cover facts + appended history row, on the item too, so its own
+        # record matches the Register entry. Item and Register point at the same file.
         "CDTCoverFacts":              cdt_cover.to_json(),
         "RevisionHistory":            RevisionHistoryEntry.list_to_json(cdt_history),
     }
-    # The item keeps pointing at its SOURCE (with live markers); the Register points at the
-    # published copy. A revision starts from the source, so its cover can be stamped again.
+    if published_url and published_url != doc.get("SharePointFileUrl"):
+        fields["SharePointFileUrl"] = published_url
     if approval_note:
         fields["Notes"] = (doc.get("Notes") or "") + f"\n\n{approval_note}"
     await update_list_item(_get_list_id(), _LIST_NAME, item_id, fields)
@@ -1515,9 +1577,7 @@ async def _finalize_document_approval(
     # retried. The document is already Approved + in the Register above, so fire
     # extraction as a background task and return immediately. It populates the
     # review queue shortly after and flags the item if it finds nothing.
-    # The document the task extracts must be the one that was just published —
-    # a CDT merge replaces the file, and the pre-update `doc` still points at
-    # the unmerged source.
+    # The document the task extracts is the file as just approved (its link, if it moved).
     doc_for_extraction = dict(doc)
     if published_url:
         doc_for_extraction["SharePointFileUrl"] = published_url
@@ -1549,7 +1609,7 @@ async def approve_doc(
     Only the designated approver may call this (the owner may be that approver).
     """
     try:
-        item = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
+        item = await _current_item(item_id)
         doc  = await _sp_to_doc(item)
 
         if doc["Stage"] != "Approval":
@@ -1816,6 +1876,30 @@ async def _register_before(doc: dict, register_id: str) -> tuple[dict, str]:
                      "were NOT restored (no snapshot) — check them")
 
 
+async def _restore_file_before_approval(item_id: str, doc: dict) -> str:
+    """
+    Put the file back as it was before approval stamped its cover — the version SharePoint
+    kept. Only if nothing has changed the file since approval: a later edit is never undone.
+    """
+    state = document_file.stored_state(doc)
+    before = state.get("before_approval")
+    if not before:
+        return "unchanged (approval did not change it)"
+    if not settings.document_writes_live:
+        return "unchanged (DOCUMENT_WRITE_MODE=dev)"
+    try:
+        f = await document_file.locate(doc)
+        if state.get("ctag") and state["ctag"] != f.ctag:
+            return "unchanged: it was edited after approval; restore it from its version history if needed"
+        await restore_drive_item_version(f.drive_id, f.item_id, before)
+        restored = await document_file.locate(doc)
+        await _remember_file(item_id, restored, dict(doc), await document_file.read(restored))
+        return "put back as it was before approval"
+    except Exception as exc:
+        logger.error(f"Approval reversed for {item_id} but its file was not put back: {exc}")
+        return f"NOT put back ({exc}); restore it from its version history in SharePoint"
+
+
 @router.post("/documents/{item_id}/reverse-approval")
 async def reverse_approval(
     item_id: str,
@@ -1875,6 +1959,8 @@ async def reverse_approval(
                     f"{register_id} could not be updated: {exc}"
                 )
 
+        file_outcome = await _restore_file_before_approval(item_id, doc)
+
         await update_list_item(_get_list_id(), _LIST_NAME, item_id, {
             "Stage":                       "Approval",
             "ApprovalStatus":              "",
@@ -1883,7 +1969,7 @@ async def reverse_approval(
         })
         await _audit_lifecycle_action(
             doc, user, "Approval reversed",
-            f"{reason} (register item {register_id or 'n/a'}: {register_outcome})",
+            f"{reason} (register item {register_id or 'n/a'}: {register_outcome}; file: {file_outcome})",
         )
 
         updated = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
@@ -1891,6 +1977,7 @@ async def reverse_approval(
         result["RegisterEntryWithdrawn"] = register_withdrawn
         result["RegisterOutcome"] = register_outcome
         result["PreviousRegisterItemId"] = register_id
+        result["FileOutcome"] = file_outcome
         return result
 
     except HTTPException:
@@ -2186,9 +2273,6 @@ async def update_cover_facts(
         _handle_error(exc, f"update cover facts {item_id}")
 
 
-_CDT_PREVIEW_FOLDER = "_CDT_Previews"
-
-
 @router.get("/documents/{item_id}/preview.pdf")
 async def preview_document_pdf(
     item_id: str,
@@ -2199,23 +2283,21 @@ async def preview_document_pdf(
     .docx and return the result as a PDF. Uses Microsoft Graph's native
     docx→pdf conversion — no local converter needed.
 
-    The SOURCE (SharePointFileUrl) is never touched — the merged copy is
-    uploaded to a disposable scratch location purely so Graph can convert it
-    (conversion requires a real driveItem, not raw bytes), then converted and
-    returned. Re-running this simply overwrites that scratch copy.
+    The document's file is never touched — the merged text is written to a
+    scratch file purely so Graph can convert it (conversion needs a real
+    driveItem, not raw bytes), and the scratch file is deleted straight after.
     """
     try:
         item = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
         doc  = await _sp_to_doc(item)
 
-        file_url = doc.get("SharePointFileUrl", "")
-        if not file_url:
+        if not doc.get("SharePointFileUrl") and not document_file.stored_state(doc):
             raise HTTPException(
                 status_code=404,
                 detail="No document file has been uploaded for this item yet.",
             )
 
-        source_bytes, _ = await download_file_from_sharepoint(file_url)
+        source_bytes, _name = await _read_doc(doc)
         ctx = MergeContext.from_lifecycle_dict(doc)
 
         try:
@@ -2226,12 +2308,7 @@ async def preview_document_pdf(
                 detail=f"Could not generate a preview: {exc}",
             )
 
-        _, drive_id = await resolve_compliance_drive()
-        await ensure_drive_folder(drive_id, _CDT_PREVIEW_FOLDER)
-        preview_filename = f"{item_id}.docx"
-        await upload_bytes_to_drive(drive_id, _CDT_PREVIEW_FOLDER, preview_filename, result.document)
-        pdf_bytes = await convert_drive_item_to_pdf(drive_id, f"{_CDT_PREVIEW_FOLDER}/{preview_filename}")
-
+        pdf_bytes = await render_pdf(result.document, f"{item_id}.docx", f"preview_{item_id}.docx")
         return Response(content=pdf_bytes, media_type="application/pdf")
 
     except HTTPException:
@@ -2257,36 +2334,31 @@ def _media_type_for(filename: str) -> str:
     return _MEDIA_BY_EXT.get(ext, "application/octet-stream")
 
 
-async def _document_bytes_for_display(item_id: str, doc: dict) -> tuple[bytes, str]:
+async def _document_for_display(item_id: str, doc: dict) -> tuple[document_file.DocFile, bytes, bool]:
     """
     The document as a person should see it: cover facts merged in when it
     carries live {{ markers }}, never the raw marker-visible source.
-    Returns (bytes, filename). Merge failure falls back to the raw file.
+    Returns (its file, content, merged?). Merge failure falls back to the raw file.
     """
-    url = doc.get("SharePointFileUrl") or ""
-    if not url:
+    if not doc.get("SharePointFileUrl") and not document_file.stored_state(doc):
         raise HTTPException(
             status_code=404,
             detail="No file has been uploaded for this lifecycle item yet.",
         )
     try:
-        source_bytes, content_type = await download_file_from_sharepoint(url)
+        f = await _item_file(doc)
+        source_bytes = await document_file.read(f)
+    except HTTPException:
+        raise
     except Exception as exc:
         raise HTTPException(status_code=503, detail=f"Could not fetch the document: {exc}")
 
-    # The stored URL is usually a Word viewer link (".../Doc.aspx?file=X.docx"),
-    # whose last path segment is the viewer page — so the real name comes from
-    # the helper, not from the path. Naming it "Doc.aspx" made every download
-    # arrive as an unopenable file.
-    filename = _filename_from_sharepoint_url(url, content_type)
-
-    content = source_bytes
-    if filename.lower().endswith(".docx") and scan_markers(source_bytes):
+    if f.name.lower().endswith(".docx") and scan_markers(source_bytes):
         try:
-            content = merge(source_bytes, MergeContext.from_lifecycle_dict(doc)).document
+            return f, merge(source_bytes, MergeContext.from_lifecycle_dict(doc)).document, True
         except Exception as exc:
             logger.warning(f"Display merge fell back to the raw file for {item_id}: {exc}")
-    return content, filename
+    return f, source_bytes, False
 
 
 @router.get("/documents/{item_id}/view.pdf")
@@ -2295,20 +2367,23 @@ async def view_document_pdf(
     user: CurrentUser = Depends(get_current_user),
 ) -> Response:
     """
-    The document rendered for READING in the browser — a PDF served inline,
-    so "View" opens the document instead of downloading a file the reviewer
-    then has to find and open by hand.
+    The document rendered for READING in the browser — a PDF served inline.
 
-    A .docx is converted by Microsoft Graph (the same conversion the CDT
-    preview uses); a PDF is served as it is. Cover facts are merged first,
-    so a templated document never displays raw {{ markers }}.
+    A .docx is converted by Microsoft Graph where it is, so nothing is copied;
+    a PDF is served as it is. A templated document has its cover facts merged
+    first, so it never displays raw {{ markers }}: only that merged text is
+    converted from a scratch file, deleted straight after.
     """
     try:
         item = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
         doc  = await _sp_to_doc(item)
-        content, filename = await _document_bytes_for_display(item_id, doc)
+        f, content, merged = await _document_for_display(item_id, doc)
+        filename = f.name or f"{item_id}.docx"
 
-        content = await render_pdf(content, filename, f"view_{item_id}.docx")
+        if merged:
+            content = await render_pdf(content, filename, f"view_{item_id}.docx")
+        elif not filename.lower().endswith(".pdf"):
+            content = await render_file_pdf(f.drive_id, f.item_id, filename)
         filename = filename.rsplit(".", 1)[0] + ".pdf"
 
         return Response(
@@ -2347,8 +2422,8 @@ async def cdt_cover_status(
                     "source": "none", "can_attach": False,
                     "detail": "No file has been uploaded for this document yet."}
 
-        file_bytes, content_type = await download_file_from_sharepoint(url)
-        detection = detect_cover(file_bytes, _filename_from_sharepoint_url(url, content_type))
+        file_bytes, name = await _read_doc(doc)
+        detection = detect_cover(file_bytes, name)
         return {
             "document_id": item_id,
             "has_file": True,
@@ -2384,10 +2459,9 @@ async def attach_cdt_cover(
     error, so the frontend can safely call it any time before opening the
     cover-facts panel.
 
-    The original uploaded file is never discarded — it's kept alongside as
-    a timestamped backup before the grafted version replaces
-    SharePointFileUrl, so nothing is ever unrecoverable if the automatic
-    graft gets something wrong.
+    The cover is saved over the document's own file; the file as it was
+    stays in its SharePoint version history, so a graft that went wrong can
+    be undone there. The checks run again on the result.
     """
     try:
         item = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
@@ -2407,9 +2481,10 @@ async def attach_cdt_cover(
                 detail="No document file has been uploaded for this item yet.",
             )
 
-        existing_bytes, _ = await download_file_from_sharepoint(file_url)
+        f = await _item_file(item.get("fields", {}) or {})
+        existing_bytes = await document_file.read(f)
 
-        detection = detect_cover(existing_bytes, _filename_from_sharepoint_url(file_url))
+        detection = detect_cover(existing_bytes, f.name)
         if detection.has_cover:
             # Markers, or a cover table already merged in. Either way a second
             # graft would put a duplicate cover on the front of the document.
@@ -2446,26 +2521,27 @@ async def attach_cdt_cover(
                           "SharePoint document was NOT changed.",
             }
 
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        backup_filename = f"original_upload_{timestamp}.docx"
-        backup_url = await _upload_to_sharepoint(item_id, backup_filename, existing_bytes)
-
-        original_filename = _filename_from_sharepoint_url(file_url) or f"document_{item_id}.docx"
-        new_file_url = await _upload_to_sharepoint(item_id, original_filename, graft_result.document)
-
-        await update_list_item(_get_list_id(), _LIST_NAME, item_id, {"SharePointFileUrl": new_file_url})
+        fields = item.get("fields", {}) or {}
+        saved = await _save_file(item_id, fields, graft_result.document)
+        cdi_status, cdi_failures = await _cdi_check_file(item_id, graft_result.document, saved.name)
+        await update_list_item(_get_list_id(), _LIST_NAME, item_id, {
+            "Revised": True, "CDIStatus": cdi_status, "CDIFailures": cdi_failures})
+        standard_gate.invalidate()
 
         await _audit_lifecycle_action(
             doc, user, "CDT cover attached",
-            f"images carried: {graft_result.images_carried}, skipped: {graft_result.images_skipped}, "
-            f"backup: {backup_url}",
+            f"images carried: {graft_result.images_carried}, skipped: {graft_result.images_skipped}. "
+            "Saved over the document's file; the previous content is in its SharePoint version history.",
         )
 
         return {
             "already_templated": False,
+            "wrote_to_sharepoint": True,
             "images_carried": graft_result.images_carried,
             "images_skipped": graft_result.images_skipped,
-            "backup_url": backup_url,
+            "backup_url": "",
+            "file_url": saved.web_url,
+            "cdi_status": cdi_status,
         }
 
     except HTTPException:
@@ -2539,8 +2615,7 @@ async def _refresh_stale_cdi(item_id: str, doc: dict) -> None:
     if not url:
         return
     try:
-        data, content_type = await download_file_from_sharepoint(url)
-        filename = _filename_from_sharepoint_url(url, content_type)
+        data, filename = await _read_doc(doc)
         status_, failures = await _cdi_check_file(item_id, data, filename)
     except Exception as exc:
         logger.warning(f"Could not refresh the CDI result for lifecycle {item_id}: {exc}")
@@ -2552,29 +2627,81 @@ async def _refresh_stale_cdi(item_id: str, doc: dict) -> None:
     doc["CDIStatus"], doc["CDIFailures"] = status_, failures
 
 
-async def _refresh_standards(item_id: str, fields: dict, data: bytes, filename: str) -> None:
-    """Store the standards the file states, when it states any and they differ. Never raises."""
+# Changes OrgOS makes on its own, from what a file says, are recorded under this name.
+_READ_FROM_FILE = CurrentUser(oid="", name="OrgOS (read from the document)", email="", tenant_id="", roles=[])
+
+
+async def _refresh_from_file(item_id: str, fields: dict, data: bytes, filename: str) -> list[str]:
+    """
+    Store what the file says about itself where it differs from the item: its code (and the
+    type and department the code names), its title and its standards. Approval checks and
+    publishes the item's values, so a code corrected in the file must never leave the card on
+    the old one. Nothing the file does not state is cleared. Updates `fields`; returns what
+    changed. Never raises.
+    """
     try:
+        from cdi.codes import lifecycle_type_for_code, parse_doc_code
         from cdi.fields import standards_named
         from cdi.parser import parse_document
-        stated = standards_named(parse_document(data, filename).header.standards_as_written)
-        if stated and stated != (fields.get("StandardsMapping") or ""):
-            await update_list_item(_get_list_id(), _LIST_NAME, item_id, {"StandardsMapping": stated})
+        header = parse_document(data, filename).header
     except Exception as exc:
-        logger.info(f"Standards not re-read for lifecycle {item_id}: {exc}")
+        logger.info(f"Lifecycle {item_id}: the file's own code and title were not read: {exc}")
+        return []
+
+    update: dict = {}
+    changes: list[str] = []
+    code = (header.code or "").strip().upper()
+    old_code = str(fields.get("DocumentCode") or "").strip()
+    if code and is_valid_doc_code(code) and code != old_code.upper():
+        update["DocumentCode"] = code
+        changes.append(f"code {old_code or '(none)'} → {code}")
+    title = re.sub(r"\s+", " ", header.title or "").strip()[:255]
+    if title and title != str(fields.get("Title") or "").strip():
+        update["Title"] = title
+        changes.append(f"title “{fields.get('Title') or ''}” → “{title}”")
+    stated = standards_named(header.standards_as_written)
+    if stated and stated != (fields.get("StandardsMapping") or ""):
+        update["StandardsMapping"] = stated
+        changes.append(f"standards {fields.get('StandardsMapping') or '(none)'} → {stated}")
+    if update:
+        try:
+            await update_list_item(_get_list_id(), _LIST_NAME, item_id, update)
+            fields.update(update)
+        except Exception as exc:
+            logger.warning(f"Lifecycle {item_id}: what the file states was not stored ({exc}).")
+            return []
+
+    # The type and department the code names. Separate, so a choice the list does not offer yet
+    # can never stop the code itself from being stored.
+    if "DocumentCode" in update:
+        named = {"DocumentType": lifecycle_type_for_code(code), "Department": parse_doc_code(code)[0]}
+        for column, value in named.items():
+            if value and value != fields.get(column):
+                try:
+                    await update_list_item(_get_list_id(), _LIST_NAME, item_id, {column: value})
+                    changes.append(f"{'type' if column == 'DocumentType' else 'department'} "
+                                   f"{fields.get(column) or '(none)'} → {value}")
+                    fields[column] = value
+                except Exception as exc:
+                    logger.info(f"Lifecycle {item_id}: {column} '{value}' not stored ({exc}).")
+    return changes
 
 
 async def _cdi_check_file(item_id: str, file_bytes: bytes, filename: str) -> tuple[str, str]:
-    """Run the CDI Checker on a lifecycle item's file → (CDIStatus, CDIFailures)."""
+    """
+    Run the checks on a lifecycle item's file → (CDIStatus, CDIFailures): the CDI Checker and the
+    role check, after storing the code, title, type and standards the file states. Runs on every
+    file change, made in OrgOS or noticed in SharePoint.
+    """
     cdi_status   = "Pending"
     cdi_failures = ""
     try:
         item_data = None
         try:
             item_data = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
-            doc_code  = item_data.get("fields", {}).get("DocumentCode", "")
         except Exception:
-            doc_code = ""
+            pass
+        fields = (item_data or {}).get("fields", {}) or {}
 
         # If the upload already carries a CDT cover (markers), check it
         # merged with the document's current cover facts — never on raw
@@ -2589,16 +2716,22 @@ async def _cdi_check_file(item_id: str, file_bytes: bytes, filename: str) -> tup
             except Exception as exc:
                 logger.warning(f"CDI check falling back to raw upload for {item_id}: {exc}")
 
+        # What the file says about itself first, so the checks below (and approval) use the
+        # document's own code, not the one the card had before the file changed.
+        changes: list[str] = []
+        if item_data is not None:
+            changes = await _refresh_from_file(item_id, fields, cdi_check_bytes, filename)
+        doc_code = str(fields.get("DocumentCode") or "")
+
         cdi_result = await run_cdi_check(cdi_check_bytes, filename, doc_code)
         cdi_status, cdi_failures = _cdi_result_to_storage(cdi_result)
         # The role check runs on every file change too, so a wrong role is flagged the moment
         # a document enters Lifecycle — not only when someone asks (doc_standards/role_check.py).
         from doc_standards.role_check import with_role_problems
         cdi_status, cdi_failures = await with_role_problems(cdi_status, cdi_failures, cdi_check_bytes, filename)
-        # The standards the document states, re-read whenever its file changes: approval copies
-        # them into the Document Register, so they must be the document's, not a stale value.
-        if item_data is not None:
-            await _refresh_standards(item_id, item_data.get("fields", {}) or {}, cdi_check_bytes, filename)
+        if changes:
+            await _audit_lifecycle_action({**fields, "id": item_id}, _READ_FROM_FILE,
+                                          "Read from the document", "; ".join(changes))
         if cdi_result.get("error"):
             logger.warning(f"CDI check error for lifecycle {item_id}: {cdi_result['error']}")
         logger.info(f"CDI check for lifecycle {item_id}: {cdi_status} — {cdi_result.get('fail_count', 0)} failures")
@@ -2617,32 +2750,52 @@ async def upload_doc_file(
     user: CurrentUser = Depends(get_current_user),
 ) -> dict:
     """
-    Upload a revised document to SharePoint, link it to the lifecycle item,
-    set Revised=True, then automatically run the CDI Checker.
+    Upload a new version of the document. It is saved over the document's own file in the
+    library (the old content stays in its SharePoint version history); a document with no
+    file yet gets one in the library's New documents folder. The checks run on the result.
     """
-    await _writable_item(item_id, user, need_file=False)
+    fields = await _writable_item(item_id, user, need_file=False)
+    _require_live_writes()
     file_bytes = await file.read()
     filename   = os.path.basename(file.filename or "") or f"document_{item_id}.docx"
+    if "." not in filename and _is_docx_bytes(file_bytes):
+        filename += ".docx"
 
     try:
-        file_url = await _upload_to_sharepoint(item_id, filename, file_bytes)
+        if fields.get("SharePointFileUrl") or document_file.stored_state(fields):
+            current = await _item_file(fields)
+            current_ext = os.path.splitext(current.name)[1].lower()
+            if current_ext in ("", os.path.splitext(filename)[1].lower()):
+                saved = await _save_file(item_id, fields, file_bytes)
+                if not current_ext and filename.lower().endswith(".docx"):
+                    saved, _data = await _word_file(item_id, fields)      # named properly, in place
+                note = f"Saved over “{saved.name}”; the previous content is in its SharePoint version history."
+            else:
+                # A different format (a Word version of a PDF): its own file, beside the old one.
+                saved = await document_file.create_beside(current, filename, file_bytes)
+                await _remember_file(item_id, saved, fields, file_bytes)
+                note = (f"Saved as “{saved.name}” beside “{current.name}”, which is a different format and "
+                        "was left as it was. Remove it from the folder if it is no longer needed.")
+        else:
+            saved = await document_file.create_new(filename, file_bytes)
+            await _remember_file(item_id, saved, fields, file_bytes)
+            note = f"Saved as “{saved.name}” in the library's {document_file.NEW_DOCUMENTS_FOLDER} folder."
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.exception(f"SharePoint upload failed for lifecycle {item_id}")
         raise HTTPException(status_code=503, detail=f"SharePoint upload failed: {exc}")
 
-    cdi_status, cdi_failures = await _cdi_check_file(item_id, file_bytes, filename)
-
-    fields: dict = {
-        "SharePointFileUrl": file_url,
-        "Revised":           True,
-        "CDIStatus":         cdi_status,
-        "CDIFailures":       cdi_failures,
-    }
+    cdi_status, cdi_failures = await _cdi_check_file(item_id, file_bytes, saved.name)
 
     try:
-        await update_list_item(_get_list_id(), _LIST_NAME, item_id, fields)
-        updated = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
-        return await _sp_to_doc(updated)
+        await update_list_item(_get_list_id(), _LIST_NAME, item_id, {
+            "Revised": True, "CDIStatus": cdi_status, "CDIFailures": cdi_failures})
+        standard_gate.invalidate()
+        await _audit_lifecycle_action({**fields, "id": item_id}, user, "New version uploaded", note)
+        updated = await _sp_to_doc(await get_list_item(_get_list_id(), _LIST_NAME, item_id))
+        updated["UploadNote"] = note
+        return updated
     except Exception as exc:
         _handle_error(exc, f"update lifecycle item after upload {item_id}")
 
@@ -2658,12 +2811,6 @@ def _office_edit_url(web_url: str) -> str:
     else:
         query["web"] = "1"
     return urlunsplit(parts._replace(query=urlencode(query)))
-
-
-def _is_working_copy(meta: dict, item_id: str) -> bool:
-    """True when the file already lives in this item's own Lifecycle folder."""
-    path = unquote((meta.get("parentReference") or {}).get("path", "")).rstrip("/")
-    return path.endswith(f"/Lifecycle Documents/{item_id}")
 
 
 async def _writable_item(item_id: str, user: CurrentUser, *, stages: tuple[str, ...] = ("Review",),
@@ -2705,66 +2852,188 @@ def _is_docx_bytes(data: bytes) -> bool:
         return False
 
 
-async def _ensure_working_copy(item_id: str, fields: dict, user: CurrentUser) -> tuple[str, str]:
+# =============================================================================
+#  The document's file — one file, in the SharePoint library (lifecycle/document_file.py)
+#
+#  Every change OrgOS makes is saved over the item's own file: no copies. SharePoint
+#  keeps each save in the file's version history, so every change can be undone there.
+#  A file changed outside OrgOS (in Word, or straight in SharePoint) is noticed and
+#  checked again (_sync_with_file).
+# =============================================================================
+
+async def _item_file(fields: dict) -> document_file.DocFile:
+    try:
+        return await document_file.locate(fields)
+    except document_file.NoFile as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+
+
+async def _read_doc(doc: dict) -> tuple[bytes, str]:
+    """(content, file name) of the item's own file, found by its ids or its link."""
+    f = await _item_file(doc)
+    return await document_file.read(f), f.name
+
+
+async def _remember_file(item_id: str, f: document_file.DocFile, fields: dict,
+                         data: Optional[bytes] = None, **extra) -> None:
+    """Point the item at its file (link and ids) and record what the file held when it was
+    checked. The FileState column is optional: without it, a change is noticed by its date."""
+    if f.web_url and f.web_url != fields.get("SharePointFileUrl"):
+        await update_list_item(_get_list_id(), _LIST_NAME, item_id, {"SharePointFileUrl": f.web_url})
+        fields["SharePointFileUrl"] = f.web_url
+    # What else the item remembers about this same file (the version approved, the version before
+    # approval, the fingerprint when only the link moved) is kept unless it is given again.
+    old = document_file.stored_state(fields)
+    same_file = old.get("item") in (None, "", f.item_id)
+    keep = {k: v for k, v in old.items() if k not in ("drive", "item", "ctag", "digest")} if same_file else {}
+    if data is None and same_file and old.get("digest"):
+        keep["digest"] = old["digest"]
+    state = document_file.state_json(f, data, **{**keep, **extra})
+    try:
+        await update_list_item(_get_list_id(), _LIST_NAME, item_id, {document_file.FILE_STATE: state})
+        fields[document_file.FILE_STATE] = state
+    except Exception as exc:
+        logger.info(f"Lifecycle {item_id}: FileState not stored (column missing?): {exc}")
+
+
+def _require_live_writes() -> None:
+    if not settings.document_writes_live:
+        raise HTTPException(status_code=409, detail=(
+            "OrgOS is set not to change SharePoint documents (DOCUMENT_WRITE_MODE=dev), so nothing was saved."))
+
+
+async def _save_file(item_id: str, fields: dict, data: bytes) -> document_file.DocFile:
+    """Save `data` over the item's own file in SharePoint, never to a copy. SharePoint keeps
+    the previous content in the file's version history."""
+    f = await _item_file(fields)
+    try:
+        saved = await document_file.save(f, data)
+    except GraphAPIError as exc:
+        if exc.status_code == 423:
+            raise HTTPException(status_code=409, detail=(
+                f"“{f.name}” is locked in SharePoint (checked out, or held open by someone). "
+                "Close it or check it in, then try again."))
+        raise
+    await _remember_file(item_id, saved, fields, data)
+    return saved
+
+
+async def _word_file(item_id: str, fields: dict) -> tuple[document_file.DocFile, bytes]:
+    """The item's file and its content, which must be a Word document. A Word file stored under
+    a name with no extension (e.g. "octet-stream") is renamed in place, not copied."""
+    f = await _item_file(fields)
+    data = await document_file.read(f)
+    if f.name.lower().endswith(".docx"):
+        return f, data
+    if not _is_docx_bytes(data):
+        raise HTTPException(status_code=422, detail=(
+            f"'{f.name}' is not a Word document, so it can't be changed here. Upload a .docx version."))
+    stem = re.sub(r'[\\/:*?"<>|]+', "", str(fields.get("Title") or fields.get("DocumentCode") or item_id)).strip()
+    try:
+        f = await document_file.rename(f, f"{stem or item_id}.docx")
+        await _remember_file(item_id, f, fields, data)
+    except Exception as exc:
+        logger.warning(f"Lifecycle {item_id}: '{f.name}' could not be renamed to .docx ({exc}).")
+    return f, data
+
+
+async def _sync_with_file(item_id: str, fields: dict, *, force: bool = False) -> bool:
     """
-    The URL and file name of this item's OWN working copy, making it on first use.
-    A revision starts from the approved published file and an intake item from the
-    library draft; neither is ever edited: the file is copied into
-    Lifecycle Documents/{item_id}/ and the item is pointed at the copy.
+    Check the document again if its file changed outside OrgOS since it was last checked —
+    edited in Word, or straight in SharePoint: the CDI and role checks, and the code, title,
+    type and standards it states, which approval relies on. `force` checks it regardless.
+    Updates `fields`; returns True if it was checked. Best-effort: a file that can't be reached
+    leaves the card as it was.
     """
-    meta = await sharepoint_item_metadata(fields["SharePointFileUrl"])
-    name = meta.get("name") or f"{fields.get('DocumentCode') or item_id}.docx"
-    data = None
-    if not name.lower().endswith(".docx"):
-        # A file stored under a name with no extension (e.g. "octet-stream") is still a Word document
-        # if its content is one: name the working copy properly rather than refuse the author.
-        data, _ = await download_file_from_sharepoint(fields["SharePointFileUrl"])
-        if not _is_docx_bytes(data):
-            raise HTTPException(status_code=422, detail=(
-                f"'{name}' is not a Word document, so it can't be edited here. Upload a .docx version."))
-        name = f"{fields.get('DocumentCode') or item_id}.docx"
-    elif _is_working_copy(meta, item_id):
-        return meta.get("webUrl") or fields["SharePointFileUrl"], name
-    if data is None:
-        data, _ = await download_file_from_sharepoint(fields["SharePointFileUrl"])
-    working = await _upload_to_sharepoint(item_id, name, data)
-    await update_list_item(_get_list_id(), _LIST_NAME, item_id, {"SharePointFileUrl": working})
-    await _audit_lifecycle_action({**fields, "id": item_id}, user, "Working copy created",
-                                  f"{name} copied for editing; the original is unchanged.")
-    return working, name
+    if not fields.get("SharePointFileUrl") and not document_file.stored_state(fields):
+        return False
+    try:
+        f = await document_file.locate(fields)
+        if not force and not document_file.may_have_changed(f, fields):
+            if f.web_url and f.web_url != fields.get("SharePointFileUrl"):
+                await _remember_file(item_id, f, fields)      # renamed or moved: keep the link working
+            return False
+        data = await document_file.read(f)
+        if not force and document_file.stored_state(fields).get("digest") == document_file.content_digest(data):
+            await _remember_file(item_id, f, fields, data)    # only SharePoint's own properties moved
+            return False
+        status_, failures = await _cdi_check_file(item_id, data, f.name)
+        if status_ == "Error":
+            return False                                      # tried again next time
+        update = {"CDIStatus": status_, "CDIFailures": failures}
+        if not force:
+            update["Revised"] = True
+        await update_list_item(_get_list_id(), _LIST_NAME, item_id, update)
+        fields.update(update)
+        await _remember_file(item_id, f, fields, data)
+        standard_gate.invalidate()
+        if not force:
+            await _audit_lifecycle_action(
+                {**fields, "id": item_id}, _READ_FROM_FILE, "Changed in SharePoint",
+                f"“{f.name}” was changed outside OrgOS; the checks were run again: {status_}.")
+        return True
+    except Exception as exc:
+        logger.warning(f"Lifecycle {item_id}: the file was not checked for changes ({exc}).")
+        return False
+
+
+async def sync_open_documents() -> dict:
+    """Scheduled: check every document still in Lifecycle whose file changed outside OrgOS."""
+    if not settings.is_list_configured(_get_list_id()):
+        return {"checked": 0, "changed": 0}
+    items = await get_list_items(_get_list_id(), _LIST_NAME)
+    checked = changed = 0
+    for item in items:
+        fields = item.get("fields", {}) or {}
+        if fields.get("ApprovalStatus") == "Approved" or not fields.get("SharePointFileUrl"):
+            continue
+        checked += 1
+        if await _sync_with_file(str(item.get("id")), fields):
+            changed += 1
+    if changed:
+        logger.info(f"Lifecycle file check: {changed} of {checked} document(s) changed in SharePoint and were checked again.")
+    return {"checked": checked, "changed": changed}
 
 
 @router.post("/documents/{item_id}/edit")
 async def open_for_editing(item_id: str, user: CurrentUser = Depends(get_current_user)) -> dict:
     """
-    A link that opens the document in Word for the web, for editing in place.
-
-    Editing always happens on this item's own working copy. A revision starts
-    from the approved published file and an intake item from the library
-    draft — neither is edited: the first time, the file is copied into
-    Lifecycle Documents/{item_id}/ and the item points at the copy. Word saves
-    as you type; "Re-check after editing" then re-runs the CDI checks.
+    A link that opens the document in Word for the web, for editing in place. It is the
+    document's own file in the library: what is typed there is the document, and the checks
+    run again when it changes ("Re-check after editing", or on their own soon after).
     """
     fields = await _editable_item(item_id, user)
     try:
-        working, _name = await _ensure_working_copy(item_id, fields, user)
-        return {"edit_url": _office_edit_url(working), "working_copy_url": working}
+        f, _data = await _word_file(item_id, fields)
+        return {"edit_url": _office_edit_url(f.web_url), "file_url": f.web_url}
     except HTTPException:
         raise
     except Exception as exc:
         _handle_error(exc, f"open lifecycle {item_id} for editing")
 
 
+@router.post("/documents/{item_id}/sync")
+async def sync_with_sharepoint(item_id: str, user: CurrentUser = Depends(get_current_user)) -> dict:
+    """Check whether the document's file changed in SharePoint, and if so check it again.
+    Called when a card is opened; anyone who can see the card may ask."""
+    try:
+        fields = (await get_list_item(_get_list_id(), _LIST_NAME, item_id)).get("fields", {}) or {}
+        if fields.get("ApprovalStatus") != "Approved":
+            await _sync_with_file(item_id, fields)
+        return await _sp_to_doc(await get_list_item(_get_list_id(), _LIST_NAME, item_id))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _handle_error(exc, f"sync lifecycle {item_id}")
+
+
 @router.post("/documents/{item_id}/recheck")
 async def recheck_after_editing(item_id: str, user: CurrentUser = Depends(get_current_user)) -> dict:
-    """Re-run the CDI checks on the saved file after editing it in Word."""
+    """Re-run the checks on the document's file as it is now (after editing it in Word)."""
     fields = await _editable_item(item_id, user)
     try:
-        meta = await sharepoint_item_metadata(fields["SharePointFileUrl"])
-        data, _ = await download_file_from_sharepoint(fields["SharePointFileUrl"])
-        status_, failures = await _cdi_check_file(item_id, data, meta.get("name") or "document.docx")
-        await update_list_item(_get_list_id(), _LIST_NAME, item_id, {
-            "Revised": True, "CDIStatus": status_, "CDIFailures": failures})
+        await _sync_with_file(item_id, fields, force=True)
+        await update_list_item(_get_list_id(), _LIST_NAME, item_id, {"Revised": True})
         return await _sp_to_doc(await get_list_item(_get_list_id(), _LIST_NAME, item_id))
     except HTTPException:
         raise
@@ -2807,8 +3076,9 @@ async def role_fix(item_id: str, body: RoleFixBody, user: CurrentUser = Depends(
     everywhere it is used as a role, or for one control or cover field. Only role FIELDS change
     (a Control owner line, a role column, an Owner or approver row), never the same words in
     running text; an older "Accountable / Executing" line becomes "Control owner: <role>"; the
-    edit proves itself before it is saved. It is made on the item's own working copy (the
-    original file is never touched), and the card's check result is refreshed after.
+    edit proves itself before it is saved. It is saved over the document's own file in the
+    library (the previous content stays in its SharePoint history), and the card's check result
+    is refreshed after.
     """
     from doc_standards import roles as role_matching
     from groups import service as groups_service
@@ -2819,8 +3089,8 @@ async def role_fix(item_id: str, body: RoleFixBody, user: CurrentUser = Depends(
         raise HTTPException(status_code=422, detail=(
             f"“{body.to_role}” is not a role in Org Roles. Choose one that exists, or create it first."))
     try:
-        working, name = await _ensure_working_copy(item_id, fields, user)
-        data, _ = await download_file_from_sharepoint(working)
+        doc_file, data = await _word_file(item_id, fields)
+        name = doc_file.name
     except HTTPException:
         raise
     except Exception as exc:
@@ -2845,17 +3115,18 @@ async def role_fix(item_id: str, body: RoleFixBody, user: CurrentUser = Depends(
     try:
         if cover_changed:
             await update_list_item(_get_list_id(), _LIST_NAME, item_id, {"CDTCoverFacts": cover.to_json()})
-        url = await _upload_to_sharepoint(item_id, name, new_bytes) if new_bytes != data else working
+        if new_bytes != data:
+            await _save_file(item_id, fields, new_bytes)
         status_, failures = await _cdi_check_file(item_id, new_bytes, name)
         await update_list_item(_get_list_id(), _LIST_NAME, item_id, {
-            "SharePointFileUrl": url, "Revised": True, "CDIStatus": status_, "CDIFailures": failures})
+            "Revised": True, "CDIStatus": status_, "CDIFailures": failures})
     except Exception as exc:
         _handle_error(exc, f"role fix save {item_id}")
     standard_gate.invalidate()
     await _audit_lifecycle_action(
         {**fields, "id": item_id}, user, "Role changed in the document",
         f"“{body.from_role}” → “{outcome.after}” in {len(places)} place(s): {', '.join(places)}. "
-        "Made on the working copy; the original is unchanged.")
+        "Saved over the document's file; the previous content is in its SharePoint version history.")
     return {"changed": len(places), "places": places, "to_role": outcome.after, "wrote_to_sharepoint": True}
 
 
@@ -2914,38 +3185,8 @@ async def standard_decision(item_id: str, body: StandardDecision,
     return evaluation
 
 
-@router.get("/documents/{item_id}/download")
-async def download_doc_file(
-    item_id: str,
-    user: CurrentUser = Depends(get_current_user),
-):
-    """
-    Serve the document for download. If it's on the CDT template (has live
-    {{ markers }} in its cover), serve the current cover facts MERGED IN —
-    never the raw, symbol-visible source — so anyone downloading via the
-    app, and the CDI check in POST .../upload, always see the real content.
-
-    Always returns the actual file bytes (never a redirect to the raw
-    SharePoint URL): the frontend fetches this endpoint with credentials
-    for the OrgOS API's own origin, and a redirect to a different origin
-    (sharepoint.com) would not carry that same session and would typically
-    be blocked by the browser's CORS policy anyway. Since the bytes have to
-    be fetched server-side regardless (to check for markers), there is no
-    real cost to always returning them directly.
-    """
-    try:
-        item = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
-        doc  = await _sp_to_doc(item)
-        content, filename = await _document_bytes_for_display(item_id, doc)
-        return Response(
-            content=content,
-            media_type=_media_type_for(filename),
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-        )
-    except HTTPException:
-        raise
-    except Exception as exc:
-        _handle_error(exc, f"download lifecycle document {item_id}")
+# There is no download: a document is read in OrgOS (view.pdf) or opened where it lives, in
+# SharePoint. A downloaded file is a second copy that nothing keeps in step with the library.
 
 
 # =============================================================================
@@ -3124,7 +3365,7 @@ Return only the JSON array, no other text."""
 #  The AI produced find/replace/anchor at CDI-check time; here we (1) show the
 #  reviewer which findings are locatable in the current file, and (2) apply the
 #  ones the reviewer confirmed. No LLM runs here — pure find-and-replace on a
-#  working copy, verified, with the original preserved in SharePoint history.
+#  document's own file, verified, with the previous content kept in SharePoint history.
 # =============================================================================
 
 _FIX_APPLICABLE_KINDS = {"auto", "choice", "manual", "insert"}  # not "structural"/"none"
@@ -3150,11 +3391,9 @@ def _fix_id_for(index: int, failure: dict) -> str:
 
 
 async def _download_doc_bytes(doc: dict) -> tuple[bytes, str]:
-    url = doc.get("SharePointFileUrl")
-    if not url:
+    if not doc.get("SharePointFileUrl") and not document_file.stored_state(doc):
         raise HTTPException(status_code=404, detail="No file uploaded for this document yet.")
-    file_bytes, content_type = await download_file_from_sharepoint(url)
-    return file_bytes, _filename_from_sharepoint_url(url, content_type)
+    return await _read_doc(doc)
 
 
 class ConfirmedFix(BaseModel):
@@ -3189,7 +3428,7 @@ async def cdi_fix_plan(
     re-check cannot run.
     """
     try:
-        item = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
+        item = await _current_item(item_id)          # a file edited in SharePoint is read again first
         doc  = await _sp_to_doc(item)
 
         if not doc.get("SharePointFileUrl"):
@@ -3421,17 +3660,13 @@ async def cdi_fix_apply(
     """
     if not body.fixes:
         raise HTTPException(status_code=422, detail="No fixes were confirmed.")
-    await _writable_item(item_id, user)
+    fields = await _writable_item(item_id, user)
     try:
         item = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
         doc  = await _sp_to_doc(item)
 
-        file_bytes, filename = await _download_doc_bytes(doc)
-        if not filename.lower().endswith(".docx"):
-            raise HTTPException(
-                status_code=422,
-                detail="Auto-fix only supports .docx files. Upload the editable Word document.",
-            )
+        doc_file, file_bytes = await _word_file(item_id, fields)
+        filename = doc_file.name
 
         # A fix must satisfy the check it claims to fix. Without this, a
         # reviewer could write "Version: Draft" into the document, see CDI-15
@@ -3505,10 +3740,9 @@ async def cdi_fix_apply(
 
         file_url = ""
         if wrote:
-            # Same path → SharePoint keeps the previous version in its history.
-            file_url = await _upload_to_sharepoint(item_id, filename, new_bytes)
+            # Over the document's own file: SharePoint keeps the previous version in its history.
+            file_url = (await _save_file(item_id, fields, new_bytes)).web_url
             await update_list_item(_get_list_id(), _LIST_NAME, item_id, {
-                "SharePointFileUrl": file_url,
                 "Revised":           True,
                 "CDIStatus":         cdi_status,
                 "CDIFailures":       cdi_failures,
@@ -3753,17 +3987,13 @@ async def amend_apply(
     if not body.amendments:
         raise HTTPException(status_code=422, detail="No amendments were confirmed.")
     try:
-        await _writable_item(item_id, user, stages=("Review", "Sensitisation"))
+        fields = await _writable_item(item_id, user, stages=("Review", "Sensitisation"))
         item = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
         doc  = await _sp_to_doc(item)
         _ensure_owner(doc, user)
 
-        file_bytes, filename = await _download_doc_bytes(doc)
-        if not filename.lower().endswith(".docx"):
-            raise HTTPException(
-                status_code=422,
-                detail="Amendments can only be auto-applied to .docx files.",
-            )
+        doc_file, file_bytes = await _word_file(item_id, fields)
+        filename = doc_file.name
 
         from agents.cdi_checker.fixer import apply_amendments
         amendments = [a.model_dump() for a in body.amendments]
@@ -3788,7 +4018,7 @@ async def amend_apply(
                            "re-checked, but the SharePoint document was NOT changed.",
             }
 
-        file_url = await _upload_to_sharepoint(item_id, filename, new_bytes)
+        file_url = (await _save_file(item_id, fields, new_bytes)).web_url
 
         # Neutral change summary for the approver (no stakeholder names).
         applied_ids = {o.fix_id for o in applied}
@@ -3798,7 +4028,6 @@ async def amend_apply(
         )
 
         update_fields = {
-            "SharePointFileUrl": file_url,
             "Revised":           True,
             "CDIStatus":         cdi_status,
             "CDIFailures":       cdi_failures,
@@ -4090,31 +4319,3 @@ Return only the JSON object, no other text."""
 # =============================================================================
 #  SharePoint file upload
 # =============================================================================
-
-async def _upload_to_sharepoint(
-    item_id: str, filename: str, file_bytes: bytes, subfolder: str = ""
-) -> str:
-    # A name is a name: a slash in it (e.g. a content type passed by mistake) would make a phantom
-    # sub-folder and a file with no extension, which cannot be opened in Word.
-    filename = filename.replace("\\", "/").rsplit("/", 1)[-1].strip() or f"document_{item_id}.docx"
-    if "." not in filename and _is_docx_bytes(file_bytes):
-        filename += ".docx"
-    token   = await get_graph_access_token()
-    headers = {
-        "Authorization": f"Bearer {token}",
-        "Content-Type":  "application/octet-stream",
-    }
-    base    = settings.graph_base_url
-    site_id = settings.sharepoint_site_id
-
-    folder = f"Lifecycle Documents/{item_id}" + (f"/{subfolder.strip('/')}" if subfolder else "")
-    upload_path = f"{folder}/{filename}"
-    upload_url  = f"{base}/sites/{site_id}/drive/root:/{upload_path}:/content"
-
-    async with httpx.AsyncClient(timeout=120.0) as client:
-        resp = await client.put(upload_url, headers=headers, content=file_bytes)
-        resp.raise_for_status()
-
-    web_url = resp.json().get("webUrl", "")
-    logger.info(f"Uploaded '{filename}' for lifecycle {item_id} → {web_url}")
-    return web_url

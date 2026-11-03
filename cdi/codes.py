@@ -126,6 +126,21 @@ def parse_doc_code(code: str | None) -> tuple[str, str, str]:
     return function, type_code, mnemonic
 
 
+# The type code inside a document code is authoritative: DRG-QI-STD-CDI is a Standard whatever
+# its folder or file is called. Only unambiguous codes are mapped. Lifecycle has no Specification
+# or Register type: a specification explains implementation like a procedure; a register is a form.
+LIFECYCLE_TYPE_BY_CODE = {
+    "STD": "Standard", "POL": "Policy", "PRO": "Procedure", "SOP": "SOP",
+    "GDL": "Guideline", "MAN": "Manual", "FRM": "Form", "FM": "Form", "CHK": "Form",
+    "SPEC": "Procedure", "REG": "Form",
+}
+
+
+def lifecycle_type_for_code(code: str | None) -> str:
+    """'DRG-QI-STD-CDI' → 'Standard'; '' when the code doesn't say."""
+    return LIFECYCLE_TYPE_BY_CODE.get(parse_doc_code(code)[1], "")
+
+
 def find_doc_codes(text: str) -> list[str]:
     """Every valid document code in `text`, in order, without repeats."""
     found: list[str] = []

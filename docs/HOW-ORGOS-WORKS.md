@@ -243,11 +243,11 @@ A document goes through three stages: **Review → Sensitisation → Approval.**
 ### Stage 3: Approval (the approver)
 - **Approve** does the following:
   1. Stamps the cover from the Register: the version and dates follow the approver's choice (see "Versions" below), and a revision-history line is added.
-  2. Saves a **published copy** to the OrgOS site under *Lifecycle Documents/{item}/Published*. The item keeps its own source (with the live cover), so the next revision's cover can be stamped again; a revision that started from a published copy has its live cover put back first (the body is proven unchanged).
-  3. Creates or updates the **Document Register** entry (01, 02…). A document whose code is already in the Register updates that entry, even if it wasn't opened as a revision; two live entries with one code are refused until one is withdrawn. If the entry can't be read, nothing is approved.
+  2. Saves the stamped document **over its own file in the library**. There is no published copy: the library file is the approved document, and the draft it replaced is in the file's SharePoint version history. The next revision works on the same file; its cover is made live again at approval (the body is proven unchanged).
+  3. Creates or updates the **Document Register** entry (01, 02…). A document whose code is already in the Register updates that entry, even if it wasn't opened as a revision. Refused before anything is written: two live entries with one code, a code that the Register holds for a **different** document (its title is plainly another document's), and a revision whose file now states another code. If the entry can't be read, nothing is approved.
   4. **Reads the approved library with the new reader** (section 1). This document's new and changed controls go to Extraction Review, and problems against other approved documents go to Assignment & Ownership. If anything goes wrong (e.g. a published copy can't be downloaded), **nothing is written** and a note on the Lifecycle item says how to retry: `python scripts/sync_control_library.py --apply`.
 - **Reject** needs a reason (20+ characters). The document goes back to Review.
-- The owner can recall it, and Compliance can reverse an approval. Reversing a **revision** puts the Register entry back as it was before (from a snapshot taken at approval); only a first issue is withdrawn.
+- The owner can recall it, and Compliance can reverse an approval. Reversing a **revision** puts the Register entry back as it was before (from a snapshot taken at approval); only a first issue is withdrawn. The file is put back as it was before approval stamped it, unless it has been edited since.
 
 ### Versions: one number, and what approval does to it
 There is **one** version number, written **01, 02, 03…** with no "R". It follows CDI Procedure §12 and §14.
@@ -270,8 +270,12 @@ There is **one** version number, written **01, 02, 03…** with no "R". It follo
 - A first issue is always **01**, even if the cover has a hand-typed version such as "05". The approval preview warns when that will happen. If the document already had issued versions elsewhere, say so in the change summary. (Convert to CDT drops a hand-typed version for the same reason.)
 - Existing Register entries written as "R02" are still read correctly. `python scripts/migrate_versions.py` (dry run first) rewrites them as "02".
 
-### What's still open
-- **The published copy doesn't go back to the library folder.** It's saved under *Lifecycle Documents* on the OrgOS site, and that's the copy the reader uses. The folder keeps the draft. Whether approved copies should replace the folder file is for the document-standards discussion.
+### One file per document
+- A document is **its file in the library**. OrgOS keeps no copies: Fix CDI issues, Use this role, amendments, a cover, Convert to CDT, an upload and the stamp at approval are all saved over that file, and SharePoint keeps every earlier version in the file's history. There is no download: read a document in OrgOS (View), or open it in SharePoint.
+- **An edit made outside OrgOS is noticed.** Word for the web, or the file edited straight in SharePoint: within 10 minutes (and at once when the card is viewed, moved on, or approved) OrgOS checks the file again, runs the CDI and role checks, and re-reads the code, title, type, department and standards from it. Approval always uses what the file says, never what the card said before the edit.
+- A file renamed or moved in SharePoint keeps its card (the card remembers the file itself, not just its link).
+- During a revision, the library shows the work in progress; the approved version is in the file's version history until the revision is approved.
+- A new document from the Document Drafter, or a card with no file, gets its file in the library under *New documents*.
 
 ---
 

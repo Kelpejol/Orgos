@@ -12,9 +12,13 @@
 #
 # SAFETY
 #   • Before anything is deleted, every item of every list it will clear is written to
-#     backups/reset-<timestamp>/<list>.json, and every Lifecycle item's file and every
-#     Register entry's published copy is downloaded beside them (files/ + manifest.json).
-#     If the backup fails, NOTHING is deleted. scripts/restore_backup.py puts a list back.
+#     backups/reset-<timestamp>/<list>.json. If the backup fails, NOTHING is deleted.
+#     scripts/restore_backup.py puts a list back. Documents are not downloaded: each one is
+#     its library file, which the reset never touches (its history is in SharePoint).
+#   • It refuses to run while a Lifecycle item or Register entry still points at one of
+#     OrgOS's old copies ("Lifecycle Documents/"): that work is not in the library, and the
+#     rebuild re-reads the library. Run scripts/return_document_copies.py first
+#     (--ignore-copies runs it anyway).
 #   • Deletes retry when SharePoint throttles (429) and refresh an expired token; any item
 #     that still could not be deleted is listed, and the script exits non-zero.
 #   • The intake checkpoint is moved into the backup, so the next intake re-reads the library.
@@ -24,6 +28,7 @@
 #   python scripts/reset_data.py --confirm                # back up, then clear
 #   python scripts/reset_data.py --confirm --skip-chroma  # SharePoint only
 #   python scripts/reset_data.py --confirm --include-business-records --include-audit-log
+#   python scripts/reset_data.py --confirm --ignore-copies   # even if work is left in OrgOS copies
 #
 # Rebuild order afterwards is printed at the end (also in docs/GO-LIVE-CHECKLIST.md).
 # =============================================================================
@@ -82,8 +87,8 @@ Rebuild, in order:
   5. python scripts/sync_evidence_obligations.py, then set each record's check frequency.
   6. Run gap analysis (Gap Analysis page) and rebuild the chat index
      (python scripts/rebuild_chat_index.py --apply).
-  Work done in Review before the reset is in the backup's files/ folder (manifest.json says
-  which document each file is): upload it on the new Lifecycle card rather than redo it.
+  Work done in Review before the reset is in the library files themselves (OrgOS saves its
+  changes there), so the new Lifecycle cards start from it.
 """
 
 
@@ -145,7 +150,7 @@ def _safe(name: str) -> str:
 
 
 async def backup(graph: Graph, lists: list[tuple[str, str]], folder: str) -> dict[str, list[dict]]:
-    """Write every item of every list to folder/<list>.json, and download the documents' files.
+    """Write every item of every list to folder/<list>.json.
     Raises on any failure to read a list: a reset without a complete backup does not happen."""
     os.makedirs(folder, exist_ok=True)
     snapshot: dict[str, list[dict]] = {}
@@ -158,41 +163,19 @@ async def backup(graph: Graph, lists: list[tuple[str, str]], folder: str) -> dic
             json.dump({"list": name, "list_id": list_id, "taken": datetime.now().isoformat(),
                        "items": items}, fh, ensure_ascii=False, indent=1)
         logger.info(f"  backed up {name}: {len(items)} item(s)")
-    await _backup_files(snapshot, os.path.join(folder, "files"))
     return snapshot
 
 
-async def _backup_files(snapshot: dict[str, list[dict]], folder: str) -> None:
-    """Each Lifecycle item's current file (its working copy holds the Review work) and each
-    Register entry's published copy. A file that can't be downloaded is listed, not fatal."""
-    from graph import client as gc
-    os.makedirs(folder, exist_ok=True)
-    manifest, missed = [], []
-    sources = [("Document Lifecycle", "SharePointFileUrl"), ("Document Register", "SharePointUrl")]
-    await gc.startup()
-    try:
-        for list_name, column in sources:
-            for item in snapshot.get(list_name, []):
+def on_old_copies(snapshot: dict[str, list[dict]]) -> list[str]:
+    """Items whose document is still one of OrgOS's old copies, not the library file."""
+    found = []
+    for list_name, column in (("Document Lifecycle", "SharePointFileUrl"), ("Document Register", "SharePointUrl")):
+        for item in snapshot.get(list_name, []):
+            url = (item.get("fields") or {}).get(column) or ""
+            if "Lifecycle%20Documents" in url or "Lifecycle Documents" in url:
                 f = item.get("fields") or {}
-                url = f.get(column)
-                if not url:
-                    continue
-                name = f"{list_name.split()[-1].lower()}-{item['id']}-{_safe(f.get('DocumentCode') or f.get('Title') or 'document')}"
-                try:
-                    data, content_type = await gc.download_file_from_sharepoint(url)
-                    ext = ".pdf" if "pdf" in (content_type or "") else ".docx"
-                    with open(os.path.join(folder, name + ext), "wb") as fh:
-                        fh.write(data)
-                    manifest.append({"file": name + ext, "list": list_name, "item": item["id"],
-                                     "code": f.get("DocumentCode", ""), "title": f.get("Title", ""),
-                                     "stage": f.get("Stage", ""), "url": url})
-                except Exception as exc:
-                    missed.append({"list": list_name, "item": item["id"], "url": url, "error": str(exc)[:200]})
-    finally:
-        await gc.shutdown()
-    with open(os.path.join(folder, "manifest.json"), "w", encoding="utf-8") as fh:
-        json.dump({"files": manifest, "not_downloaded": missed}, fh, ensure_ascii=False, indent=1)
-    logger.info(f"  files: {len(manifest)} saved, {len(missed)} could not be downloaded (listed in manifest.json)")
+                found.append(f"{list_name} {item.get('id')}: {f.get('DocumentCode') or ''} {f.get('Title') or ''}".strip())
+    return found
 
 
 # =============================================================================
@@ -253,6 +236,18 @@ async def main() -> int:
     if not chroma_only:
         async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
             graph = Graph(client)
+            # Work left in OrgOS's old copies is not in the library, and the rebuild reads the library.
+            seen = {name: await graph.all_items(list_id) for name, list_id in lists
+                    if name in ("Document Lifecycle", "Document Register") and settings.is_list_configured(list_id)}
+            stranded = on_old_copies(seen)
+            if stranded:
+                print(f"\n  {len(stranded)} document(s) still point at an OrgOS copy, not their library file:")
+                for line in stranded[:30]:
+                    print(f"    {line}")
+                print("  Run scripts/return_document_copies.py first, or their work is lost by the rebuild.")
+                if not dry_run and "--ignore-copies" not in args:
+                    print("\n  Nothing was deleted. (--ignore-copies runs the reset anyway.)")
+                    return 4
             if dry_run:
                 for name, list_id in lists:
                     if settings.is_list_configured(list_id):

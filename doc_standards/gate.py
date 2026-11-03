@@ -173,14 +173,11 @@ async def evaluate_bytes(file_bytes: bytes, filename: str, *, wait_for_library: 
 
 async def evaluate_item(doc: dict, *, wait_for_library: bool = False) -> dict:
     """The standard check of a Lifecycle item's file, with its decisions applied."""
-    from graph.client import download_file_from_sharepoint
-    from lifecycle.router import _filename_from_sharepoint_url
+    from lifecycle.router import _read_doc
 
-    url = doc.get("SharePointFileUrl")
-    if not url:
+    if not doc.get("SharePointFileUrl"):
         return {"mode": mode(), "available": False, "reason": "There is no file yet."}
-    data, content_type = await download_file_from_sharepoint(url)
-    filename = _filename_from_sharepoint_url(url, content_type)
+    data, filename = await _read_doc(doc)
     check_bytes = data
     if filename.lower().endswith(".docx"):
         try:

@@ -4,14 +4,14 @@
 #   1. Generate all sections via Ollama.
 #   2. Build a formatted .docx with docx_builder (python-docx, no new library needed).
 #   3. Run CDI check against the generated .docx immediately.
-#   4. Upload to SharePoint via /drive/root:/ path (no drive_id config needed).
-#   5. Create a Document Lifecycle entry with CDI results and SP file URL.
-#   6. Return lifecycle_id, doc_code, CDI report, AND docx_base64 so the
-#      frontend can trigger a direct browser download even if SP upload failed.
+#   4. Create a Document Lifecycle entry with the CDI results.
+#   5. Save the draft as a new file in the library (starting folder / New documents)
+#      and point the entry at it. There is no download: the draft is opened in Word
+#      from its card and edited where it lives, like every other document.
 # =============================================================================
 
-import base64
 import io
+import re
 import json
 import logging
 
@@ -117,10 +117,9 @@ async def draft_document_endpoint(
     2. Generate all sections via Ollama.
     3. Build a formatted .docx (server-side, python-docx — no new technology needed).
     4. Run CDI check against the generated .docx.
-    5. Create a Document Lifecycle entry (no SharePoint upload — user downloads
-       the .docx from the response, edits locally, then uploads via the lifecycle
-       Upload button when ready).
-    6. Return docx_base64 so the frontend can trigger an immediate browser download.
+    5. Create a Document Lifecycle entry.
+    6. Save the draft as a new file in the library and point the entry at it, so
+       it is opened in Word from its card: never downloaded.
     """
     logger.info(f"Document Drafter requested: '{body.title}' by {user.name}")
 
@@ -160,7 +159,8 @@ async def draft_document_endpoint(
 
     docx_buffer: Optional[io.BytesIO] = draft.pop("docx_buffer", None)
     docx_bytes = docx_buffer.read() if docx_buffer else b""
-    filename   = f"{draft['doc_code']}_DRAFT.docx"
+    # V23: a file is named as its title, with no status, version or date.
+    filename   = (re.sub(r'[\\/:*?"<>|]+', "", draft["title"]).strip() or draft["doc_code"]) + ".docx"
     cdt_cover        = draft.pop("cdt_cover", None)
     cdt_history      = draft.pop("revision_history", None)
 
@@ -193,10 +193,7 @@ async def draft_document_endpoint(
             logger.warning(f"CDI check on AI draft failed: {exc}")
             cdi_status = "Error"
 
-    # ── 5: Create Document Lifecycle entry (no SharePoint upload yet) ─────────
-    # The user downloads the draft from docx_base64, edits it locally, and
-    # uploads the revised version via PATCH /lifecycle/documents/{id}/upload
-    # which handles the SharePoint upload and CDI re-check at that point.
+    # ── 5: Create the Document Lifecycle entry; its file is saved below ──────
     owner_name = await _resolve_display_name(user.oid, user.name)
 
     lifecycle_fields: dict = {
@@ -216,7 +213,7 @@ async def draft_document_endpoint(
             f"AI-generated draft — {draft['doc_code']}. "
             f"CDI check on draft: {cdi_status} "
             f"({cdi_result.get('pass_count', 0)} passed, {cdi_result.get('fail_count', 0)} failed). "
-            f"Download the .docx, revise, then upload via the Upload button."
+            f"Open it in Word from this card and revise it there."
         ),
     }
     if cdi_failures_json:
@@ -268,8 +265,25 @@ async def draft_document_endpoint(
                 f"on the Document Lifecycle list yet?): {exc}"
             )
 
-    # ── 6: Return lifecycle metadata + base64 docx ───────────────────────────
-    docx_b64 = base64.b64encode(docx_bytes).decode("ascii") if docx_bytes else None
+    # ── 6: The draft's file, in the library: one file, edited where it lives ──
+    from lifecycle import document_file
+    from lifecycle.router import _cdi_check_file, _office_edit_url, _remember_file
+    file_url = ""
+    if docx_bytes:
+        try:
+            saved = await document_file.create_new(filename, docx_bytes)
+            await _remember_file(lifecycle_id, saved, {}, docx_bytes)
+            file_url = saved.web_url
+            # The same checks every file change gets, the role check included.
+            status_, failures = await _cdi_check_file(lifecycle_id, docx_bytes, saved.name)
+            if status_ != "Error":
+                await update_list_item(settings.document_lifecycle_list_id, "Document Lifecycle", lifecycle_id,
+                                       {"CDIStatus": status_, "CDIFailures": failures})
+        except Exception as exc:
+            logger.exception(f"Draft {draft['doc_code']}: its file could not be saved to the library")
+            raise HTTPException(status_code=503, detail=(
+                f"The draft was written and its card created (item {lifecycle_id}), but its file could not "
+                f"be saved to SharePoint: {exc}. Upload a file on the card, or delete the card and try again."))
 
     cdi_summary = {
         "status":     cdi_status,
@@ -287,7 +301,8 @@ async def draft_document_endpoint(
         "title":        draft["title"],
         "sections":     draft["sections"],
         "full_text":    draft["full_text"],
-        "docx_base64":  docx_b64,
+        "file_url":     file_url,
+        "edit_url":     _office_edit_url(file_url) if file_url else "",
         "filename":     filename,
         "cdi_check":    cdi_summary,
     }

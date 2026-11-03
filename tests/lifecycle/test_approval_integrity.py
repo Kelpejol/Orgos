@@ -1,9 +1,10 @@
 # =============================================================================
 # tests/lifecycle/test_approval_integrity.py — approval never damages the record
 #
-#   • the published copy has its own folder and never replaces the source;
+#   • the approved document is the document's one file, stamped in place: no copy;
 #   • a document whose code is already in the Register updates that entry, never
-#     a second one at 01; two live entries with one code are refused;
+#     a second one at 01; two live entries with one code are refused, and so is a
+#     code that belongs to a different document (a stale or mistyped code);
 #   • an unreadable Register entry stops the approval, nothing is written;
 #   • reversing the approval of a revision restores the entry, never withdraws it.
 # =============================================================================
@@ -23,15 +24,48 @@ def reg_rows(*rows):
     return [{"id": i, "fields": f} for i, f in rows]
 
 
-async def test_the_published_copy_goes_in_its_own_folder_and_the_source_is_kept():
+async def test_the_approved_document_is_its_own_file_stamped_in_place():
     with Env() as env:
         await approve(env, change_summary=GOOD)
-    assert env.upload.await_args.kwargs.get("subfolder") == "Published"
+    assert env.library.saves == [("https://sp/source.docx", b"M")] and env.library.created == []
     item_updates = [c.args[3] for c in env.update.call_args_list if c.args[1] == lr._LIST_NAME]
-    assert not any("SharePointFileUrl" in u for u in item_updates)        # the item still points at its source
+    assert not any("SharePointFileUrl" in u for u in item_updates)        # the item keeps its one file
     reg_url = [c.args[3] for c in env.update.call_args_list
                if c.args[1] == "Document Register" and "SharePointUrl" in c.args[3]]
-    assert reg_url == [{"SharePointUrl": "https://sp/pub.docx"}]          # the Register points at the published copy
+    assert reg_url == [{"SharePointUrl": "https://sp/source.docx"}]       # ...and so does the Register
+
+
+async def test_a_code_that_belongs_to_another_document_is_refused_before_anything_is_written():
+    doc = _lifecycle_doc()          # "Control of Documented Information Procedure"
+    rows = reg_rows(("7", {"DocumentCode": doc["DocumentCode"], "Status": "Active",
+                           "Title": "Management of Information Media Standard"}))
+    with Env(REGISTER) as env, patch("lifecycle.router.get_list_items", new=AsyncMock(return_value=rows)):
+        with pytest.raises(HTTPException) as e:
+            await approve(env, doc=doc, version_decision="new", change_summary=GOOD)
+    assert e.value.status_code == 409 and "Management of Information Media" in e.value.detail
+    assert env.nothing_written()
+
+
+async def test_a_reworded_title_is_still_the_same_document():
+    doc = _lifecycle_doc()
+    rows = reg_rows(("7", {"DocumentCode": doc["DocumentCode"], "Status": "Active",
+                           "Title": "Control of Documented Information Procedure Draft"}))
+    with Env(REGISTER) as env, patch("lifecycle.router.get_list_items", new=AsyncMock(return_value=rows)):
+        rid, _ = await approve(env, doc=doc, version_decision="new", change_summary=GOOD)
+    assert rid == "7"
+
+
+async def test_a_revision_whose_file_now_states_another_code_is_refused():
+    with Env({**REGISTER, "DocumentCode": "DRG-QI-PRO-OTHER"}) as env:
+        with pytest.raises(HTTPException) as e:
+            await approve(env, doc=revision(), version_decision="new", change_summary=GOOD)
+    assert e.value.status_code == 409 and env.nothing_written()
+
+
+async def test_a_legacy_serial_and_year_are_not_a_different_code():
+    with Env({**REGISTER, "DocumentCode": "DRG-QI-PRO-CDI-01-26"}) as env:
+        rid, _ = await approve(env, doc=revision(), version_decision="new", change_summary=GOOD)
+    assert rid == "7"
 
 
 async def test_a_document_whose_code_is_already_registered_updates_that_entry_not_a_new_one():
@@ -80,6 +114,7 @@ async def test_approving_a_revision_keeps_a_snapshot_of_the_entry_for_a_reversal
 async def _reverse(doc):
     item = {"fields": {}}
     with patch.object(lr, "get_list_item", new=AsyncMock(return_value=item)), \
+         patch.object(type(lr.settings), "document_writes_live", property(lambda s: True)), \
          patch.object(lr, "_sp_to_doc", new=AsyncMock(return_value=doc)), \
          patch.object(lr, "update_list_item", new=AsyncMock()) as upd, \
          patch.object(lr, "_audit_lifecycle_action", new=AsyncMock()):
@@ -101,6 +136,29 @@ async def test_reversing_a_first_issue_withdraws_its_entry():
     doc = _lifecycle_doc(ApprovalStatus="Approved", LinkedDocumentRegisterItem="7", OwnerEntraId="c")
     out, writes = await _reverse(doc)
     assert ("Document Register", {"Status": "Withdrawn"}) in writes and out["RegisterEntryWithdrawn"]
+
+
+async def test_reversing_puts_the_file_back_as_it_was_before_approval(library):
+    library.add("https://sp/source.docx", b"STAMPED", "cdi.docx")
+    state = json.dumps({"drive": "drive", "item": "https://sp/source.docx", "ctag": "ctag-1",
+                        "before_approval": "v3"})
+    doc = _lifecycle_doc(ApprovalStatus="Approved", LinkedDocumentRegisterItem="7", OwnerEntraId="c",
+                         FileState=state)
+    out, _writes = await _reverse(doc)
+    lr.restore_drive_item_version.assert_awaited_once_with("drive", "https://sp/source.docx", "v3")
+    assert out["FileOutcome"] == "put back as it was before approval"
+
+
+async def test_reversing_never_undoes_an_edit_made_after_approval(library):
+    library.add("https://sp/source.docx", b"EDITED", "cdi.docx")
+    library.files["https://sp/source.docx"]["version"] = 2              # changed since approval
+    state = json.dumps({"drive": "drive", "item": "https://sp/source.docx", "ctag": "ctag-1",
+                        "before_approval": "v3"})
+    doc = _lifecycle_doc(ApprovalStatus="Approved", LinkedDocumentRegisterItem="7", OwnerEntraId="c",
+                         FileState=state)
+    out, _writes = await _reverse(doc)
+    lr.restore_drive_item_version.assert_not_awaited()
+    assert "edited after approval" in out["FileOutcome"]
 
 
 # ── who may change a document's file ────────────────────────────────────────

@@ -70,17 +70,16 @@ const lifecycleApi = {
     return resp.json();
   },
 
-  // Word for the web, on this item's own working copy (never the approved file)
+  // Word for the web, on the document's own file in the library (there are no copies)
   openForEditing: (id) =>
     apiClient.post(`/api/v1/lifecycle/documents/${id}/edit`).then(r => r.data),
 
   recheck: (id) =>
     apiClient.post(`/api/v1/lifecycle/documents/${id}/recheck`).then(r => r.data),
 
-  downloadUrl: (id) => {
-    const BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
-    return `${BASE}/api/v1/lifecycle/documents/${id}/download`;
-  },
+  // Was the file changed in SharePoint since it was last checked? If so it is checked again.
+  sync: (id) =>
+    apiClient.post(`/api/v1/lifecycle/documents/${id}/sync`).then(r => r.data),
 
   // CDT (v06) — cover facts editing + live PDF preview.
   getCover: (id) =>
@@ -127,31 +126,6 @@ const lifecycleApi = {
 
 
 
-
-async function authenticatedDownload(url, filename) {
-  const resp = await fetch(url, { credentials: "include" });
-
-  if (!resp.ok) {
-    let detail = `Download failed: ${resp.status}`;
-    try { detail = (await resp.json()).detail || detail; } catch { /**/ }
-    throw new Error(detail);
-  }
- 
-  const blob = await resp.blob();
-  const disposition = resp.headers.get("Content-Disposition") || "";
-  const match = disposition.match(/filename\*?=(?:UTF-8'')?["']?([^;"'\n]+)/i);
-  const resolvedName = match ? decodeURIComponent(match[1].trim()) : filename;
- 
-  const objectUrl = URL.createObjectURL(blob);
-  const a = document.createElement("a");
-  a.href = objectUrl;
-  a.download = resolvedName;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(objectUrl);
-}
- 
 
 // =============================================================================
 //  Date helper — turns "2026-05-05T07:00:00Z" into "5 May 2026"
@@ -334,7 +308,7 @@ function useLifecycleDocs() {
 
 const STAGES = [
   { key: "Review",        color: "#BA7517", bg: "#FAEEDA", bd: "#FAC775",
-    desc: "Drafting and revision — download, revise, upload, then progress" },
+    desc: "Drafting and revision — edit in Word or upload, then progress" },
   { key: "Sensitisation", color: "#D85A30", bg: "#FAECE7", bd: "#F0997B",
     desc: "Audience briefing — staff are notified before the policy takes effect" },
   { key: "Approval",      color: "#993556", bg: "#FBEAF0", bd: "#E8A0BD",
@@ -510,24 +484,6 @@ const NewDocForm = ({ onSuccess, onCancel }) => {
   const set = k => e => setForm(f => ({
     ...f, [k]: e.target.type === "checkbox" ? e.target.checked : e.target.value,
   }));
-
-  // Trigger a browser download from a base64-encoded docx string
-  const downloadBase64Docx = (b64, filename) => {
-    try {
-      const bytes  = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
-      const blob   = new Blob([bytes], { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" });
-      const url    = URL.createObjectURL(blob);
-      const a      = document.createElement("a");
-      a.href       = url;
-      a.download   = filename || "draft.docx";
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(url);
-    } catch {
-      setError("Download failed — try again.");
-    }
-  };
 
   const handleCreate = async () => {
     if (!form.title.trim())  { setError("Document title is required."); return; }
@@ -724,7 +680,7 @@ const NewDocForm = ({ onSuccess, onCancel }) => {
           </div>
           <div style={{ fontSize: 11, color: form.ai_generated ? "#085041" : "var(--color-text-secondary)",
                         marginTop: 2, opacity: 0.85 }}>
-            Document Drafter agent generates a CDI-compliant first draft using the type, department, and brief above. Takes 30–60 seconds. The draft is not uploaded anywhere — you download it, revise it, then upload your final version.
+            Document Drafter agent generates a CDI-compliant first draft using the type, department, and brief above. Takes 30–60 seconds. The draft is saved in the library's New documents folder and opened in Word from its card: you revise it there.
           </div>
         </div>
       </div>
@@ -759,7 +715,7 @@ const NewDocForm = ({ onSuccess, onCancel }) => {
                 Draft created — {aiResult.doc_code}
               </div>
               <div style={{ fontSize: 11, color: "#085041", opacity: 0.85 }}>
-                Review card is now in the Review column. Download the .docx, revise it, then upload it back.
+                Its card is in the Review column. The draft is saved in SharePoint: open it in Word and revise it there.
               </div>
             </div>
             <button onClick={() => { setAiResult(null); onSuccess(); }}
@@ -796,22 +752,22 @@ const NewDocForm = ({ onSuccess, onCancel }) => {
             </div>
           )}
 
-          {/* Download .docx */}
+          {/* Open the draft where it lives — there is no download */}
           <div style={{ marginBottom: 10, fontSize: 11, color: "#085041", opacity: 0.8, lineHeight: 1.5 }}>
-            The draft is <strong>not yet on SharePoint</strong>. Download it, make your changes, then come back and use the Upload button on the lifecycle card to submit your revised version.
+            The draft is saved in the library ({aiResult.filename}). Edit it in Word; the checks run again on what you save.
           </div>
 
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            {aiResult.docx_base64 && (
-              <button
-                onClick={() => downloadBase64Docx(aiResult.docx_base64, aiResult.filename)}
+            {aiResult.edit_url && (
+              <a href={aiResult.edit_url} target="_blank" rel="noreferrer"
                 style={{
                   padding: "8px 16px", fontSize: 12, borderRadius: 8, border: "none",
                   background: "#085041", color: "#fff", cursor: "pointer", fontWeight: 600,
+                  textDecoration: "none",
                 }}
               >
-                Download .docx ↓
-              </button>
+                Open in Word ↗
+              </a>
             )}
             <button
               onClick={() => { setAiResult(null); onSuccess(); }}
@@ -872,8 +828,6 @@ const LifecycleCard = ({
   const [uploadCdiResult, setUploadCdiResult] = useState(null);
   const [editing,         setEditing]         = useState(false);   // opened in Word, not yet re-checked
   const [editBusy,        setEditBusy]        = useState("");      // "" | "opening" | "checking"
-  const [downloading,     setDownloading]     = useState(false);
-  const [downloadError,   setDownloadError]   = useState("");
   const cdiFix = useAiSuggestion(
     doc.id,
     'cdi_fix',
@@ -1023,37 +977,19 @@ const LifecycleCard = ({
     }
   };
 
-  // ── Download — always through the backend endpoint, never a direct
-  // window.open on the raw SharePoint URL: once a document is on the CDT
-  // template, the endpoint merges the current cover facts in before
-  // serving it, so this is the only path guaranteed to never show raw
-  // {{ markers }} — a direct link to SharePointFileUrl would bypass that.
-  const handleDownload = async () => {
-    setDownloading(true);
-    setDownloadError("");
-    try {
-      const BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
-      // One version number (01, 02…): an approved copy is named by it, anything else is a DRAFT.
-      let version = "";
-      try { version = JSON.parse(doc.CDTCoverFacts || "{}").version || ""; } catch { version = ""; }
-      const issued = doc.ApprovalStatus === "Approved" && version && version !== "Draft";
-      const filename = `${doc.DocumentCode || doc.id}_${issued ? `v${version}` : "DRAFT"}.docx`;
-      await authenticatedDownload(
-        `${BASE}/api/v1/lifecycle/documents/${doc.id}/download`,
-        filename,
-      );
-    } catch (err) {
-      setDownloadError(err.message || "Download failed");
-    } finally {
-      setDownloading(false);
-    }
+  // Reading a document also checks whether its file was changed in SharePoint since it was
+  // last checked; if it was, the card's results are refreshed.
+  const openViewer = () => {
+    setShowViewer(true);
+    lifecycleApi.sync(doc.id)
+      .then(() => qc.invalidateQueries({ queryKey: ["lifecycle"] }))
+      .catch(() => {});
   };
 
   return (
    <>
     {showViewer && (
-      <DocumentViewer doc={doc} onClose={() => setShowViewer(false)}
-        onDownload={handleDownload} />
+      <DocumentViewer doc={doc} onClose={() => setShowViewer(false)} />
     )}
     {showCdiFix && (
       <CdiFixPanel docId={doc.id} docCode={doc.DocumentCode}
@@ -1208,12 +1144,6 @@ const LifecycleCard = ({
         <div style={{ padding: "5px 8px", background: "#FCEBEB", borderRadius: 6,
                       fontSize: 11, color: "#791F1F", marginBottom: 6 }}>
           Upload failed: {uploadError}
-        </div>
-      )}
-      {downloadError && (
-        <div style={{ padding: "5px 8px", background: "#FCEBEB", borderRadius: 6,
-                      fontSize: 11, color: "#791F1F", marginBottom: 6 }}>
-          Download failed: {downloadError}
         </div>
       )}
 
@@ -1508,7 +1438,7 @@ const LifecycleCard = ({
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
               {/* View */}
               {doc.SharePointFileUrl || doc.Revised ? (
-                <button onClick={() => setShowViewer(true)} style={{
+                <button onClick={openViewer} style={{
                   padding: "7px", fontSize: 11, borderRadius: 7,
                   border: "1.5px solid #C0C0C0", background: "transparent",
                   color: "var(--color-text-primary)", cursor: "pointer",
@@ -1544,7 +1474,7 @@ const LifecycleCard = ({
               {/* Edit in Word for the web, then re-check (Review only) */}
               {isReview && (doc.SharePointFileUrl || doc.Revised) && (
                 <button onClick={handleEditInWord} disabled={!!editBusy}
-                  title="Opens a working copy in Word in your browser. It saves as you type; the approved file is never changed."
+                  title="Opens the document's own file in Word in your browser. It saves as you type, and the checks run again on what you saved."
                   style={{
                     padding: "7px", fontSize: 11, borderRadius: 7, fontWeight: 600,
                     border: "1.5px solid #85B7EB", background: "#E6F1FB", color: "#0C447C",
@@ -1612,7 +1542,7 @@ const LifecycleCard = ({
           {isApproval && !isApproved && (
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6 }}>
               {doc.SharePointFileUrl && (
-                <button onClick={() => setShowViewer(true)} style={{
+                <button onClick={openViewer} style={{
                   padding: "7px", fontSize: 11, borderRadius: 7,
                   border: "1.5px solid #C0C0C0", background: "transparent",
                   color: "var(--color-text-primary)", cursor: "pointer",

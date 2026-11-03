@@ -50,24 +50,6 @@ const api = {
   apply: (itemId) =>
     apiClient.post("/api/v1/doc-standards/convert/apply", { item_id: itemId }).then((r) => r.data),
   lifecycle: () => apiClient.get("/api/v1/lifecycle/documents").then((r) => r.data),
-  download: async (file, kind) => {
-    const form = new FormData();
-    form.append("file", file);
-    form.append("kind", kind);
-    const resp = await fetch(`${BASE}/api/v1/doc-standards/convert/download`, {
-      method: "POST", credentials: "include", body: form,
-    });
-    if (!resp.ok) {
-      const err = await resp.json().catch(() => ({}));
-      throw new Error(typeof err.detail === "string" ? err.detail : "The download failed.");
-    }
-    const blob = await resp.blob();
-    const name = /filename="([^"]+)"/.exec(resp.headers.get("content-disposition") || "")?.[1] || "converted.docx";
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url; a.download = name; a.click();
-    URL.revokeObjectURL(url);
-  },
 };
 
 // An apply refusal carries { message, plan }; the shared client stringifies it.
@@ -451,20 +433,13 @@ function ConvertTab() {
   };
 
   const apply = async () => {
-    if (!window.confirm("Convert this document?\n\nThe converted file becomes the Lifecycle item's own working copy. The original file is not changed or deleted.")) return;
+    if (!window.confirm("Convert this document?\n\nThe converted document is saved over its file in the library. The file as it was stays in its SharePoint version history.")) return;
     setBusy("applying"); setError("");
     try {
       setDone(await api.apply(itemId));
       qc.invalidateQueries({ queryKey: ["lifecycle"] });
       qc.invalidateQueries({ queryKey: ["doc-standards-lifecycle"] });
     } catch (e) { setError(errorText(e)); }
-    finally { setBusy(""); }
-  };
-
-  const download = async (kind) => {
-    setBusy("downloading"); setError("");
-    try { await api.download(file, kind); }
-    catch (e) { setError(errorText(e)); }
     finally { setBusy(""); }
   };
 
@@ -475,7 +450,7 @@ function ConvertTab() {
         block, replaces the hand-typed parts with the template cover (filled from the Register), and leaves the
         body untouched. It then <em>proves</em> that the body is identical, nothing was lost, and OrgOS reads the
         same code, title, relationships and controls as before. If any proof fails, nothing is offered.
-        Nothing happens until you press <strong>Convert</strong>, and the original file is never changed.
+        Nothing happens until you press <strong>Convert</strong>; the file as it was stays in its SharePoint version history.
       </div>
 
       <div style={{ display: "flex", gap: 16, margin: "14px 0 8px", fontSize: 12 }}>
@@ -518,8 +493,8 @@ function ConvertTab() {
         <div style={{ ...card, background: STATUS.pass.bg, border: `1px solid ${STATUS.pass.bd}`, color: STATUS.pass.tx, marginTop: 12 }}>
           <div style={{ fontSize: 14, fontWeight: 700 }}>Converted</div>
           <div style={{ fontSize: 12, marginTop: 4, lineHeight: 1.6 }}>
-            The Lifecycle item now has its own working copy with the CDT cover, named as its title. The original
-            file is unchanged. The cover facts are saved on the item and the CDI checks were re-run:{" "}
+            The document's file in the library now has the CDT cover and is named as its title; the file as it
+            was is in its SharePoint version history. The cover facts are saved on the item and the CDI checks were re-run:{" "}
             <strong>{done.item?.CDIStatus || "pending"}</strong>.
           </div>
         </div>
@@ -533,15 +508,10 @@ function ConvertTab() {
               {source === "lifecycle" ? (
                 <Button onClick={apply} disabled={!!busy}>{busy === "applying" ? "Converting..." : "Convert this document"}</Button>
               ) : (
-                <>
-                  <Button onClick={() => download("reading")} disabled={!!busy}>Download reading copy</Button>
-                  <Button kind="secondary" onClick={() => download("source")} disabled={!!busy}>Download CDT source</Button>
-                  <span style={{ fontSize: 11, color: "var(--color-text-secondary)", maxWidth: 420 }}>
-                    The reading copy is filled in, to read and check. The CDT source keeps the cover placeholders,
-                    which is the form OrgOS stores. Upload a file here only to try the conversion; to convert a
-                    real document, choose it from Document Lifecycle.
-                  </span>
-                </>
+                <span style={{ fontSize: 11, color: "var(--color-text-secondary)", maxWidth: 520 }}>
+                  An uploaded file is only read here, to try the conversion. To convert a real document, choose it
+                  from Document Lifecycle: it is converted in its own file, in the library.
+                </span>
               )}
             </div>
           )}

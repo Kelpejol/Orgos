@@ -258,8 +258,7 @@ def _evaluate(file_bytes, fields=None, name="Test Standard.docx"):
 async def _run_evaluate(file_bytes, fields=None, name="Test Standard.docx"):
     gate._cache.clear()
     doc = {"id": "7", "SharePointFileUrl": f"https://x/{name}", **(fields or {})}
-    with patch("graph.client.download_file_from_sharepoint", new=AsyncMock(return_value=(file_bytes, "x"))), \
-         patch("lifecycle.router._filename_from_sharepoint_url", return_value=name), \
+    with patch("lifecycle.router._read_doc", new=AsyncMock(return_value=(file_bytes, name))), \
          patch("doc_standards.service.build_context", new=AsyncMock(return_value=(Context(), ["library not read"]))):
         return await gate.evaluate_item(doc)
 

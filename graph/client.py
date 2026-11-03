@@ -1314,3 +1314,144 @@ async def download_file_from_sharepoint(web_url: str) -> tuple[bytes, str]:
     )
     return file_resp.content, content_type
 
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# A document's own file, by its drive and item ids. A document has one file: OrgOS
+# saves its changes over that file (SharePoint keeps each save in the file's version
+# history) instead of keeping copies of its own. See lifecycle/document_file.py.
+# ─────────────────────────────────────────────────────────────────────────────
+
+async def get_drive_item(drive_id: str, item_id: str) -> dict:
+    """The drive item (name, webUrl, cTag, parentReference …) — follows a rename or a move."""
+    return await _request("GET", f"{settings.graph_base_url}/drives/{drive_id}/items/{item_id}",
+                          context=f"Read file {item_id}")
+
+
+async def download_drive_item(drive_id: str, item_id: str) -> bytes:
+    """The file's current content."""
+    token = await get_graph_access_token()
+    response = await get_client().get(
+        f"{settings.graph_base_url}/drives/{drive_id}/items/{item_id}/content",
+        headers={"Authorization": f"Bearer {token}"}, follow_redirects=True)
+    if response.status_code != 200:
+        raise_for_graph_status(response.status_code, _json_or_empty(response), f"Download file {item_id}")
+    return response.content
+
+
+async def replace_drive_item_content(drive_id: str, item_id: str, file_bytes: bytes) -> dict:
+    """Save new content over an existing file. SharePoint keeps the previous content as a version."""
+    token = await get_graph_access_token()
+    response = await get_client().put(
+        f"{settings.graph_base_url}/drives/{drive_id}/items/{item_id}/content",
+        content=file_bytes,
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/octet-stream"},
+        timeout=120.0)
+    if response.status_code not in (200, 201):
+        raise_for_graph_status(response.status_code, _json_or_empty(response), f"Save file {item_id}")
+    return response.json()
+
+
+async def create_drive_file(drive_id: str, folder: str, filename: str, file_bytes: bytes) -> dict:
+    """A NEW file in `folder` (created if missing). An existing file of that name is never
+    overwritten: SharePoint gives the new one a different name instead."""
+    await ensure_drive_folder(drive_id, folder)
+    token = await get_graph_access_token()
+    path = f"{folder.strip('/')}/{filename}" if folder.strip("/") else filename
+    response = await get_client().put(
+        f"{settings.graph_base_url}/drives/{drive_id}/root:/{path}:/content",
+        params={"@microsoft.graph.conflictBehavior": "rename"},
+        content=file_bytes,
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/octet-stream"},
+        timeout=120.0)
+    if response.status_code not in (200, 201):
+        raise_for_graph_status(response.status_code, _json_or_empty(response), f"Create {path}")
+    return response.json()
+
+
+async def create_file_beside(drive_id: str, parent_id: str, filename: str, file_bytes: bytes) -> dict:
+    """A NEW file in the folder `parent_id`, never overwriting one of the same name."""
+    token = await get_graph_access_token()
+    response = await get_client().put(
+        f"{settings.graph_base_url}/drives/{drive_id}/items/{parent_id}:/{filename}:/content",
+        params={"@microsoft.graph.conflictBehavior": "rename"},
+        content=file_bytes,
+        headers={"Authorization": f"Bearer {token}", "Content-Type": "application/octet-stream"},
+        timeout=120.0)
+    if response.status_code not in (200, 201):
+        raise_for_graph_status(response.status_code, _json_or_empty(response), f"Create {filename}")
+    return response.json()
+
+
+async def rename_drive_item(drive_id: str, item_id: str, name: str) -> dict:
+    """Rename a file in place (same file, same history). Refused by SharePoint if the name is taken."""
+    return await _request("PATCH", f"{settings.graph_base_url}/drives/{drive_id}/items/{item_id}",
+                          json={"name": name}, context=f"Rename file {item_id}")
+
+
+async def delete_drive_item(drive_id: str, item_id: str) -> None:
+    """Delete a file (used only for the scratch file a PDF preview is converted from)."""
+    await _request("DELETE", f"{settings.graph_base_url}/drives/{drive_id}/items/{item_id}",
+                   context=f"Delete file {item_id}")
+
+
+async def drive_item_pdf(drive_id: str, item_id: str) -> bytes:
+    """The file converted to PDF by Graph (?format=pdf), without copying it anywhere."""
+    token = await get_graph_access_token()
+    response = await get_client().get(
+        f"{settings.graph_base_url}/drives/{drive_id}/items/{item_id}/content",
+        params={"format": "pdf"}, headers={"Authorization": f"Bearer {token}"}, follow_redirects=True)
+    if response.status_code != 200:
+        raise_for_graph_status(response.status_code, _json_or_empty(response), f"Convert file {item_id} to PDF")
+    return response.content
+
+
+async def latest_version_id(drive_id: str, item_id: str) -> str:
+    """The id of the file's current SharePoint version ("" if versions can't be read)."""
+    try:
+        data = await _request("GET", f"{settings.graph_base_url}/drives/{drive_id}/items/{item_id}/versions",
+                              context=f"List versions of {item_id}")
+    except Exception as exc:
+        logger.info(f"Versions of {item_id} not read: {exc}")
+        return ""
+    versions = (data or {}).get("value", [])
+    return str(versions[0].get("id", "")) if versions else ""
+
+
+async def restore_drive_item_version(drive_id: str, item_id: str, version_id: str) -> None:
+    """Put an earlier SharePoint version of the file back as its current content."""
+    await _request(
+        "POST", f"{settings.graph_base_url}/drives/{drive_id}/items/{item_id}/versions/{version_id}/restoreVersion",
+        context=f"Restore version {version_id} of {item_id}")
+
+
+def _json_or_empty(response) -> dict:
+    try:
+        return response.json()
+    except Exception:
+        return {}
+
+
+async def list_drive_children(drive_id: str, item_id: str = "") -> list[dict]:
+    """Every child of a folder (the drive root if no id), all pages."""
+    url = (f"{settings.graph_base_url}/drives/{drive_id}/items/{item_id}/children" if item_id
+           else f"{settings.graph_base_url}/drives/{drive_id}/root/children")
+    params: Optional[dict] = {"$top": 200}
+    children: list[dict] = []
+    while url:
+        page = await _request("GET", url, params=params, context=f"List folder {item_id or 'root'}") or {}
+        children.extend(page.get("value", []))
+        url, params = page.get("@odata.nextLink", ""), None
+    return children
+
+
+async def download_drive_item_version(drive_id: str, item_id: str, version_id: str) -> bytes:
+    """The content of one earlier SharePoint version of a file."""
+    token = await get_graph_access_token()
+    response = await get_client().get(
+        f"{settings.graph_base_url}/drives/{drive_id}/items/{item_id}/versions/{version_id}/content",
+        headers={"Authorization": f"Bearer {token}"}, follow_redirects=True)
+    if response.status_code != 200:
+        raise_for_graph_status(response.status_code, _json_or_empty(response),
+                               f"Download version {version_id} of {item_id}")
+    return response.content

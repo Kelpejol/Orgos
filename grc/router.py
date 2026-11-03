@@ -13,13 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import Response
 
 from auth.validator import ROLE_ADMIN, CurrentUser, get_current_user, require_admin, require_compliance_lead
-from graph.client import (
-    convert_drive_item_to_pdf,
-    download_file_from_sharepoint,
-    ensure_drive_folder,
-    resolve_compliance_drive,
-    upload_bytes_to_drive,
-)
+from graph.client import download_file_from_sharepoint
 from graph.exceptions import (
     GraphAPIError,
     GraphNotFoundError,
@@ -347,9 +341,6 @@ async def update_register_cover(
         _handle_graph_error(exc, f"update register cover facts {item_id}")
 
 
-_CDT_PREVIEW_FOLDER = "_CDT_Previews"
-
-
 @router.get("/documents/{item_id}/preview.pdf", summary="Live-preview a Document Register item's current cover facts as a PDF")
 async def preview_register_document_pdf(
     item_id: str,
@@ -358,8 +349,8 @@ async def preview_register_document_pdf(
     """
     Same mechanism as the Lifecycle preview (lifecycle/router.py): merge the
     document's CURRENT cover facts into its stored .docx and convert to PDF
-    via Microsoft Graph. The stored file is never touched — this is purely
-    a live, disposable render.
+    via Microsoft Graph. The stored file is never touched, and the scratch
+    file Graph converts from is deleted straight after.
     """
     try:
         doc = await service.get_document(item_id)
@@ -378,11 +369,8 @@ async def preview_register_document_pdf(
         except MergeError as exc:
             raise HTTPException(status_code=422, detail=f"Could not generate a preview: {exc}")
 
-        _, drive_id = await resolve_compliance_drive()
-        await ensure_drive_folder(drive_id, _CDT_PREVIEW_FOLDER)
-        preview_filename = f"register-{item_id}.docx"
-        await upload_bytes_to_drive(drive_id, _CDT_PREVIEW_FOLDER, preview_filename, result.document)
-        pdf_bytes = await convert_drive_item_to_pdf(drive_id, f"{_CDT_PREVIEW_FOLDER}/{preview_filename}")
+        from lifecycle.preview import render_pdf     # scratch file, deleted once converted
+        pdf_bytes = await render_pdf(result.document, f"register-{item_id}.docx", f"register-{item_id}.docx")
 
         return Response(content=pdf_bytes, media_type="application/pdf")
     except HTTPException:

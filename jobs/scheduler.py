@@ -11,6 +11,7 @@ import tempfile
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +49,7 @@ def start_scheduler() -> None:
     from jobs.sensitisation_deadline import check_sensitisation_deadlines
     from jobs.gap_analysis_job import run_scheduled_gap_analysis
     from evidence.service import run_daily as run_evidence_daily
+    from lifecycle.router import sync_open_documents
 
     # Daily at 08:00 WAT — scan Document Register for documents due for review
     scheduler.add_job(
@@ -88,11 +90,24 @@ def start_scheduler() -> None:
         misfire_grace_time=3600,
     )
 
+    # Every 10 minutes — a document in Lifecycle whose file was changed in SharePoint (in Word,
+    # or straight in the library) is checked again: the CDI and role checks, and its code,
+    # title, type and standards re-read from the file. Unchanged files cost one small read each.
+    scheduler.add_job(
+        sync_open_documents,
+        IntervalTrigger(minutes=10),
+        id="lifecycle-file-changes",
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+
     scheduler.start()
     logger.info(
         "APScheduler started — jobs: evidence-obligations-daily (07:30 WAT), "
         "document-review-check (08:00 WAT), "
-        "sensitisation-deadline-check (09:00 WAT), gap-analysis-three-day-check (every third day, 06:30 WAT)"
+        "sensitisation-deadline-check (09:00 WAT), gap-analysis-three-day-check (every third day, 06:30 WAT), "
+        "lifecycle-file-changes (every 10 minutes)"
     )
 
 

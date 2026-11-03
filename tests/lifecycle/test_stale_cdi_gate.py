@@ -8,9 +8,16 @@ from unittest.mock import AsyncMock, patch
 import lifecycle.router as lr
 
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _the_file(library):
+    library.add("https://x/IDL.docx", b"x", "IDL.docx")
+
+
 async def _refresh(doc, result):
-    with patch.object(lr, "download_file_from_sharepoint", new=AsyncMock(return_value=(b"x", "x"))), \
-         patch.object(lr, "_cdi_check_file", new=AsyncMock(return_value=result)), \
+    with patch.object(lr, "_cdi_check_file", new=AsyncMock(return_value=result)), \
          patch.object(lr, "update_list_item", new=AsyncMock()) as update:
         await lr._refresh_stale_cdi("42", doc)
     return update
@@ -37,7 +44,6 @@ async def test_a_checker_error_is_not_a_verdict():
 
 
 async def test_an_unfetchable_file_keeps_the_stored_result():
-    doc = {"SharePointFileUrl": "https://x/IDL.docx", "CDIStatus": "Failed"}
-    with patch.object(lr, "download_file_from_sharepoint", new=AsyncMock(side_effect=RuntimeError("down"))):
-        await lr._refresh_stale_cdi("42", doc)
+    doc = {"SharePointFileUrl": "https://x/gone.docx", "CDIStatus": "Failed"}
+    await lr._refresh_stale_cdi("42", doc)
     assert doc["CDIStatus"] == "Failed"

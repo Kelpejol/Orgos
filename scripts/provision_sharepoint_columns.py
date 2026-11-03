@@ -249,6 +249,8 @@ LISTS: dict[str, dict] = {
             "CDTCoverFacts":             (NOTE,   None),
             "RevisionHistory":           (NOTE,   None),
             "RegisterBeforeApproval":    (NOTE,   None),   # so reversing a revision's approval restores the entry
+            # the document's one file: its ids and what it held when last checked (lifecycle/document_file.py)
+            "FileState":                 (NOTE,   None),
             # sensitisation and approval
             "AmendmentSummary":          (NOTE,   None),
             "RejectionCount":            (NUM,    None),

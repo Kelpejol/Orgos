@@ -2,7 +2,10 @@
 # control_register/approved_library.py — controls enter OrgOS through approval
 #
 # The approved library is every document the Document Register holds as
-# current, read from its published copy:
+# current, read as it was APPROVED — the SharePoint version approval stamped,
+# recorded on the approved Lifecycle item (lifecycle/document_file.py). A
+# document has one file, and a revision in progress changes it: its draft is
+# never read as approved.
 #   Active        — approved and in force
 #   Under Review  — a revision is in flight; the approved version still governs
 # Withdrawn and Superseded documents, and anything not yet approved, are not
@@ -78,9 +81,10 @@ def _filename(url: str, code: str) -> str:
 async def load_approved_library(concurrency: int = 4) -> ApprovedLibrary:
     from cdi.parser import parse_document
     from cdi.reader import UnsupportedDocument
-    from graph.client import download_file_from_sharepoint, get_list_items
+    from graph.client import get_list_items
 
     rows = await get_list_items(settings.document_register_list_id, "Document Register")
+    approved_files = await _approved_files()
     lib = ApprovedLibrary()
     current = []
     for row in rows:
@@ -92,18 +96,20 @@ async def load_approved_library(concurrency: int = 4) -> ApprovedLibrary:
         if not url:
             lib.no_file.append(code)
             continue
-        current.append((code, url, str(f.get("Modified") or row.get("lastModifiedDateTime") or "")))
+        state = approved_files.get(str(row.get("id")), {})
+        current.append((code, url, state.get("approved_version") or
+                        str(f.get("Modified") or row.get("lastModifiedDateTime") or ""), state))
 
     gate = asyncio.Semaphore(concurrency)
 
-    async def read(code: str, url: str, modified: str) -> None:
+    async def read(code: str, url: str, modified: str, state: dict) -> None:
         key = (url, modified)
         if key in _parsed:
             lib.documents.append(_parsed[key])
             return
         async with gate:
             try:
-                data, _ = await download_file_from_sharepoint(url)
+                data = await _approved_bytes(url, state)
             except Exception as exc:
                 lib.missed.append(f"{code}: {exc}")
                 return
@@ -120,6 +126,45 @@ async def load_approved_library(concurrency: int = 4) -> ApprovedLibrary:
 
     await asyncio.gather(*(read(*c) for c in current))
     return lib
+
+
+async def _approved_files() -> dict[str, dict]:
+    """Register entry id → what its latest approval recorded about the file (ids, the version
+    approved, its content tag then). {} where nothing was recorded (an approval from before)."""
+    from graph.client import get_list_items
+    from lifecycle.document_file import stored_state
+    if not settings.is_list_configured(settings.document_lifecycle_list_id):
+        return {}
+    try:
+        items = await get_list_items(settings.document_lifecycle_list_id, "Document Lifecycle")
+    except Exception as exc:
+        logger.warning(f"Approved versions not read from Document Lifecycle ({exc}); reading the files as they are.")
+        return {}
+    latest: dict[str, tuple[str, dict]] = {}
+    for item in items:
+        f = item.get("fields") or {}
+        register_id = str(f.get("LinkedDocumentRegisterItem") or "")
+        state = stored_state(f)
+        if f.get("ApprovalStatus") != "Approved" or not register_id or not state.get("approved_version"):
+            continue
+        when = str(f.get("ApprovedDate") or "")
+        if register_id not in latest or when >= latest[register_id][0]:
+            latest[register_id] = (when, state)
+    return {rid: state for rid, (_, state) in latest.items()}
+
+
+async def _approved_bytes(url: str, state: dict) -> bytes:
+    """The document as approved: the current file if it is unchanged since approval, else the
+    version approval recorded. Without a record, the file as it is."""
+    from graph.client import (download_drive_item, download_drive_item_version, download_file_from_sharepoint,
+                              get_drive_item)
+    if state.get("drive") and state.get("item") and state.get("approved_version"):
+        item = await get_drive_item(state["drive"], state["item"])
+        if state.get("ctag") and item.get("cTag") == state["ctag"]:
+            return await download_drive_item(state["drive"], state["item"])
+        return await download_drive_item_version(state["drive"], state["item"], state["approved_version"])
+    data, _ = await download_file_from_sharepoint(url)
+    return data
 
 
 async def load_library_folder(concurrency: int = 4) -> tuple[list[ParsedDocument], list[str]]:
@@ -438,7 +483,7 @@ async def sync_approved_library(focus_code: str = "", apply: bool = True,
         })
         if focus_code and focus is None:
             result["focus_missing"] = (f"{focus_code} is not among the approved documents read "
-                                       "(no published copy, or it could not be read).")
+                                       "(no file recorded, or it could not be read).")
         if not apply:
             return result
         failures = await apply_sync(plan, progress=progress)

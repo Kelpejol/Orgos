@@ -55,7 +55,7 @@ from agents.cdi_checker.service import (
 )
 from config import configure_logging, settings
 from graph.auth import get_graph_access_token
-from graph.client import create_list_item, get_list_items, startup, shutdown
+from graph.client import create_list_item, get_list_items, shutdown, startup, update_list_item
 
 configure_logging()
 logger = logging.getLogger(__name__)
@@ -222,7 +222,7 @@ async def list_folder(drive_id: str, folder_id: Optional[str] = None) -> list[di
     )
     params = {
         "$top": 200,
-        "$select": "id,name,size,folder,file,webUrl,lastModifiedDateTime",
+        "$select": "id,name,size,folder,file,webUrl,lastModifiedDateTime,cTag,parentReference",
     }
     items: list[dict] = []
     async with httpx.AsyncClient(timeout=30.0) as client:
@@ -259,6 +259,8 @@ async def walk_folder(
                 "size": item.get("size", 0),
                 "web_url": item.get("webUrl", ""),
                 "modified": item.get("lastModifiedDateTime", ""),
+                "drive_id": (item.get("parentReference") or {}).get("driveId", "") or drive_id,
+                "ctag": item.get("cTag", ""),
             })
     return files
 
@@ -433,22 +435,10 @@ def read_header(file_bytes: bytes, filename: str) -> Optional[dict]:
         return None
 
 
-# The type code inside a document code is authoritative: DRG-QI-STD-CDI is a
-# Standard whatever its folder or file is called. Only unambiguous codes are
-# mapped; the rest fall through to the path guess below.
-_TYPE_BY_CODE = {
-    "STD": "Standard", "POL": "Policy", "PRO": "Procedure", "SOP": "SOP",
-    "GDL": "Guideline", "MAN": "Manual", "FRM": "Form", "FM": "Form", "CHK": "Form",
-    # Lifecycle has no Specification or Register type: a specification explains
-    # implementation like a procedure; a register is a record form.
-    "SPEC": "Procedure", "REG": "Form",
-}
-
-
 def document_type_from_code(code: str) -> str:
-    """'DRG-QI-STD-CDI' → 'Standard'; '' when the code doesn't say."""
-    from cdi.codes import parse_doc_code
-    return _TYPE_BY_CODE.get(parse_doc_code(code)[1], "")
+    """'DRG-QI-STD-CDI' → 'Standard'; '' when the code doesn't say (one rule, shared with Lifecycle)."""
+    from cdi.codes import lifecycle_type_for_code
+    return lifecycle_type_for_code(code)
 
 
 def _has_word(text: str, *words: str) -> bool:
@@ -588,6 +578,9 @@ def _field_text(fields: dict, key: str) -> str:
 
 
 async def existing_lifecycle_keys() -> tuple[set[str], set[str]]:
+    """Codes and file keys already in Lifecycle. The file keys are links AND drive item ids: a file
+    renamed or moved in SharePoint has a new link but is the same file."""
+    from lifecycle.document_file import stored_state
     codes: set[str] = set()
     urls: set[str] = set()
     if not settings.is_list_configured(settings.document_lifecycle_list_id):
@@ -602,6 +595,8 @@ async def existing_lifecycle_keys() -> tuple[set[str], set[str]]:
             codes.add(code)
         if url:
             urls.add(url)
+        if stored_state(fields).get("item"):
+            urls.add(stored_state(fields)["item"])
     return codes, urls
 
 
@@ -820,7 +815,25 @@ async def create_lifecycle_entry(
                     )
                 raise exc3 from None
 
-    return str(item.get("id", "")), cdi_status
+    item_id = str(item.get("id", ""))
+    await _remember_file(item_id, file_info, file_bytes)
+    return item_id, cdi_status
+
+
+async def _remember_file(item_id: str, file_info: dict, file_bytes: bytes) -> None:
+    """Which file the card is (by ids, so a rename or move in SharePoint doesn't lose it) and what
+    it held when checked, so an edit made later in SharePoint is noticed (lifecycle/document_file.py).
+    Optional column: without it, a later edit is noticed by its date."""
+    from lifecycle.document_file import FILE_STATE, DocFile, state_json
+    if not file_info.get("drive_id"):
+        return
+    f = DocFile(drive_id=file_info["drive_id"], item_id=file_info["id"], name=file_info["name"],
+                web_url=file_info.get("web_url", ""), ctag=file_info.get("ctag", ""))
+    try:
+        await update_list_item(settings.document_lifecycle_list_id, LIFECYCLE_LIST_NAME, item_id,
+                               {FILE_STATE: state_json(f, file_bytes or None)})
+    except Exception as exc:
+        logger.info(f"FileState not stored for lifecycle {item_id} (column missing?): {exc}")
 
 
 # =============================================================================
@@ -938,7 +951,7 @@ async def run_intake(
             code_key = classification.document_code.upper()
 
             duplicate_reason = ""
-            if url_key and url_key in lifecycle_urls:
+            if (url_key and url_key in lifecycle_urls) or file_info["id"] in lifecycle_urls:
                 duplicate_reason = "already in Document Lifecycle"
             elif url_key and url_key in register_urls:
                 duplicate_reason = "already in Document Register"

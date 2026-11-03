@@ -180,7 +180,7 @@ Run `python scripts/provision_sharepoint_columns.py` (dry run), then `--apply`, 
 
 | List | Columns the script adds | Choice values to add by hand |
 |---|---|---|
-| Document Lifecycle | `CDTCoverFacts`, `RevisionHistory`, **`RegisterBeforeApproval`**, `AmendmentSummary`, `RejectionCount`, `StakeholderResponseCount`, `SensitisationDeadline`, `ReadDocumentUrl`, `ParentDocumentTitle`, `ParentDocumentUrl` | — |
+| Document Lifecycle | `CDTCoverFacts`, `RevisionHistory`, **`RegisterBeforeApproval`**, **`FileState`**, `AmendmentSummary`, `RejectionCount`, `StakeholderResponseCount`, `SensitisationDeadline`, `ReadDocumentUrl`, `ParentDocumentTitle`, `ParentDocumentUrl` | — |
 | AI Review Queue | `ControlId`, `ChangeKind`, `CandidateJson`, `DiffJson`, `ResolutionKey` | ReviewStatus: **Superseded** |
 | Document Register | `CDTCoverFacts`, `RevisionHistory`, the withdrawal columns | DocumentType: **Standard, Specification, Guideline, Manual** |
 | Control Register | — | Status: **Under Review** |
@@ -188,12 +188,15 @@ Run `python scripts/provision_sharepoint_columns.py` (dry run), then `--apply`, 
 
 Without `RegisterBeforeApproval`, reversing the approval of a revision still works but only rolls back the version and history, and says so.
 
+`FileState` (multiple lines of text, plain) is how a card remembers which library file is its document (so a rename or move in SharePoint doesn't lose it) and what the file held when last checked. Without it, an edit made in SharePoint is still noticed, by its date, but a renamed file loses its card's link.
+
 ## 13. The purge, safely
 
 1. Stop cron (`crontab -e`, comment out the intake lines).
-2. `python scripts/reset_data.py` — a dry run that counts what would be cleared.
-3. `python scripts/reset_data.py --confirm` — **backs up first** into `backups/reset-<time>/` (every item of every list it clears, every Lifecycle file and every published copy, with `manifest.json`); if the backup fails nothing is deleted. It clears the document-derived lists only; Compliance Calendar, Contract Register, Strategic Risks need `--include-business-records`, the Audit Log `--include-audit-log`. Org Roles and the Records Catalogue are never touched. The intake checkpoint is moved into the backup.
-4. Follow the rebuild order it prints (intake → Review/role fixes → approval, Standards first → Extraction Review → evidence obligations and schedules → gap analysis → `python scripts/rebuild_chat_index.py --apply`).
-5. To put back a list documents can't rebuild: `python scripts/restore_backup.py backups/reset-<time> "Strategic Risk Register" --apply`.
-6. Turn cron back on.
+2. `python scripts/return_document_copies.py` (dry run), then `--apply --delete-copies`: work saved in OrgOS's old copies ("Lifecycle Documents/") goes back into the library files, and the copies are deleted. A library file that was ALSO edited in SharePoint after the copy was made is never overwritten: it is listed, and you choose (redo the change on the library file, or `--use-copy <item id>`).
+3. `python scripts/reset_data.py` — a dry run that counts what would be cleared, and lists any card still on an old copy.
+4. `python scripts/reset_data.py --confirm` — **backs up first** into `backups/reset-<time>/` (every item of every list it clears); if the backup fails nothing is deleted. It refuses while a card still points at an old copy. Documents are not downloaded: each is its library file, which the reset never touches. It clears the document-derived lists only; Compliance Calendar, Contract Register, Strategic Risks need `--include-business-records`, the Audit Log `--include-audit-log`. Org Roles and the Records Catalogue are never touched. The intake checkpoint is moved into the backup.
+5. Follow the rebuild order it prints (intake → Review/role fixes → approval, Standards first → Extraction Review → evidence obligations and schedules → gap analysis → `python scripts/rebuild_chat_index.py --apply`).
+6. To put back a list documents can't rebuild: `python scripts/restore_backup.py backups/reset-<time> "Strategic Risk Register" --apply`.
+7. Turn cron back on.
 

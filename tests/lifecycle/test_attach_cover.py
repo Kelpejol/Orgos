@@ -1,13 +1,11 @@
 # =============================================================================
-# tests/lifecycle/test_attach_cover.py — POST .../attach-cover + the
-# merge-if-templated behaviour of GET .../download and the CDI check inside
-# POST .../upload.
+# tests/lifecycle/test_attach_cover.py — POST .../attach-cover, and how a
+# document is shown for reading (cover facts merged in when it has markers).
 #
-# Graph is mocked at the lifecycle.router seam (house pattern — see
-# test_approval_cdt.py). graft_cover_onto_document itself is tested in
-# isolation in test_graft.py; here it's mocked so these tests are about the
-# router's orchestration (auth gate, idempotent short-circuit, backup
-# upload, error handling), not the graft engine.
+# The document's file lives in the fake library (tests/lifecycle/conftest.py).
+# graft_cover_onto_document itself is tested in isolation in test_graft.py;
+# here it's mocked so these tests are about the router's orchestration (auth
+# gate, idempotent short-circuit, saving over the one file, error handling).
 # =============================================================================
 
 import io
@@ -40,6 +38,7 @@ def _docx_bytes(text: str) -> bytes:
 
 _MARKER_DOCX = _docx_bytes("already has {{ doc_code }} markers")
 _PLAIN_DOCX = _docx_bytes("plain legacy content, no markers at all")
+SOURCE = "https://sp/source.docx"
 
 
 def _lifecycle_doc(**overrides) -> dict:
@@ -47,7 +46,7 @@ def _lifecycle_doc(**overrides) -> dict:
         "id": "10", "Title": "Old Acceptable Use Policy", "DocumentCode": "DRG-ISMS-STD-AU",
         "DocumentType": "Standard", "Department": "Information Security",
         "OwnerEntraId": "owner-oid", "OwnerName": "Owner Person",
-        "SharePointFileUrl": "https://sp/source.docx",
+        "SharePointFileUrl": SOURCE,
         "RevisionOf": "", "Notes": "", "StandardsMapping": "", "SensitisationDeadline": "",
         "CDTCoverFacts": CdtCoverFacts().to_json(), "RevisionHistory": json.dumps([]),
     }
@@ -68,19 +67,17 @@ async def test_attach_cover_rejects_non_owner_non_compliance():
     assert getattr(exc_info.value, "status_code", None) == 403
 
 
-async def test_attach_cover_already_templated_is_idempotent():
+async def test_attach_cover_already_templated_is_idempotent(library):
+    library.add(SOURCE, _MARKER_DOCX, "source.docx")
     doc = _lifecycle_doc()
     with patch("lifecycle.router.get_list_item", new_callable=AsyncMock) as mock_get, \
-         patch("lifecycle.router.download_file_from_sharepoint", new_callable=AsyncMock) as mock_dl, \
          patch("lifecycle.router.graft_cover_onto_document") as mock_graft:
-
         mock_get.return_value = {"id": "10", "fields": doc}
-        mock_dl.return_value = (_MARKER_DOCX, "x.docx")
-
         result = await lr.attach_cdt_cover("10", user=COMPLIANCE_USER)
 
     assert result["already_templated"] is True
     mock_graft.assert_not_called()
+    assert library.saves == []
 
 
 async def test_attach_cover_no_file_yet_returns_404():
@@ -92,152 +89,61 @@ async def test_attach_cover_no_file_yet_returns_404():
     assert getattr(exc_info.value, "status_code", None) == 404
 
 
-async def test_attach_cover_grafts_backs_up_and_replaces_file():
-    """The LIVE path — writes are only made when DOCUMENT_WRITE_MODE allows it."""
+async def test_attach_cover_is_saved_over_the_document_s_own_file(library):
+    """The LIVE path: the grafted document replaces the content of the SAME file (its history
+    keeps the old content). No backup copy, no second file; the checks run on the result."""
+    library.add(SOURCE, _PLAIN_DOCX, "source.docx")
     doc = _lifecycle_doc()
     grafted_bytes = b"GRAFTED-DOCX-WITH-MARKERS"
 
     with patch.object(type(lr.settings), "document_writes_live", property(lambda self: True)), \
          patch("lifecycle.router.get_list_item", new_callable=AsyncMock) as mock_get, \
          patch("lifecycle.router.update_list_item", new_callable=AsyncMock) as mock_update, \
-         patch("lifecycle.router.download_file_from_sharepoint", new_callable=AsyncMock) as mock_dl, \
-         patch("lifecycle.router._upload_to_sharepoint", new_callable=AsyncMock) as mock_upload, \
          patch("lifecycle.router.load_master_template", new_callable=AsyncMock) as mock_template, \
+         patch("lifecycle.router._cdi_check_file", new=AsyncMock(return_value=("Failed", "[]"))), \
          patch("lifecycle.router.graft_cover_onto_document") as mock_graft:
 
         mock_get.return_value = {"id": "10", "fields": doc}
-        mock_dl.return_value = (_PLAIN_DOCX, "source.docx")
         mock_template.return_value = b"MASTER-TEMPLATE-BYTES"
         mock_graft.return_value = GraftResult(document=grafted_bytes, images_carried=2, images_skipped=0)
-        mock_upload.side_effect = ["https://sp/backup.docx", "https://sp/source.docx"]
 
         result = await lr.attach_cdt_cover("10", user=COMPLIANCE_USER)
 
-    assert result == {
-        "already_templated": False,
-        "images_carried": 2,
-        "images_skipped": 0,
-        "backup_url": "https://sp/backup.docx",
-    }
+    assert result["already_templated"] is False and result["images_carried"] == 2
+    assert result["file_url"] == SOURCE and result["cdi_status"] == "Failed"
     mock_template.assert_called_once_with("Standard")
     mock_graft.assert_called_once_with(_PLAIN_DOCX, b"MASTER-TEMPLATE-BYTES")
-
-    # Original bytes backed up FIRST, then the grafted result uploaded to
-    # the same slot the normal upload endpoint would use.
-    assert mock_upload.call_count == 2
-    backup_call, replace_call = mock_upload.call_args_list
-    assert backup_call.args[0] == "10"
-    assert backup_call.args[2] == _PLAIN_DOCX
-    assert replace_call.args[2] == grafted_bytes
-
-    # The lifecycle item's file pointer now points at the grafted version.
-    mock_update.assert_called_once_with(
-        lr._get_list_id(), lr._LIST_NAME, "10", {"SharePointFileUrl": "https://sp/source.docx"},
-    )
+    assert library.saves == [(SOURCE, grafted_bytes)] and library.created == []
+    stored = [c.args[3] for c in mock_update.call_args_list if "CDIStatus" in c.args[3]]
+    assert stored == [{"Revised": True, "CDIStatus": "Failed", "CDIFailures": "[]"}]
 
 
-async def test_attach_cover_missing_master_template_returns_503():
+async def test_attach_cover_missing_master_template_returns_503(library):
+    library.add(SOURCE, _PLAIN_DOCX, "source.docx")
     doc = _lifecycle_doc()
     with patch("lifecycle.router.get_list_item", new_callable=AsyncMock) as mock_get, \
-         patch("lifecycle.router.download_file_from_sharepoint", new_callable=AsyncMock) as mock_dl, \
          patch("lifecycle.router.load_master_template", new_callable=AsyncMock) as mock_template:
-
         mock_get.return_value = {"id": "10", "fields": doc}
-        mock_dl.return_value = (_PLAIN_DOCX, "source.docx")
         mock_template.side_effect = TemplateNotFoundError("no template for Standard")
-
         with pytest.raises(Exception) as exc_info:
             await lr.attach_cdt_cover("10", user=COMPLIANCE_USER)
 
     assert getattr(exc_info.value, "status_code", None) == 503
 
 
-# -----------------------------------------------------------------------------
-#  GET /documents/{id}/download — merges when templated, redirects otherwise
-# -----------------------------------------------------------------------------
-
-async def test_download_serves_merged_bytes_when_templated():
-    doc = _lifecycle_doc(CDTCoverFacts=CdtCoverFacts(version="01").to_json())
-    merged_bytes = b"CLEAN-MERGED-BYTES"
-
-    with patch("lifecycle.router.get_list_item", new_callable=AsyncMock) as mock_get, \
-         patch("lifecycle.router.download_file_from_sharepoint", new_callable=AsyncMock) as mock_dl, \
-         patch("lifecycle.router.merge") as mock_merge:
-
-        mock_get.return_value = {"id": "10", "fields": doc}
-        mock_dl.return_value = (_MARKER_DOCX, "source.docx")
-        mock_merge.return_value = type("R", (), {"document": merged_bytes, "sha256": "x", "doc_code": "x"})()
-
-        response = await lr.download_doc_file("10", user=COMPLIANCE_USER)
-
-    assert response.body == merged_bytes
-    assert response.status_code == 200
-
-
-async def test_download_serves_raw_bytes_when_not_templated():
-    doc = _lifecycle_doc()
-
-    with patch("lifecycle.router.get_list_item", new_callable=AsyncMock) as mock_get, \
-         patch("lifecycle.router.download_file_from_sharepoint", new_callable=AsyncMock) as mock_dl, \
-         patch("lifecycle.router.merge") as mock_merge:
-
-        mock_get.return_value = {"id": "10", "fields": doc}
-        mock_dl.return_value = (_PLAIN_DOCX, "source.docx")
-
-        response = await lr.download_doc_file("10", user=COMPLIANCE_USER)
-
-    mock_merge.assert_not_called()
-    assert response.status_code == 200
-    assert response.body == _PLAIN_DOCX
-
-
-async def test_download_serves_raw_bytes_when_merge_fails():
-    doc = _lifecycle_doc()
-
-    with patch("lifecycle.router.get_list_item", new_callable=AsyncMock) as mock_get, \
-         patch("lifecycle.router.download_file_from_sharepoint", new_callable=AsyncMock) as mock_dl, \
-         patch("lifecycle.router.merge") as mock_merge:
-
-        mock_get.return_value = {"id": "10", "fields": doc}
-        mock_dl.return_value = (_MARKER_DOCX, "source.docx")
-        mock_merge.side_effect = Exception("bad template")
-
-        response = await lr.download_doc_file("10", user=COMPLIANCE_USER)
-
-    assert response.status_code == 200
-    assert response.body == _MARKER_DOCX
-
-
-async def test_download_returns_503_when_file_fetch_fails():
-    doc = _lifecycle_doc()
-
-    with patch("lifecycle.router.get_list_item", new_callable=AsyncMock) as mock_get, \
-         patch("lifecycle.router.download_file_from_sharepoint", new_callable=AsyncMock) as mock_dl:
-
-        mock_get.return_value = {"id": "10", "fields": doc}
-        mock_dl.side_effect = Exception("Graph is unreachable")
-
-        with pytest.raises(Exception) as exc_info:
-            await lr.download_doc_file("10", user=COMPLIANCE_USER)
-
-    assert getattr(exc_info.value, "status_code", None) == 503
-
-
-async def test_attach_cover_in_dev_mode_does_not_touch_sharepoint():
+async def test_attach_cover_in_dev_mode_does_not_touch_sharepoint(library):
     """Dev mode still grafts and reports, so the officer sees what would happen —
-    it simply never uploads, so the live library cannot be marked up."""
+    it simply never saves, so the live library cannot be marked up."""
+    library.add(SOURCE, _PLAIN_DOCX, "source.docx")
     doc = _lifecycle_doc()
 
     with patch.object(type(lr.settings), "document_writes_live", property(lambda self: False)), \
          patch("lifecycle.router.get_list_item", new_callable=AsyncMock) as mock_get, \
          patch("lifecycle.router.update_list_item", new_callable=AsyncMock) as mock_update, \
-         patch("lifecycle.router.download_file_from_sharepoint", new_callable=AsyncMock) as mock_dl, \
-         patch("lifecycle.router._upload_to_sharepoint", new_callable=AsyncMock) as mock_upload, \
          patch("lifecycle.router.load_master_template", new_callable=AsyncMock) as mock_template, \
          patch("lifecycle.router.graft_cover_onto_document") as mock_graft:
 
         mock_get.return_value = {"id": "10", "fields": doc}
-        mock_dl.return_value = (_PLAIN_DOCX, "source.docx")
         mock_template.return_value = b"MASTER-TEMPLATE-BYTES"
         mock_graft.return_value = GraftResult(document=b"GRAFTED", images_carried=2, images_skipped=0)
 
@@ -246,5 +152,38 @@ async def test_attach_cover_in_dev_mode_does_not_touch_sharepoint():
     assert result["wrote_to_sharepoint"] is False
     assert result["images_carried"] == 2
     mock_graft.assert_called_once()          # the work was still done
-    mock_upload.assert_not_called()          # ...and never written
+    assert library.saves == []               # ...and never written
     mock_update.assert_not_called()
+
+
+# -----------------------------------------------------------------------------
+#  Reading a document: cover facts merged in when it has markers. No download.
+# -----------------------------------------------------------------------------
+
+async def test_a_templated_document_is_shown_merged(library):
+    library.add(SOURCE, _MARKER_DOCX, "source.docx")
+    doc = _lifecycle_doc(CDTCoverFacts=CdtCoverFacts(version="01").to_json())
+    with patch("lifecycle.router.merge") as mock_merge:
+        mock_merge.return_value = type("R", (), {"document": b"CLEAN-MERGED-BYTES"})()
+        f, content, merged = await lr._document_for_display("10", doc)
+    assert content == b"CLEAN-MERGED-BYTES" and merged and f.web_url == SOURCE
+
+
+async def test_a_plain_document_is_shown_as_it_is(library):
+    library.add(SOURCE, _PLAIN_DOCX, "source.docx")
+    with patch("lifecycle.router.merge") as mock_merge:
+        _f, content, merged = await lr._document_for_display("10", _lifecycle_doc())
+    mock_merge.assert_not_called()
+    assert content == _PLAIN_DOCX and not merged
+
+
+async def test_a_failed_merge_shows_the_file_as_it_is(library):
+    library.add(SOURCE, _MARKER_DOCX, "source.docx")
+    with patch("lifecycle.router.merge", side_effect=Exception("bad template")):
+        _f, content, merged = await lr._document_for_display("10", _lifecycle_doc())
+    assert content == _MARKER_DOCX and not merged
+
+
+async def test_there_is_no_download_route():
+    paths = {getattr(r, "path", "") for r in lr.router.routes}
+    assert not any(p.endswith("/download") for p in paths)
