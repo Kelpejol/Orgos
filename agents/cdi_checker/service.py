@@ -556,8 +556,11 @@ def check_04_scope_section(text: str) -> dict:
 def check_05_responsibilities_section(text: str) -> dict:
     """CDI-05: Responsibilities section present."""
     norm = _norm(text)
+    # The standard names the section "Roles and Responsibilities", but the family's own documents
+    # call it "Roles" (3.0 or 4.0 Roles): that is the same section, and failing it blocked 102 of 123.
     has_section = (
         _has_section_heading(text, "responsibilities")
+        or _has_section_heading(text, "roles")
         or _has_section_heading(text, "roles and responsibilities")
         or _has_section_heading(text, "roles & responsibilities")
         or "roles and responsibilities" in norm

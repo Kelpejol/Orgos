@@ -150,7 +150,10 @@ def test_v03_needs_the_register_and_an_approved_parent():
     draft = [{"fields": {"DocumentCode": "DRG-ISMS-POL-ACCESS", "Status": "Withdrawn"}}]
     assert status(run(ctx=Context(register=approved))[0], "V03")["status"] == "pass"
     assert status(run(ctx=Context(register=draft))[0], "V03")["status"] == "fail"
-    assert status(run(ctx=Context(register=[]))[0], "V03")["status"] == "fail"
+    # A parent that is simply not approved YET is a sequence (approve it first), not a fault in this
+    # document: it passes, with a note, instead of failing 122 of 123 documents before anything is approved.
+    waiting = status(run(ctx=Context(register=[]))[0], "V03")
+    assert waiting["status"] == "pass" and "Approve the parent first" in waiting.get("note", "")
 
 
 # ── V02, V23, V15, V14, V12 ─────────────────────────────────────────────────

@@ -8,8 +8,11 @@
 # the result stored on the Lifecycle item beside the CDI checks, so the card shows
 # them and "Fix CDI issues" offers the fix.
 #
-# Advisory gate (default): a role problem is a WARNING — shown, never blocking.
-# Enforced gate: an ERROR — the document cannot leave Review until it is fixed.
+# What counts as an ERROR (the card is Failed until it is fixed): a role that OWNS something
+# downstream — a control's Control owner, the Document owner, the First pass or Final approval.
+# Evidence obligations, acceptance and approval are all routed to them, so a name that is not
+# in Org Roles reaches nobody. A role named only in the document's Roles table (a requester,
+# "all staff", a line manager) is a WARNING: shown and fixable, but nothing is routed to it.
 # If Org Roles can't be read, nothing is added (a check that could not look never
 # passes or fails a document; the Document standard panel says it could not check).
 # =============================================================================
@@ -23,6 +26,14 @@ logger = logging.getLogger(__name__)
 
 ROLE_CHECK_ID = "V07"
 ROLE_CHECK_NAME = "Every role named exists in Org Roles"
+# The uses that route work to the role. Anything else (the Roles table) only describes who is involved.
+ACCOUNTABLE_USES = ("Control owner", "Document owner", "First pass approval", "Final approval")
+
+
+def is_error_use(kind: str) -> bool:
+    return kind in ACCOUNTABLE_USES
+
+
 ROLE_RULE = ("Every role a document names must be a role in Org Roles: a control's Control owner, the "
              "Document owner, the approvers and any Roles table. (CDI V07.)")
 
@@ -49,17 +60,20 @@ async def role_findings(file_bytes: bytes, filename: str) -> list[dict] | None:
     return [f.as_dict() for f in outcome.problems]
 
 
-def as_stored(findings: list[dict], *, enforced: bool) -> list[dict]:
-    """The findings in the shape the Lifecycle item stores its CDI results in."""
+def as_stored(findings: list[dict], *, enforced: bool = True) -> list[dict]:
+    """The findings in the shape the Lifecycle item stores its CDI results in. `enforced` is
+    kept for callers; severity no longer depends on the gate: it depends on what the role does."""
     out = []
     for f in findings:
         d = f.get("data") or {}
+        owns = any(is_error_use(k) for k in (d.get("kinds") or [u.get("kind", "") for u in d.get("uses", [])]))
         out.append({
             "check": ROLE_CHECK_ID, "check_id": ROLE_CHECK_ID, "check_name": ROLE_CHECK_NAME,
             "detail": f["message"], "finding": f["message"], "fix": f.get("fix", ""),
             "proposed_fix": f.get("fix", ""), "current_text": d.get("role", ""), "find": d.get("role", ""),
-            "anchor": f.get("where", ""), "fixable": "manual" if d.get("group") else "choice",
-            "rule": ROLE_RULE, "severity": "error" if enforced else "warning",
+            "anchor": f.get("where", ""),
+            "fixable": "manual" if (d.get("group") or d.get("kind") == "missing-owner") else "choice",
+            "rule": ROLE_RULE, "severity": "error" if owns else "warning",
             "role": d.get("role", ""), "uses": d.get("uses", []),
         })
     return out
@@ -70,7 +84,6 @@ async def with_role_problems(status: str, failures_json: str, file_bytes: bytes,
     if status == "Error" or not (filename or "").lower().endswith(".docx"):
         return status, failures_json
     try:
-        from doc_standards import gate
         findings = await role_findings(file_bytes, filename)
         if not findings:
             return status, failures_json
@@ -79,9 +92,9 @@ async def with_role_problems(status: str, failures_json: str, file_bytes: bytes,
         except ValueError:
             existing = []
         existing = [e for e in existing if (e.get("check_id") or e.get("check")) != ROLE_CHECK_ID]
-        enforced = gate.mode() == "enforce"
-        merged = existing + as_stored(findings, enforced=enforced)
-        if enforced and status == "Passed":
+        stored = as_stored(findings)
+        merged = existing + stored
+        if status == "Passed" and any(s["severity"] == "error" for s in stored):
             status = "Failed"
         return status, json.dumps(merged)
     except Exception as exc:

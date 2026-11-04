@@ -45,6 +45,7 @@ from lifecycle.merge import MergeError, merge, scan_markers
 from lifecycle.schemas import CdtCoverFacts, MergeContext, RevisionHistoryEntry, StandardEntry
 from lifecycle.templates import InvalidTemplateError, TemplateNotFoundError, load_master_template
 from doc_standards import gate as standard_gate
+from doc_standards.role_check import is_error_use
 from lifecycle import document_file, versioning
 
 logger = logging.getLogger(__name__)
@@ -3528,6 +3529,8 @@ async def cdi_fix_plan(
             })
 
         findings.extend(role_findings)
+        if is_docx:
+            findings.extend(await _control_findings_for_fix_plan({**doc, "id": item_id}))
 
         return {
             "document_id": item_id,
@@ -3548,6 +3551,49 @@ async def cdi_fix_plan(
         raise
     except Exception as exc:
         _handle_error(exc, f"cdi-fix plan {item_id}")
+
+
+# The control checks whose result decides what OrgOS can read from the document downstream:
+# the controls the Control Register and the Extraction Review are built from, the evidence
+# obligations, and the Standards Map. They are shown in Fix CDI beside the other issues, one row
+# per control, as WARNINGS: an author has to write the missing text (OrgOS cannot invent a risk
+# statement), and a control left incomplete is held back for a human in Extraction Review rather
+# than entering the registers wrongly. A role problem, which routes work to nobody, is the error.
+_CONTROL_CHECKS = {
+    "V08": "Each control states every field of the control record",
+    "V09": "Every evidence reference is a Record ID",
+    "V10": "Every control has a risk statement",
+    "V11": "No control duplicates or changes another document's control",
+    "V22": "Every control states its standards mapping",
+}
+_MAX_CONTROL_ROWS = 300
+
+
+async def _control_findings_for_fix_plan(doc: dict) -> list[dict]:
+    """The control problems of this document, one row per control, for the Fix CDI list. Needs the
+    library (to tell the controls a document defines from those it only restates), so it is empty
+    until the library has been read. Never raises."""
+    try:
+        evaluation = await standard_gate.evaluate_item(doc)
+        if not evaluation.get("available"):
+            return []
+        results = {r["id"]: r for r in evaluation["report"]["results"]}
+    except Exception as exc:
+        logger.warning(f"Control findings for the fix plan of {doc.get('id')} skipped: {exc}")
+        return []
+    out: list[dict] = []
+    for check_id, name in _CONTROL_CHECKS.items():
+        for n, f in enumerate((results.get(check_id) or {}).get("findings", [])):
+            where = f.get("where", "")
+            out.append({
+                "fix_id": f"{check_id}-ctl-{n}", "check_id": check_id, "check_name": name,
+                "finding": f"{where}: {f['message']}" if where else f["message"], "anchor": where,
+                "find": "", "replace": "", "proposed_fix": f.get("fix", "") or "Add it to the control, in the document.",
+                "needs_choice": False, "choices": [], "fixable": "manual", "confidence": 0,
+                "locate_status": "unknown", "occurrences": 0, "contexts": [], "can_apply": False,
+                "insert": None, "rule": f"CDI {check_id}: {name}.", "severity": "warning",
+            })
+    return out[:_MAX_CONTROL_ROWS]
 
 
 _ROLE_RULE = ("Every role a document names must be a role in Org Roles: a control's Control owner, the "
@@ -3578,6 +3624,19 @@ async def _role_findings_for_fix_plan(doc: dict) -> list[dict]:
     out = []
     for n, f in enumerate((v07 or {}).get("findings", [])):
         d = f.get("data") or {}
+        if d.get("kind") == "missing-owner":
+            # One row per control: the author names the owner in the document (OrgOS cannot choose it).
+            for m, use in enumerate(d.get("uses") or []):
+                out.append({
+                    "fix_id": f"V07-owner-{n}-{m}", "check_id": "V07", "check_name": "Every control has a Control owner",
+                    "finding": f"{use['where']}: names no Control owner.", "anchor": use["where"],
+                    "find": "", "replace": "", "proposed_fix": f.get("fix", ""), "needs_choice": False,
+                    "choices": [], "fixable": "manual", "confidence": 0, "locate_status": "unknown",
+                    "occurrences": 0, "contexts": [], "can_apply": False, "insert": None,
+                    "rule": "A control has exactly one Control owner, a role in Org Roles. (CDI V07.)",
+                    "severity": "error",
+                })
+            continue
         if d.get("kind") != "role":
             continue
         suggested = [s["name"] for s in d.get("suggestions", [])]
@@ -3599,7 +3658,8 @@ async def _role_findings_for_fix_plan(doc: dict) -> list[dict]:
                 "fixable": "choice", "confidence": 0,
                 "locate_status": "located", "occurrences": 1,
                 "contexts": [], "can_apply": not group,
-                "insert": None, "rule": _ROLE_RULE, "severity": "error",
+                "insert": None, "rule": _ROLE_RULE,
+                "severity": "error" if is_error_use(kind) else "warning",
                 "scope_kind": kind, "scope_where": where,
             })
     return out

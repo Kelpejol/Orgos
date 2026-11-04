@@ -368,7 +368,7 @@ CONTROL_FIELD_ALIASES: dict[str, tuple[str, ...]] = {
     ),
     "trigger": (
         "trigger", "trigger and monitoring", "trigger / frequency", "trigger / monitor",
-        "trigger / monitoring", "frequency", "timeline",
+        "trigger / monitoring", "trigger or frequency", "frequency or trigger", "frequency", "timeline",
     ),
     "responsibility": (
         "accountable / executing", "accountable/executing", "accountable and executing",
@@ -390,7 +390,7 @@ CONTROL_FIELD_ALIASES: dict[str, tuple[str, ...]] = {
     "risk": ("risk", "risk statement", "risk treated"),
     "failure_route": ("failure route",),
     "exception_route": ("exception route",),
-    "mapping": ("mapping", "standards mapping"),
+    "mapping": ("mapping", "standards mapping", "standard mapping", "mapping to standards"),
     "authority": ("governing authority", "authority"),
     "clause": ("clause", "clauses", "clause in this procedure", "clauses of this procedure"),
     "title": ("title", "control title", "name"),

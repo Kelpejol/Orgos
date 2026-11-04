@@ -268,13 +268,13 @@ def v03(s: Subject) -> Outcome:
         return Outcome(unknown="The Document Register was not available, so the parent's approval could not be looked up.")
     rows = [(r.get("fields") or {}) for r in s.ctx.register]
     problems = []
+    waiting = []                  # a parent that is not approved YET is a sequence, not a fault in this document
     approved = {"Active", "Under Review"}
     wanted = list(h.parent_codes) or []
     for code in wanted:
         match = [f for f in rows if _base_code(f.get("DocumentCode") or "") == _base_code(code)]
         if not match:
-            problems.append(Finding(f"The parent {code} is not in the Document Register, so it is not approved.",
-                                    "Parent", "Approve the parent first (Policy → Standard → Procedure)."))
+            waiting.append(f"{code} is not in the Document Register yet")
         elif not any((f.get("Status") or "") in approved for f in match):
             problems.append(Finding(f"The parent {code} is in the Register but is {match[0].get('Status')}, not approved.",
                                     "Parent"))
@@ -282,12 +282,16 @@ def v03(s: Subject) -> Outcome:
         title = _norm(re.sub(r"\(.*?\)", "", h.parent_as_written))
         match = [f for f in rows if _norm(f.get("Title") or "") == title]
         if not match:
-            problems.append(Finding(f"The parent “{h.parent_as_written[:80]}” could not be found in the Document Register "
-                                    "by code or title.", "Parent",
-                                    "Cite the parent by its document code."))
+            waiting.append(f"“{h.parent_as_written[:80]}” is not in the Document Register yet")
         elif not any((f.get("Status") or "") in approved for f in match):
             problems.append(Finding(f"The parent “{h.parent_as_written[:80]}” is not approved.", "Parent"))
-    return Outcome(problems=problems, summary="The parent is approved." if not problems else "")
+    note = ""
+    if waiting and not problems:
+        note = ("Approve the parent first (Policy → Standard → Procedure): " + "; ".join(waiting) +
+                ". Nothing in this document needs to change, so this is not a failure; approval will say so.")
+    return Outcome(problems=problems, note=note,
+                   summary=("The parent is approved." if not problems and not waiting
+                            else "The parent is not approved yet." if waiting and not problems else ""))
 
 
 def v04(s: Subject) -> Outcome:
@@ -376,6 +380,21 @@ def v07(s: Subject) -> Outcome:
             "uses": [{"kind": k, "where": w} for k, w in dict.fromkeys(entry["uses"])],
             "spellings": entry["spellings"],
         }))
+    # A Standard always DEFINES its controls, so a control of a Standard that names no Control owner is
+    # held back downstream (Blocked: "names no Control owner") and its evidence goes to nobody. Other
+    # document types may only be restating a control, which needs the library to tell: the control
+    # checks (V08) cover those.
+    if s.type_code == "STD":
+        ownerless = [c.control_id for c in s.parsed.controls
+                     if not (c.responsibility and (c.responsibility.accountable or "").strip())]
+        if ownerless:
+            shown = ", ".join(ownerless[:6]) + (f" +{len(ownerless) - 6} more" if len(ownerless) > 6 else "")
+            problems.append(Finding(
+                f"{len(ownerless)} control(s) name no Control owner ({shown}).", shown,
+                "Add “Control owner: <role>” to each control, naming one role that exists in Org Roles.",
+                {"kind": "missing-owner", "role": "", "kinds": ["Control owner"], "locations": ownerless,
+                 "uses": [{"kind": "Control owner", "where": cid} for cid in ownerless],
+                 "suggestions": [], "spellings": []}))
     note = ""
     if not len(book):
         note = "Org Roles has no roles yet, so every role named is reported. " + note
