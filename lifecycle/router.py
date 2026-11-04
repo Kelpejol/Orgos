@@ -3630,9 +3630,12 @@ async def _role_findings_for_fix_plan(doc: dict) -> list[dict]:
                 out.append({
                     "fix_id": f"V07-owner-{n}-{m}", "check_id": "V07", "check_name": "Every control has a Control owner",
                     "finding": f"{use['where']}: names no Control owner.", "anchor": use["where"],
-                    "find": "", "replace": "", "proposed_fix": f.get("fix", ""), "needs_choice": False,
-                    "choices": [], "fixable": "manual", "confidence": 0, "locate_status": "unknown",
-                    "occurrences": 0, "contexts": [], "can_apply": False, "insert": None,
+                    "find": "", "replace": "",
+                    "proposed_fix": "Choose the role that owns this control: OrgOS adds it to the control in the document.",
+                    "needs_choice": True, "choices": list(names), "fixable": "choice", "confidence": 0,
+                    "locate_status": "located", "occurrences": 1,
+                    "contexts": [], "can_apply": True, "insert": None,
+                    "scope_kind": "Control owner", "scope_where": use["where"],
                     "rule": "A control has exactly one Control owner, a role in Org Roles. (CDI V07.)",
                     "severity": "error",
                 })
@@ -3673,7 +3676,7 @@ def _apply_role_fixes(file_bytes: bytes, role_fixes: list, book,
     others still go ahead. Returns (bytes, outcomes, cover_changed)."""
     from agents.cdi_checker.fixer import FixOutcome
     from doc_standards import roles as role_matching
-    from doc_standards.role_fix import RoleFixError, Scope, replace_role
+    from doc_standards.role_fix import RoleFixError, Scope, replace_role, set_control_owner
     outcomes, cover_changed = [], False
     for f in role_fixes:
         target = book.find(f.replace)
@@ -3683,6 +3686,13 @@ def _apply_role_fixes(file_bytes: bytes, role_fixes: list, book,
             continue
         scope = Scope(f.scope_kind, f.scope_where) if f.scope_kind else None
         try:
+            if not f.find and f.scope_kind == "Control owner" and f.scope_where:
+                # The control names NO owner: add one (a column or a row) and prove it by reading it back.
+                fix = set_control_owner(file_bytes, f.scope_where, target.name)
+                file_bytes = fix.data
+                outcomes.append(FixOutcome(f.fix_id, "V07", "applied", ", ".join(fix.places),
+                                           before="", after=target.name, changed_texts=[target.name]))
+                continue
             fix = replace_role(file_bytes, f.find, target.name, scope=scope)
         except RoleFixError as exc:
             outcomes.append(FixOutcome(f.fix_id, "V07", "verify_failed", str(exc)))

@@ -317,3 +317,130 @@ def _fix_table(table: Table, ed: _Editor, scope: Optional[Scope]) -> None:
                 if _wants(scope, k):
                     for p in cells[1].paragraphs:
                         ed.labelled_line(p, _COVER_LABELS[k], lambda lbl: f"the “{lbl}” part of the approval row")
+
+
+# ── giving a control that names NO owner one ────────────────────────────────
+
+def set_control_owner(data: bytes, control_id: str, role: str) -> RoleFix:
+    """
+    Add "Control owner: <role>" to a control that states no owner at all. `role` must already be
+    the exact name of a role in Org Roles (the caller checks).
+
+    Where it goes depends on how the document lays its controls out:
+      a control TABLE (one row per control)     a "Control owner" column, created if the table has none
+      a control block table (Field | Entry)     a "Control owner" row
+    Any other layout is refused: the author adds the line in Word.
+
+    The edit proves itself: re-reading the new file must give that control exactly this owner, every
+    control's other fields exactly as before, and every existing paragraph exactly as before with
+    only the new column or row's own text added.
+    """
+    from collections import Counter
+
+    from cdi.parser import parse_document
+
+    role = " ".join((role or "").split())
+    if not role or not is_control_id(control_id or ""):
+        raise RoleFixError("A control and a role are needed.")
+    doc = Document(io.BytesIO(data))
+    held = [p._p for p in _all_paragraphs(doc)]                 # keep elements alive for the whole edit
+    before_texts = Counter(Paragraph(el, doc).text for el in held)
+
+    done = False
+    for block, current in _walk(doc):
+        if not isinstance(block, Table) or not block.rows:
+            continue
+        if _set_in_row_table(block, control_id, role) or _set_in_block_table(block, current, control_id, role):
+            done = True
+            break
+    if not done:
+        raise RoleFixError(f"{control_id} could not be given an owner here: its layout is not a control table or a "
+                           "Field | Entry block. Add “Control owner: <role>” to it in Word.")
+
+    after_texts = Counter(p.text for p in _all_paragraphs(doc))
+    before_texts.pop("", None)             # an empty owner cell is filled: blank paragraphs do not count
+    after_texts.pop("", None)
+    if before_texts - after_texts:
+        raise RoleFixError("The change would have altered existing text, so it was not made.")
+    added = after_texts - before_texts
+    if any(t.strip() and t.strip() not in (role, CONTROL_OWNER) for t in added):
+        raise RoleFixError("The change would have added more than the owner, so it was not made.")
+
+    out = io.BytesIO()
+    doc.save(out)
+    new = out.getvalue()
+    # Proof by reading it back, as OrgOS will.
+    old_doc, new_doc = parse_document(data, "before.docx"), parse_document(new, "after.docx")
+    old_by, new_by = {c.control_id: c for c in old_doc.controls}, {c.control_id: c for c in new_doc.controls}
+    if set(old_by) != set(new_by):
+        raise RoleFixError("The change would have altered which controls the document states, so it was not made.")
+    got = new_by[control_id].responsibility
+    if not got or role_norm(got.accountable or "") != role_norm(role):
+        raise RoleFixError(f"After the change {control_id} still would not read as owned by “{role}”, so it was not made.")
+    same = ("requirement", "trigger", "risk", "evidence_as_written", "failure_route", "exception_route", "mapping_as_written")
+    for cid, c in old_by.items():
+        for attr in same:
+            if getattr(c, attr, None) != getattr(new_by[cid], attr, None):
+                raise RoleFixError(f"The change would have altered {cid}'s {attr}, so it was not made.")
+        if cid != control_id and (c.responsibility and c.responsibility.accountable) != \
+                (new_by[cid].responsibility and new_by[cid].responsibility.accountable):
+            raise RoleFixError(f"The change would have altered {cid}'s owner, so it was not made.")
+    return RoleFix(data=new, count=1, places=[f"{control_id} Control owner"])
+
+
+def _owner_column(head: list[str]) -> Optional[int]:
+    return next((i for i, h in enumerate(head) if h and control_field(h, allow_keywords=True) == "control_owner"), None)
+
+
+def _set_in_row_table(table: Table, control_id: str, role: str) -> bool:
+    rows = table.rows
+    head = [c.text.strip() for c in rows[0].cells]
+    if not head or field_norm(head[0]) not in {"id", "control id", "ref", "control ref", "control", "id and requirement"}:
+        return False
+    row = next((r for r in rows[1:] if r.cells and find_control_ids(r.cells[0].text)[:1] == [control_id]), None)
+    if row is None:
+        return False
+    col = _owner_column(head)
+    if col is None:
+        if any(control_field(h, allow_keywords=True) in _CONTROL_ROLE_KEYS for h in head if h):
+            return False                      # an Accountable / Executing column exists: that is replace_role's job
+        width = table.rows[0].cells[-1].width
+        table.add_column(width if width else 914400)
+        col = len(table.columns) - 1
+        rows[0].cells[col].text = CONTROL_OWNER
+        # the header's formatting follows its neighbour
+        _copy_run_format(rows[0].cells[col - 1], rows[0].cells[col])
+    cell = row.cells[col]
+    if cell.text.strip():
+        return False
+    cell.text = role
+    if col > 0:
+        _copy_run_format(row.cells[col - 1], cell)
+    return True
+
+
+def _set_in_block_table(table: Table, current: Optional[str], control_id: str, role: str) -> bool:
+    import copy
+    rows = table.rows
+    if current != control_id or not rows or len(rows[0].cells) != 2:
+        return False
+    if field_norm(rows[0].cells[0].text) != "field":
+        return False
+    if any(control_field(r.cells[0].text) in ("control_owner", "accountable", "responsibility") for r in rows):
+        return False
+    new_tr = copy.deepcopy(rows[-1]._tr)
+    rows[-1]._tr.addnext(new_tr)
+    new_row = table.rows[len(rows)]
+    new_row.cells[0].text = CONTROL_OWNER
+    new_row.cells[1].text = role
+    return True
+
+
+def _copy_run_format(src: _Cell, dst: _Cell) -> None:
+    """Give the first run of `dst` the font of the first run of `src` (size, bold, name)."""
+    try:
+        s = next(r for p in src.paragraphs for r in p.runs)
+        d = next(r for p in dst.paragraphs for r in p.runs)
+        d.font.size, d.font.name, d.font.bold = s.font.size, s.font.name, s.font.bold
+    except StopIteration:
+        pass

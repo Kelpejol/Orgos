@@ -215,7 +215,8 @@ function FixCard({ f, decision, onChange, onSameForAll }) {
             <button type="button" onClick={() => onSameForAll(replace)}
               style={{ marginTop: 8, marginRight: 8, padding: "5px 10px", fontSize: 11.5, fontWeight: 600, borderRadius: 6,
                 cursor: "pointer", border: "1.5px solid #C0C0C0", background: "transparent", color: "var(--color-text-primary)" }}>
-              Use “{replace}” everywhere “{f.find}” is used
+              {f.find ? <>Use “{replace}” everywhere “{f.find}” is used</>
+                      : <>Use “{replace}” for every control that names no owner</>}
             </button>
           )}
 
@@ -228,7 +229,7 @@ function FixCard({ f, decision, onChange, onSameForAll }) {
               }}
               style={{ marginTop: 8, padding: "5px 10px", fontSize: 11.5, fontWeight: 600, borderRadius: 6, cursor: "pointer",
                 border: "1.5px solid #C0C0C0", background: "transparent", color: "var(--color-text-primary)" }}>
-              Create role “{f.find}” in Org Roles
+              {f.find ? <>Create role “{f.find}” in Org Roles</> : <>Create a role in Org Roles</>}
             </button>
           )}
 
