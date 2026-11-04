@@ -36,3 +36,11 @@ def test_a_prose_mention_of_roles_is_not_a_section():
 ])
 def test_the_labels_documents_really_use_for_a_controls_fields_are_read(label, field):
     assert control_field(label) == field
+
+
+def test_a_code_cited_far_down_is_not_taken_as_the_documents_own():
+    from agents.cdi_checker.service import check_01_document_code
+    cited = "Context Policy\n" + ("Some text. " * 300) + "\nParent: DRG-ISMS-POL-ACCESS"
+    assert check_01_document_code(cited, "")["result"] == "FAIL"
+    own = "Context Policy\nDocument code: DRG-QI-POL-CIP\n" + ("Some text. " * 300)
+    assert check_01_document_code(own, "")["result"] == "PASS"

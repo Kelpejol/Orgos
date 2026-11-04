@@ -448,6 +448,9 @@ def _has_section_heading(text: str, keyword: str) -> bool:
     return bool(pattern.search(text))
 
 
+_OWN_CODE_WINDOW = 1500          # characters from the start of the text that count as the header block
+
+
 def check_01_document_code(text: str, doc_code: str) -> dict:
     """
     CDI-01: Document code present and in correct format.
@@ -459,7 +462,9 @@ def check_01_document_code(text: str, doc_code: str) -> dict:
     """
     code = (doc_code or "").strip()
     if not code:
-        recovered = find_doc_code_in_text(text)
+        # Only the opening (the header block): a code further down is usually ANOTHER document's,
+        # cited as a parent or a related procedure, and taking it passed a document with no code of its own.
+        recovered = find_doc_code_in_text(text[:_OWN_CODE_WINDOW])
         if recovered:
             result = _pass("CDI-01", "Document code format")
             result["note"] = (
