@@ -2,9 +2,8 @@
 # tests/doc_standards/test_role_check_on_entry.py — wrong roles are flagged when a file arrives
 #
 # The role check runs on every file change and its problems are stored beside the CDI
-# result. A role that OWNS something (a Control owner, the Document owner, an approver) is an
-# error: the card is Failed until it is fixed. A role only named in the Roles table is a
-# warning. Neither depends on the gate mode. If Org Roles can't be read, nothing is added.
+# result. EVERY role problem is an error: the card is Failed until it is fixed, whatever the
+# gate mode. If Org Roles can't be read, nothing is added.
 # =============================================================================
 
 import json
@@ -18,7 +17,7 @@ GROUPS = [{"id": "g1", "name": "Information Security Officer", "aliases": []}]
 
 def doc(owner="Accountable Department Head"):
     b = DocBuilder()
-    b.control_block(title="T", code="DRG-ISMS-STD-TST", layer="Layer 3 Standard", domain="d",
+    b.control_block(title="T", code="DRG-ISMS-PRO-TST", layer="Layer 4 Procedure", domain="d",
                     owner="Information Security Officer", classification="c")
     b.control("TST-01", "One", requirement="R.", trigger="T.")
     b.para(f"Control owner: {owner}.")
@@ -49,14 +48,11 @@ def roles_table_doc():
     return b.bytes()
 
 
-async def test_a_role_only_described_in_the_roles_table_is_a_warning():
+async def test_a_role_only_named_in_the_roles_table_is_an_error_too():
     from doc_standards import role_check
     rows = role_check.as_stored([{"message": "x", "fix": "", "where": "roles section",
                                   "data": {"role": "All staff", "kinds": ["Roles section"], "uses": []}}])
-    assert rows[0]["severity"] == "warning"
-    owns = role_check.as_stored([{"message": "x", "fix": "", "where": "cover",
-                                  "data": {"role": "X", "kinds": ["Roles section", "Final approval"], "uses": []}}])
-    assert owns[0]["severity"] == "error"
+    assert rows[0]["severity"] == "error"
 
 
 async def test_a_document_whose_roles_all_exist_adds_nothing():
@@ -87,10 +83,24 @@ def ownerless(code="DRG-ISMS-STD-TST", layer="Layer 3 Standard"):
 
 async def test_a_standard_whose_controls_name_no_owner_is_failed_with_one_row_per_control():
     status, failures = await run("advisory", data=ownerless())
-    rows = json.loads(failures)
+    rows = [r for r in json.loads(failures) if r["check_id"] == "V07"]
     assert status == "Failed" and len(rows) == 1
     assert rows[0]["severity"] == "error" and rows[0]["fixable"] == "manual"
     assert [u["where"] for u in rows[0]["uses"]] == ["TST-01", "TST-02"]
+
+
+async def test_a_standards_incomplete_controls_block_the_card_one_row_per_check():
+    status, failures = await run("off", data=ownerless())
+    rows = {r["check_id"]: r for r in json.loads(failures)}
+    assert status == "Failed"
+    assert {"V08", "V22"} <= set(rows) and all(rows[c]["severity"] == "error" for c in ("V08", "V22"))
+    assert [u["where"] for u in rows["V22"]["uses"]] == ["TST-01", "TST-02"]
+
+
+async def test_a_procedures_control_problems_do_not_block_the_card():
+    # it may only be restating a Standard's control: Fix CDI lists them as warnings once the library is known
+    status, failures = await run("off", data=ownerless("DRG-ISMS-PRO-TST", "Layer 4 Procedure"))
+    assert (status, failures) == ("Passed", "")
 
 
 async def test_a_procedure_is_not_failed_for_it_because_it_may_only_restate_the_control():

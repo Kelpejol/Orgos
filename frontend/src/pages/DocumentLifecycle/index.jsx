@@ -1159,7 +1159,9 @@ const LifecycleCard = ({
           <span>
             CDI check: <strong>{uploadCdiResult.status}</strong>
             {uploadCdiResult.status === "Failed" && ` — ${uploadCdiResult.failCount} to fix${uploadCdiResult.warnCount ? `, ${uploadCdiResult.warnCount} warning${uploadCdiResult.warnCount !== 1 ? "s" : ""}` : ""}`}
-            {uploadCdiResult.status === "Passed" && " — document meets all CDI standards"}
+            {uploadCdiResult.status === "Passed" && (uploadCdiResult.warnCount
+              ? ` — ${uploadCdiResult.warnCount} warning${uploadCdiResult.warnCount !== 1 ? "s" : ""}, not blocking`
+              : " — document meets all CDI standards")}
             {uploadCdiResult.status === "Error"  && ` — ${uploadCdiResult.errorDetail || "check could not run"}`}
           </span>
           <span role="button" onClick={() => setUploadCdiResult(null)}

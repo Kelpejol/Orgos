@@ -24,10 +24,10 @@
 >   **per control or cover field** (`doc_standards/role_fix.py`, Fix CDI issues,
 >   "Use this role"), and an Accountable / Executing line is rewritten as "Control owner:".
 > - **Checks.** Officers work from **Fix CDI issues** only. Its list is the old CDI-01..15
->   checker plus what matters downstream from V01–V24: a role that OWNS something (Control
->   owner, Document owner, approvers) not in Org Roles, or a Standard's control with no owner,
->   is an **error** (card Failed) whatever `STANDARD_GATE` says; a role only in the Roles table,
->   and the control checks V08/V09/V10/V11/V22 (one row per control), are **warnings**. The
+>   checker plus what matters downstream from V01–V24: ANY role not in Org Roles (a Control
+>   owner, Document owner, approver, or a Roles table row), or a Standard's control with no
+>   owner, is an **error** (card Failed) whatever `STANDARD_GATE` says; the control checks
+>   V08/V09/V10/V11/V22 (one row per control) are **warnings**. The
 >   Document standard panel (`STANDARD_GATE` = off | advisory | enforce) is for Compliance.
 > - **After acceptance.** Evidence obligations (`evidence/`, `/api/v1/records/*`) are owned by
 >   the Control owner; states are computed (Missing, Late, Stale…), never stored as "Overdue".

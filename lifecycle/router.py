@@ -3454,7 +3454,8 @@ async def cdi_fix_plan(
         if not failures:
             failures = _load_cdi_failures(doc)
         # Role problems are worked out live below, one row per use; never twice.
-        failures = [f for f in failures if (f.get("check_id") or f.get("check")) != "V07"]
+        from doc_standards.role_check import CONTROL_CHECKS as _STORED_CONTROL_CHECKS
+        failures = [f for f in failures if (f.get("check_id") or f.get("check")) not in ("V07", *_STORED_CONTROL_CHECKS)]
         role_findings = await _role_findings_for_fix_plan({**doc, "id": item_id}) if is_docx else []
 
         if not failures and not role_findings:
@@ -3582,6 +3583,10 @@ async def _control_findings_for_fix_plan(doc: dict) -> list[dict]:
         logger.warning(f"Control findings for the fix plan of {doc.get('id')} skipped: {exc}")
         return []
     out: list[dict] = []
+    # A Standard defines its controls, so for it these block (as the card says); for other documents
+    # they need the library to be sure, so they warn.
+    from doc_standards.role_check import CONTROL_CHECKS as blocking_checks
+    is_standard = (doc.get("DocumentType") or "") == "Standard"
     for check_id, name in _CONTROL_CHECKS.items():
         for n, f in enumerate((results.get(check_id) or {}).get("findings", [])):
             where = f.get("where", "")
@@ -3591,7 +3596,8 @@ async def _control_findings_for_fix_plan(doc: dict) -> list[dict]:
                 "find": "", "replace": "", "proposed_fix": f.get("fix", "") or "Add it to the control, in the document.",
                 "needs_choice": False, "choices": [], "fixable": "manual", "confidence": 0,
                 "locate_status": "unknown", "occurrences": 0, "contexts": [], "can_apply": False,
-                "insert": None, "rule": f"CDI {check_id}: {name}.", "severity": "warning",
+                "insert": None, "rule": f"CDI {check_id}: {name}.",
+                "severity": "error" if (is_standard and check_id in blocking_checks) else "warning",
             })
     return out[:_MAX_CONTROL_ROWS]
 
