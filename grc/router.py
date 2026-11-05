@@ -6,6 +6,7 @@
 # Depends on: grc/service.py, grc/schemas.py, auth/validator.py
 # =============================================================================
 
+import asyncio
 import logging
 from typing import Optional
 
@@ -121,6 +122,15 @@ async def resolve_user_by_email(
             resp    = await _request("GET", url, params=params, context=f"Search user {email}")
             results = resp.get("value", [])
             if not results:
+                try:                                  # a group or distribution-list address (everybody@…)
+                    safe = email.replace("'", "")
+                    g = await _request("GET", f"{settings.graph_base_url}/groups", params={
+                        "$filter": f"mail eq '{safe}'", "$select": "id,displayName,mail"},
+                        context=f"Search group {email}")
+                    results = g.get("value", [])
+                except Exception:
+                    results = []
+            if not results:
                 raise HTTPException(
                     status_code=404,
                     detail=f"No Microsoft 365 account found for '{email}'.",
@@ -147,34 +157,42 @@ async def search_users_endpoint(
     q: str = Query(..., min_length=2),
     user: CurrentUser = Depends(get_current_user),
 ) -> list[dict]:
-    """Prefix search across displayName and mail. Returns up to 8 matches."""
+    """
+    Prefix search across displayName and mail: people first, then mail-enabled groups and
+    distribution lists (everybody@…, a team address). A group is not a user in Microsoft 365,
+    so a search of /users alone never finds its address. Each lookup fails soft on its own
+    (searching groups needs Group.Read.All; without it people still come back).
+    """
     safe_q = q.replace("'", "").strip()
     if not safe_q:
         return []
-    try:
-        from graph.client import _request
-        params = {
-            "$filter": f"startswith(displayName,'{safe_q}') or startswith(mail,'{safe_q}')",
-            "$select": "id,displayName,mail,userPrincipalName,jobTitle",
-            "$top": "8",
-        }
-        resp = await _request(
-            "GET",
-            f"{settings.graph_base_url}/users",
-            params=params,
-            context="search users",
-        )
-        return [
-            {
-                "oid":          r.get("id", ""),
-                "display_name": r.get("displayName", ""),
-                "email":        r.get("mail") or r.get("userPrincipalName", ""),
-                "job_title":    r.get("jobTitle", ""),
-            }
-            for r in resp.get("value", [])
-        ]
-    except Exception:
-        return []
+    from graph.client import _request
+    match = f"startswith(displayName,'{safe_q}') or startswith(mail,'{safe_q}')"
+
+    async def people() -> list[dict]:
+        try:
+            resp = await _request("GET", f"{settings.graph_base_url}/users", params={
+                "$filter": match, "$select": "id,displayName,mail,userPrincipalName,jobTitle", "$top": "8",
+            }, context="search users")
+        except Exception:
+            return []
+        return [{"oid": r.get("id", ""), "display_name": r.get("displayName", ""),
+                 "email": r.get("mail") or r.get("userPrincipalName", ""), "job_title": r.get("jobTitle", ""),
+                 "is_group": False} for r in resp.get("value", [])]
+
+    async def groups() -> list[dict]:
+        try:
+            resp = await _request("GET", f"{settings.graph_base_url}/groups", params={
+                "$filter": match, "$select": "id,displayName,mail,mailEnabled", "$top": "8",
+            }, context="search groups")
+        except Exception:
+            return []
+        return [{"oid": r.get("id", ""), "display_name": r.get("displayName", ""),
+                 "email": r.get("mail") or "", "job_title": "Group address", "is_group": True}
+                for r in resp.get("value", []) if r.get("mail")]
+
+    found_people, found_groups = await asyncio.gather(people(), groups())
+    return (found_people + found_groups)[:12]
 
 
 @router.get(

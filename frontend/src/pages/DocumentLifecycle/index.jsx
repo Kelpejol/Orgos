@@ -2118,9 +2118,17 @@ export default function DocumentLifecycle({ focusDocumentCode = "", onClearFocus
 
   const { oid: currentUserOid } = useCurrentUserRole();
   const { data: docs = [], isLoading, error, refetch } = useLifecycleDocs();
-  const focusedDocs = focusDocumentCode
+  const [search, setSearch] = useState("");
+  const focused = focusDocumentCode
     ? docs.filter(d => d.DocumentCode?.trim().toLowerCase() === focusDocumentCode.trim().toLowerCase())
     : docs;
+  // Every word typed must appear somewhere in the card's code, title, owner, type, department or status.
+  const words = search.toLowerCase().split(/\s+/).filter(Boolean);
+  const focusedDocs = words.length === 0 ? focused : focused.filter(d => {
+    const hay = [d.DocumentCode, d.Title, d.OwnerName, d.DocumentType, d.Department, d.Stage, d.CDIStatus, d.Trigger]
+      .filter(Boolean).join(" ").toLowerCase();
+    return words.every(w => hay.includes(w));
+  });
   const qc = useQueryClient();
 
   const handleReassign = async (id, ownerOid, ownerName) => {
@@ -2185,6 +2193,22 @@ export default function DocumentLifecycle({ focusDocumentCode = "", onClearFocus
         </div>
       )}
 
+      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}>
+        <input
+          type="search" value={search} onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search documents by code, title, owner, type, department or status…"
+          aria-label="Search documents"
+          style={{ flex: 1, maxWidth: 520, padding: "8px 11px", fontSize: 13, borderRadius: 8,
+                   border: "1.5px solid var(--color-border-tertiary)", boxSizing: "border-box",
+                   background: "var(--color-background-primary)", color: "var(--color-text-primary)" }}
+        />
+        {words.length > 0 && (
+          <span style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>
+            {focusedDocs.length} of {focused.length} document{focused.length === 1 ? "" : "s"}
+          </span>
+        )}
+      </div>
+
       {/* Revise existing — pick an Active register document, DINT §5.3.2 */}
       <ReviseDocumentModal
         open={showRevise}
@@ -2240,7 +2264,7 @@ export default function DocumentLifecycle({ focusDocumentCode = "", onClearFocus
                     <div style={{ padding: "20px 12px", textAlign: "center",
                                   border: `1px dashed ${stage.bd}`, borderRadius: 10,
                                   fontSize: 11, color: stage.color, opacity: 0.6 }}>
-                      No documents
+                      {words.length > 0 ? "No matches" : "No documents"}
                     </div>
                   ) : (
                     stageDocs.map(doc => (

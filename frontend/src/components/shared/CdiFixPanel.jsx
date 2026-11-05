@@ -11,6 +11,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import apiClient from "../../api/grcApi.js";
+import SearchSelect from "./SearchSelect.jsx";
 
 // ── palette ─────────────────────────────────────────────────────────────────
 const C = {
@@ -201,13 +202,8 @@ function FixCard({ f, decision, onChange, onSameForAll }) {
 
           {/* choice dropdown */}
           {kind === "choice" && f.choices?.length > 0 && (
-            <select value={replace} onChange={(e) => set({ replace: e.target.value })}
-              style={{ marginTop: 10, width: "100%", padding: "8px 10px", fontSize: 12.5,
-                borderRadius: 8, border: `1.5px solid ${choiceUnset ? C.choice.bd : "var(--color-border-tertiary)"}`,
-                background: "var(--color-background-primary)", color: "var(--color-text-primary)" }}>
-              <option value="">— choose the replacement —</option>
-              {f.choices.map((ch) => <option key={ch} value={ch}>{ch}</option>)}
-            </select>
+            <SearchSelect value={replace} onChange={(v) => set({ replace: v })} options={f.choices}
+              placeholder="Search to choose the replacement…" invalid={choiceUnset} borderColor={C.choice.bd} />
           )}
 
           {/* the same role for every place this wrong role is used */}
