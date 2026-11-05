@@ -434,6 +434,27 @@ function Results({ result, onDone }) {
   );
 }
 
+// ── the officer's choices are kept as she makes them ────────────────────────
+// Leaving the panel (to create a role in Org Roles, say) must not lose what she has chosen.
+// A saved choice is only given back to the same finding: same check, same text to find.
+const draftKey = (docId) => `orgos.cdiFixDraft.${docId}`;
+const signature = (f) => `${f.check_id}|${f.scope_kind || ""}|${f.scope_where || ""}|${f.find || ""}`;
+
+function loadDraft(docId) {
+  try { return JSON.parse(localStorage.getItem(draftKey(docId)) || "{}"); } catch { return {}; }
+}
+function saveDraft(docId, findings, decisions) {
+  try {
+    const bySig = {};
+    findings.forEach((f) => { if (decisions[f.fix_id]) bySig[f.fix_id] = { sig: signature(f), d: decisions[f.fix_id] }; });
+    if (Object.keys(bySig).length) localStorage.setItem(draftKey(docId), JSON.stringify(bySig));
+    else localStorage.removeItem(draftKey(docId));
+  } catch { /* storage unavailable: the choices simply are not kept */ }
+}
+function clearDraft(docId) {
+  try { localStorage.removeItem(draftKey(docId)); } catch { /* nothing kept */ }
+}
+
 // ── main panel ────────────────────────────────────────────────────────────────
 export default function CdiFixPanel({ docId, docCode, onClose }) {
   const qc = useQueryClient();
@@ -443,6 +464,7 @@ export default function CdiFixPanel({ docId, docCode, onClose }) {
   const [decisions, setDecisions] = useState({});   // fix_id -> {action, replace, occurrence_index}
   const [applying, setApplying] = useState(false);
   const [result, setResult] = useState(null);
+  const [restored, setRestored] = useState(0);
 
   useEffect(() => {
     let live = true;
@@ -462,6 +484,14 @@ export default function CdiFixPanel({ docId, docCode, onClose }) {
             };
           }
         });
+        // Give back what was chosen before the panel was left.
+        const saved = loadDraft(docId);
+        let back = 0;
+        (data.findings || []).forEach((f) => {
+          const s = saved[f.fix_id];
+          if (s && s.sig === signature(f)) { init[f.fix_id] = s.d; back += 1; }
+        });
+        setRestored(back);
         setDecisions(init);
       } catch (e) {
         if (live) setError(e?.response?.data?.detail || e.message || "Could not load the fix plan.");
@@ -473,6 +503,12 @@ export default function CdiFixPanel({ docId, docCode, onClose }) {
   }, [docId]);
 
   const findings = plan?.findings || [];
+
+  // Saved as she goes, not when she confirms.
+  useEffect(() => {
+    if (plan && !result) saveDraft(docId, plan.findings || [], decisions);
+  }, [plan, decisions, result, docId]);
+
   const counts = useMemo(() => {
     const c = { auto: 0, choice: 0, insert: 0, structural: 0, manual: 0 };
     findings.forEach((f) => { c[kindOf(f)] = (c[kindOf(f)] || 0) + 1; });
@@ -525,6 +561,7 @@ export default function CdiFixPanel({ docId, docCode, onClose }) {
       const { data } = await apiClient.post(
         `/api/v1/lifecycle/documents/${docId}/cdi-fix/apply`, { fixes: readyFixes });
       setResult(data);
+      clearDraft(docId);
       qc.invalidateQueries({ queryKey: ["lifecycle"] });
     } catch (e) {
       setError(e?.response?.data?.detail || e.message || "Apply failed.");
@@ -556,6 +593,12 @@ export default function CdiFixPanel({ docId, docCode, onClose }) {
               background: "transparent", color: "var(--color-text-tertiary)", cursor: "pointer" }}>×</button>
           </div>
 
+          {plan && !result && (
+            <div style={{ marginTop: 8, fontSize: 11, color: "var(--color-text-tertiary)" }}>
+              Your choices are saved as you make them{restored > 0 ? ` — ${restored} brought back from last time` : ""}.
+              Nothing changes in the document until you apply.
+            </div>
+          )}
           {plan && !result && (
             <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap", fontSize: 11 }}>
               {counts.auto > 0 && <Pill c={C.auto}>{counts.auto} one-click</Pill>}
