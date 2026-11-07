@@ -44,3 +44,21 @@ def test_a_code_cited_far_down_is_not_taken_as_the_documents_own():
     assert check_01_document_code(cited, "")["result"] == "FAIL"
     own = "Context Policy\nDocument code: DRG-QI-POL-CIP\n" + ("Some text. " * 300)
     assert check_01_document_code(own, "")["result"] == "PASS"
+
+
+def test_a_header_table_captioned_control_field_value_is_read():
+    """The Context and Interested Parties Policy opens its block with "Control field | Value"."""
+    from docx import Document
+    import io
+    from cdi.parser import parse_document
+    d = Document()
+    d.add_paragraph("Context and Interested Parties Policy")
+    t = d.add_table(rows=0, cols=2)
+    for a, b in (("Control field", "Value"), ("Document type", "Policy Layer 2"), ("Document code", "DRG-QI-POL-CIP"),
+                 ("Parent", "Master Integrated Management System Policy"), ("Owner", "Compliance Executive (QMS & NDPA)"),
+                 ("Version", "1"), ("Classification", "Internal Use Only")):
+        row = t.add_row().cells; row[0].text, row[1].text = a, b
+    d.add_paragraph("1 Purpose and scope")
+    buf = io.BytesIO(); d.save(buf)
+    header = parse_document(buf.getvalue(), "Context and Interested Parties Policy.docx").header
+    assert header.code == "DRG-QI-POL-CIP"

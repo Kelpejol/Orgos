@@ -307,6 +307,11 @@ def _is_standard_label(label: str) -> bool:
     return bool(_STANDARD_LABEL.match(norm(label)))
 
 
+# The opening row of a control block table: a caption, not a fact.
+_BLOCK_CAPTIONS = ("control block", "control metadata value", "field value", "field detail",
+                   "control field value", "control field detail")
+
+
 def _header_tables(content: DocumentContent) -> list[tuple[str, list[tuple[str, str]]]]:
     """
     Tables that are label/value control blocks, as (source, pairs).
@@ -328,14 +333,14 @@ def _header_tables(content: DocumentContent) -> list[tuple[str, list[tuple[str, 
             continue
         first = _cells(table.rows[0])
         opens_as_block = bool(first) and (
-            norm(" ".join(first)) in ("control block", "control metadata value", "field value", "field detail")
+            norm(" ".join(first)) in _BLOCK_CAPTIONS
             or norm(first[0]) in _HEADER_LABELS
         )
         if not opens_as_block:
             continue
         pairs = []
         non_empty_rows = 0
-        caption = norm(" ".join(first)) in ("control block", "control metadata value", "field value", "field detail")
+        caption = norm(" ".join(first)) in _BLOCK_CAPTIONS
         for r, row in enumerate(table.rows):
             cells = _cells(row)
             if cells and any(cells) and not (r == 0 and caption):    # a caption row is not a fact row

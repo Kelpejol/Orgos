@@ -2652,6 +2652,15 @@ async def _refresh_from_file(item_id: str, fields: dict, data: bytes, filename: 
     update: dict = {}
     changes: list[str] = []
     code = (header.code or "").strip().upper()
+    if not code:
+        # The header was not read as a control block. Look where CDI-01 looks (the opening of the
+        # text), so the card and the check can never disagree about whether the document has a code.
+        try:
+            from agents.cdi_checker.service import _OWN_CODE_WINDOW, extract_text
+            from cdi.codes import find_doc_code_in_text
+            code = (find_doc_code_in_text(extract_text(data, filename)[:_OWN_CODE_WINDOW]) or "").strip().upper()
+        except Exception:
+            code = ""
     old_code = str(fields.get("DocumentCode") or "").strip()
     if code and is_valid_doc_code(code) and code != old_code.upper():
         update["DocumentCode"] = code

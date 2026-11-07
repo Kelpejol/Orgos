@@ -213,3 +213,19 @@ async def test_a_fix_cdi_change_is_saved_over_the_document_s_file(library):
         out = await lr.cdi_fix_apply("42", lr.ApplyCdiFixes(fixes=[fix]), OWNER)
     assert out["applied_count"] == 1 and out["sharepoint_url"] == FILE
     assert [url for url, _ in library.saves] == [FILE] and library.created == []
+
+
+async def test_a_code_the_header_reader_misses_is_still_found_where_cdi_01_looks():
+    """A header table in a layout the parser does not know: the card must still get the file's code."""
+    import io
+    from docx import Document
+    d = Document()
+    d.add_paragraph("Some Policy")
+    t = d.add_table(rows=0, cols=2)
+    for a, b in (("Attribute", "Info"), ("Reference", "DRG-QI-POL-CIP"), ("Colour", "x"), ("Shape", "y"), ("Size", "z")):
+        row = t.add_row().cells; row[0].text, row[1].text = a, b
+    buf = io.BytesIO(); d.save(buf)
+    fields = {"DocumentCode": None, "Title": "Some Policy"}
+    with patch.object(lr, "update_list_item", new=AsyncMock()):
+        changes = await lr._refresh_from_file("42", fields, buf.getvalue(), "Some Policy.docx")
+    assert fields["DocumentCode"] == "DRG-QI-POL-CIP" and any("code" in c for c in changes)
