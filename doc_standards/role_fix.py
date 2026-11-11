@@ -85,11 +85,19 @@ class Scope:
 
 def role_pattern(role: str) -> str:
     """The role as a pattern that matches every spelling the role check treats as the same:
-    any case, any spacing or punctuation between words, and "&", "/" or "and" between them."""
+    any case, any spacing or punctuation between words, "&", "/" or "and" between them, and
+    singular or plural words."""
     words = role_norm(role).split()
     if not words:
         raise RoleFixError("There is no role to look for.")
-    parts = [r"(?:and|&|/)" if w == "and" else re.escape(w) for w in words]
+    # norm reads a plural as its singular, so the document may write either.
+    def word(w: str) -> str:
+        if w == "and":
+            return r"(?:and|&|/)"
+        if w.endswith("y") and len(w) > 2:
+            return re.escape(w[:-1]) + r"(?:y|ies)"
+        return re.escape(w) + r"(?:e?s)?"
+    parts = [word(w) for w in words]
     body = r"[\W_]*".join(parts)
     return rf"(?i:(?<![\w])(?:{body})(?![\w]))"
 

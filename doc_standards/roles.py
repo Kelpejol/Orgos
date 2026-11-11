@@ -31,10 +31,20 @@ PLACEHOLDERS = {"control owner", "document owner", "custodian role", "custodian"
 MIN_SUGGESTION_SCORE = 50
 
 
+def _singular(word: str) -> str:
+    """'leads' → 'lead', 'authorities' → 'authority'; 'business', 'status', 'analysis' stay."""
+    if len(word) > 4 and word.endswith("ies"):
+        return word[:-3] + "y"
+    if len(word) > 3 and word.endswith("s") and not word.endswith(("ss", "us", "is")):
+        return word[:-1]
+    return word
+
+
 def norm(text: str) -> str:
-    """Lower case; '&' and '/' both read as "and"; punctuation and extra space gone."""
+    """Lower case; '&' and '/' both read as "and"; punctuation and extra space gone; a plural
+    reads as its singular, so "Team Leads" and "Team Lead" are the same role."""
     t = (text or "").lower().replace("&", " and ").replace("/", " and ")
-    return " ".join(re.sub(r"[^a-z0-9 ]+", " ", t).split())
+    return " ".join(_singular(w) for w in re.sub(r"[^a-z0-9 ]+", " ", t).split())
 
 
 def _strip_parenthetical(text: str) -> str:
@@ -161,7 +171,8 @@ def is_placeholder(text: str) -> bool:
 
 def describes_a_group(text: str) -> bool:
     """A phrase that describes kinds of roles rather than naming one ("Requester, approver and owner roles")."""
-    t = norm(text)
+    # The plural is the point here ("owner roles", not "owner role"), so read the words as written.
+    t = " ".join(re.sub(r"[^a-z0-9 ]+", " ", (text or "").lower().replace("&", " and ")).split())
     return t.endswith(" roles") or t.endswith(" role holders") or t in {"all staff", "everyone", "all employees", "all users"}
 
 

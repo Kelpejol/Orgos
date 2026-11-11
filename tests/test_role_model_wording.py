@@ -23,13 +23,16 @@ def test_blocked_owner_messages_preserve_status_and_explain_the_document_fix(can
 
 @pytest.mark.parametrize("action,name,found,expected", [
     ("create", " ", None, "Role name is required."),
-    ("create", "Audit Lead", {"id": "other", "name": "Audit Lead"}, "“Audit Lead” is already in Org Roles as Audit Lead."),
+    ("create", "Audit Lead", {"id": "other", "name": "Audit Lead"},
+     "These names can't be used: “Audit Lead” is already in Org Roles as Audit Lead."),
     ("update", " ", None, "Role name cannot be empty."),
-    ("update", "Audit Lead", {"id": "other"}, "A role named 'Audit Lead' already exists."),
+    ("update", "Audit Lead", {"id": "other", "name": "Audit Lead"},
+     "These names can't be used: “Audit Lead” is already in Org Roles as Audit Lead."),
 ])
 async def test_role_validation_errors_keep_their_checks_and_write_nothing(monkeypatch, action, name, found, expected):
     monkeypatch.setattr(groups_service, "get_groups_list_id", AsyncMock(return_value="example-list"))
-    monkeypatch.setattr(groups_service, "find_group_by_name", AsyncMock(return_value=found))
+    monkeypatch.setattr(groups_service, "list_groups",
+                        AsyncMock(return_value=[{"aliases": [], "members": [], **found}] if found else []))
     create, update = AsyncMock(), AsyncMock()
     monkeypatch.setattr(groups_service, "create_list_item", create)
     monkeypatch.setattr(groups_service, "update_list_item", update)
@@ -192,6 +195,37 @@ async def test_an_alias_that_already_means_another_role_or_is_a_field_name_is_re
     monkeypatch.setattr(groups_service, "_has_col", lambda c: True)
     update = AsyncMock()
     monkeypatch.setattr(groups_service, "update_list_item", update)
-    with pytest.raises(ValueError, match="already means ISMS Lead.*field"):
+    with pytest.raises(ValueError, match="already in Org Roles as ISMS Lead.*field"):
         await groups_service.update_group("1", None, None, None, ["isms lead", "Control Owner"])
     update.assert_not_awaited()
+
+
+async def test_an_alias_of_another_role_can_be_moved_to_a_new_role_by_choice(monkeypatch):
+    """Creating "Department Heads" with alias "Team Leads", which Line Manager answers to today."""
+    line = {"id": "1", "name": "Line Manager", "aliases": ["Team Leads", "Line Managers"], "members": []}
+    monkeypatch.setattr(groups_service, "list_groups", AsyncMock(return_value=[line]))
+    monkeypatch.setattr(groups_service, "get_group", AsyncMock(return_value=line))
+    monkeypatch.setattr(groups_service, "get_groups_list_id", AsyncMock(return_value="l"))
+    monkeypatch.setattr(groups_service, "_has_col", lambda c: True)
+    update = AsyncMock()
+    create = AsyncMock(return_value={"id": "9", "fields": {"Title": "Department Heads"}})
+    monkeypatch.setattr(groups_service, "update_list_item", update)
+    monkeypatch.setattr(groups_service, "create_list_item", create)
+
+    with pytest.raises(groups_service.NameClash) as refused:                 # not chosen: refused, nothing written
+        await groups_service.create_group("Department Heads", "", "", [], "", "", aliases=["Team Lead"])
+    assert refused.value.clashes[0]["movable"] and refused.value.clashes[0]["role"] == "Line Manager"
+    update.assert_not_awaited() and create.assert_not_awaited()
+
+    out = await groups_service.create_group("Department Heads", "", "", [], "", "",
+                                            aliases=["Team Lead"], move_aliases=["Team Lead"])
+    assert json.loads(update.await_args.args[3]["Aliases"]) == ["Line Managers"]   # Line Manager lets it go
+    assert out["moved"] == [{"text": "Team Lead", "from": "Line Manager"}]
+
+
+async def test_another_role_s_own_name_can_never_be_moved(monkeypatch):
+    monkeypatch.setattr(groups_service, "list_groups", AsyncMock(return_value=[
+        {"id": "1", "name": "Line Manager", "aliases": [], "members": []}]))
+    with pytest.raises(groups_service.NameClash) as refused:
+        await groups_service.create_group("Line Managers", "", "", [], "", "", move_aliases=["Line Managers"])
+    assert not refused.value.clashes[0]["movable"]

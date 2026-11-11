@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import io
 import json
@@ -27,7 +28,7 @@ from typing import Optional
 
 from config import settings
 from graph import client as gc
-from graph.exceptions import GraphNotFoundError
+from graph.exceptions import GraphAPIError, GraphNotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -116,9 +117,44 @@ async def read(f: DocFile) -> bytes:
     return await gc.download_drive_item(f.drive_id, f.item_id)
 
 
+class FileLocked(Exception):
+    """SharePoint refused the save because the file is checked out or open for editing in Word.
+    The message says which, and what to do."""
+
+
+_LOCK_WAITS = (2.0, 5.0)        # seconds: a lock left by Word closing a moment ago often clears
+
+
 async def save(f: DocFile, data: bytes) -> DocFile:
-    """Save `data` over the file: the same file, one new SharePoint version."""
-    return DocFile.from_item(await gc.replace_drive_item_content(f.drive_id, f.item_id, data))
+    """Save `data` over the file: the same file, one new SharePoint version. A locked file is
+    tried again briefly, then refused with FileLocked; nothing is saved."""
+    for wait in (*_LOCK_WAITS, None):
+        try:
+            return DocFile.from_item(await gc.replace_drive_item_content(f.drive_id, f.item_id, data))
+        except GraphAPIError as exc:
+            if getattr(exc, "status_code", None) != 423:
+                raise
+            if wait is None:
+                raise FileLocked(await why_locked(f)) from exc
+            await asyncio.sleep(wait)
+
+
+async def why_locked(f: DocFile) -> str:
+    """Checked out (someone must check it in) or open in Word (close it, then wait a little)."""
+    name = f.name or "The document"
+    try:
+        meta = await gc.get_drive_item(f.drive_id, f.item_id)
+    except Exception:
+        meta = {}
+    who = ((meta.get("lastModifiedBy") or {}).get("user") or {}).get("displayName", "")
+    when = str(meta.get("lastModifiedDateTime") or "")[:16].replace("T", " ")
+    last = f" It was last saved by {who} at {when} (UTC)." if who and when else ""
+    if (meta.get("publication") or {}).get("level") == "checkout":
+        return (f"“{name}” is checked out in SharePoint, so nothing else can save it. Whoever checked it out "
+                f"must check it in (in the library: select the file, then … → More → Check in).{last}")
+    return (f"“{name}” is open for editing in Word (perhaps through Edit in Word), so SharePoint won't let "
+            f"anything else save it. Close it in Word, wait a minute or two (SharePoint holds the lock briefly "
+            f"after Word closes), then try again.{last}")
 
 
 async def rename(f: DocFile, name: str) -> DocFile:

@@ -229,3 +229,19 @@ async def test_a_code_the_header_reader_misses_is_still_found_where_cdi_01_looks
     with patch.object(lr, "update_list_item", new=AsyncMock()):
         changes = await lr._refresh_from_file("42", fields, buf.getvalue(), "Some Policy.docx")
     assert fields["DocumentCode"] == "DRG-QI-POL-CIP" and any("code" in c for c in changes)
+
+
+# ── a file someone has locked ───────────────────────────────────────────────
+
+async def test_a_fix_on_a_locked_file_changes_nothing_and_says_what_to_do(library):
+    library.add(FILE, policy(body="Owner: Head of Stuff."), "Context Policy.docx")
+    item = Item()
+    stack, _ = run(item)
+    fix = lr.ConfirmedFix(fix_id="f1", check_id="CDI-07", find="Head of Stuff", replace="Head of Things")
+    with stack, patch.object(type(lr.settings), "document_writes_live", property(lambda s: True)), \
+         patch("agents.cdi_checker.service.validate_fix_content", return_value=(True, "")), \
+         patch.object(lr, "_audit_cdi_fixes", new=AsyncMock()), \
+         patch.object(lr.document_file, "save", new=AsyncMock(side_effect=lr.document_file.FileLocked("“x” is open for editing in Word."))):
+        with pytest.raises(Exception) as e:
+            await lr.cdi_fix_apply("42", lr.ApplyCdiFixes(fixes=[fix]), OWNER)
+    assert getattr(e.value, "status_code", None) == 409 and "Nothing was changed" in e.value.detail

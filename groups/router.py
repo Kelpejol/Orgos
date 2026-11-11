@@ -31,7 +31,15 @@ from audit.trail import record
 router = APIRouter(prefix="/api/v1/groups", tags=["Groups"])
 
 
+async def _record_moves(user: CurrentUser, result: dict) -> None:
+    for m in result.get("moved") or []:
+        await record(user, "Role alias moved", f"“{m['text']}” moved from {m['from']} to {result.get('name')}",
+                     item_id=result.get("id", ""), item_type="Org Role")
+
+
 def _handle(exc: Exception, ctx: str):
+    if isinstance(exc, service.NameClash):
+        raise HTTPException(status_code=409, detail={"message": str(exc), "clashes": exc.clashes})
     if isinstance(exc, GroupsListNotProvisioned):
         raise HTTPException(status_code=503, detail=str(exc))
     if isinstance(exc, ValueError):
@@ -56,6 +64,7 @@ class CreateGroup(BaseModel):
     category: Optional[str] = ""
     aliases: Optional[list[str]] = None
     members: Optional[list[Member]] = None
+    move_aliases: Optional[list[str]] = None   # aliases of other roles to move to this one
 
 
 class UpdateGroup(BaseModel):
@@ -63,6 +72,7 @@ class UpdateGroup(BaseModel):
     description: Optional[str] = None
     category: Optional[str] = None
     aliases: Optional[list[str]] = None
+    move_aliases: Optional[list[str]] = None
 
 
 class AddMembers(BaseModel):
@@ -107,7 +117,9 @@ async def create_group(
             creator_oid=user.oid,
             creator_name=user.name or "",
             aliases=body.aliases,
+            move_aliases=body.move_aliases,
         )
+        await _record_moves(user, result)
         await record(user, "Role created", f"{result.get('name')}; aliases: {', '.join(result.get('aliases') or []) or 'none'}",
                      item_id=result.get("id", ""), item_type="Org Role")
         recheck_soon()
@@ -123,8 +135,10 @@ async def update_group(
     user: CurrentUser = Depends(require_compliance_lead),
 ) -> dict:
     try:
-        result = await service.update_group(group_id, body.description, body.category, body.name, body.aliases)
-        changed = {k: v for k, v in body.model_dump().items() if v is not None}
+        result = await service.update_group(group_id, body.description, body.category, body.name, body.aliases,
+                                            move_aliases=body.move_aliases)
+        await _record_moves(user, result)
+        changed = {k: v for k, v in body.model_dump().items() if v is not None and k != "move_aliases"}
         await record(user, "Role changed", f"{result.get('name')}: {changed}", item_id=group_id, item_type="Org Role")
         recheck_soon()
         return result

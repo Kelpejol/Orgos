@@ -992,7 +992,7 @@ const LifecycleCard = ({
       <DocumentViewer doc={doc} onClose={() => setShowViewer(false)} />
     )}
     {showCdiFix && (
-      <CdiFixPanel docId={doc.id} docCode={doc.DocumentCode}
+      <CdiFixPanel docId={doc.id} docCode={doc.DocumentCode} openInWord={editing}
         onClose={() => setShowCdiFix(false)} />
     )}
     {showAmend && (

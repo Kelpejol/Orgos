@@ -116,22 +116,22 @@ async def test_existing_name_and_agreed_alias_are_exact_matches(graph_store):
 
 async def test_mapping_uses_canonical_role_without_creating_variant(graph_store):
     items, calls, add_role, add_user = graph_store
-    role = add_role("Graphics Designer")
+    role = add_role("Graphical Designer")
     add_user()
     person = importer.StaffPerson("Avery Example", "avery@example.test", "Graphic Designer", "Design")
-    plan = await importer.import_staff([person], {"Graphic Designer": ["Graphics Designer"]}, apply=True)
+    plan = await importer.import_staff([person], {"Graphic Designer": ["Graphical Designer"]}, apply=True)
     assert not plan.proposals and not plan.unmatched and not plan.missing_mappings
     assert len(items) == 1 and json.loads(role["fields"]["Members"])[0]["oid"] == "example-oid"
 
 
 async def test_no_fuzzy_adds_or_unreviewed_near_duplicate_creation(graph_store, capsys):
     items, calls, add_role, add_user = graph_store
-    role = add_role("Graphics Designer")
+    role = add_role("Graphical Designer")
     add_user()
     person = importer.StaffPerson("Avery Example", "avery@example.test", "Graphic Designer", "Design")
     plan = await importer.import_staff([person], {}, apply=True)
     assert plan.proposals[0].near and not plan.proposals[0].create
-    assert plan.unmatched[0][0] == "Graphic Designer" and plan.unmatched[0][2] == "Graphics Designer"
+    assert plan.unmatched[0][0] == "Graphic Designer" and plan.unmatched[0][2] == "Graphical Designer"
     assert not plan.additions and not any(method != "GET" for method, _, _ in calls)
     assert json.loads(role["fields"]["Members"]) == []
     assert "Review; no creation" in capsys.readouterr().out
@@ -227,7 +227,7 @@ async def test_combined_title_without_mapping_is_one_role_and_never_split(graph_
 
 async def test_mapping_to_missing_role_is_reported_without_inventing_it(graph_store):
     items, calls, add_role, add_user = graph_store
-    add_role("Graphics Designer")
+    add_role("Graphical Designer")
     add_user()
     person = importer.StaffPerson("Avery Example", "avery@example.test", "Graphic Designer", "Design")
     plan = await importer.import_staff([person], {"Graphic Designer": ["Nonexistent Target"]}, apply=True)
@@ -237,10 +237,10 @@ async def test_mapping_to_missing_role_is_reported_without_inventing_it(graph_st
 
 async def test_mapping_keys_require_verbatim_register_title(graph_store):
     items, calls, add_role, add_user = graph_store
-    add_role("Graphics Designer")
+    add_role("Graphical Designer")
     add_user()
     person = importer.StaffPerson("Avery Example", "avery@example.test", "Graphic Designer ", "Design")
-    plan = await importer.import_staff([person], {"Graphic Designer": ["Graphics Designer"]})
+    plan = await importer.import_staff([person], {"Graphic Designer": ["Graphical Designer"]})
     assert plan.unmatched and not plan.additions
 
 

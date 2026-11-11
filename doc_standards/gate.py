@@ -141,10 +141,11 @@ def block_message(report: dict, summary: dict) -> str:
         parts.append(f"{cid} {r['name']} ({len(r['findings'])} problem(s))")
     text = "The document does not meet the CDI standard yet. "
     if parts:
-        text += "Blocking: " + "; ".join(parts) + ". "
+        # Only call them blocking when they block: in advisory mode they are warnings.
+        text += ("Blocking: " if summary.get("enforced") else "Still to fix: ") + "; ".join(parts) + ". "
     if summary["undecided_flags"]:
         text += ("Compliance must decide: " + ", ".join(summary["undecided_flags"]) + ". ")
-    return text + "Open “Document standard” on the card to see where and how to fix each."
+    return text + "Each is listed, with where it is, in “Fix CDI issues” on the card (or “Document standard”)."
 
 
 # ── evaluating a file ───────────────────────────────────────────────────────

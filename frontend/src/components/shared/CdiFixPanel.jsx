@@ -456,7 +456,7 @@ function clearDraft(docId) {
 }
 
 // ── main panel ────────────────────────────────────────────────────────────────
-export default function CdiFixPanel({ docId, docCode, onClose }) {
+export default function CdiFixPanel({ docId, docCode, onClose, openInWord = false }) {
   const qc = useQueryClient();
   const [plan, setPlan] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -593,6 +593,13 @@ export default function CdiFixPanel({ docId, docCode, onClose }) {
               background: "transparent", color: "var(--color-text-tertiary)", cursor: "pointer" }}>×</button>
           </div>
 
+          {plan && !result && openInWord && (
+            <div style={{ marginTop: 8, padding: "8px 10px", borderRadius: 8, fontSize: 11.5, lineHeight: 1.5,
+              background: "#FDF3E2", border: "1px solid #F0CE94", color: "#5C3D00" }}>
+              This document is open in Word from this card. While Word has it open, SharePoint won't let these fixes
+              be saved. Close it in Word and click “Done editing — re-check” first; your choices here are kept.
+            </div>
+          )}
           {plan && !result && (
             <div style={{ marginTop: 8, fontSize: 11, color: "var(--color-text-tertiary)" }}>
               Your choices are saved as you make them{restored > 0 ? ` — ${restored} brought back from last time` : ""}.

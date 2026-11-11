@@ -92,7 +92,7 @@ export function TableSkeleton({ rows = 5, cols = 6 }) {
 
 /**
  * Error state with retry button.
- * @param {{ error: Error|string, onRetry?: Function, message?: string }} props
+ * @param {{ error: Error|string, onRetry?: Function, message?: string }} props  (onRetry is kept for callers; the button reloads the page)
  */
 export function ErrorState({ error, onRetry, message }) {
   const displayMessage =
@@ -118,31 +118,31 @@ export function ErrorState({ error, onRetry, message }) {
           fontSize: 12,
           color: "#791F1F",
           opacity: 0.8,
-          marginBottom: onRetry ? 14 : 0,
+          marginBottom: 14,
           maxWidth: 400,
           margin: "0 auto",
         }}
       >
         {displayMessage}
       </div>
-      {onRetry && (
-        <button
-          onClick={onRetry}
-          style={{
-            marginTop: 12,
-            padding: "7px 16px",
-            fontSize: 12,
-            borderRadius: 8,
-            border: "1px solid #F09595",
-            background: "#fff",
-            color: "#791F1F",
-            cursor: "pointer",
-            fontWeight: 500,
-          }}
-        >
-          Retry
-        </button>
-      )}
+      {/* Reload the whole page: a failed request is often an expired sign-in or a backend that has just
+          restarted, which re-running one query does not fix. */}
+      <button
+        onClick={() => window.location.reload()}
+        style={{
+          marginTop: 12,
+          padding: "7px 16px",
+          fontSize: 12,
+          borderRadius: 8,
+          border: "1px solid #F09595",
+          background: "#fff",
+          color: "#791F1F",
+          cursor: "pointer",
+          fontWeight: 500,
+        }}
+      >
+        Reload page
+      </button>
     </div>
   );
 }

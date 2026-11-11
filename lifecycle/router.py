@@ -1101,7 +1101,7 @@ async def approval_impact(
                 if evaluation["gate"]["enforced"]:
                     return blocked(message)
                 impact["warnings"].append(
-                    "Advisory: " + message + " The standard is not being enforced yet, so this does not stop the approval.")
+                    "For your attention (does not stop the approval): " + message)
 
         try:
             revision_of, reg_fields = await _register_entry_for(doc)
@@ -1425,6 +1425,10 @@ async def _finalize_document_approval(
             else:
                 logger.info(f"DOCUMENT_WRITE_MODE=dev — the cover of {item_id} was stamped in memory; "
                             "the SharePoint file was not changed.")
+        except document_file.FileLocked as exc:
+            # Nothing has been written yet: refuse, rather than approve a document whose cover was never
+            # stamped (after approval its file is never changed again).
+            raise HTTPException(status_code=409, detail=f"Not approved: {exc} Nothing was changed.")
         except Exception as exc:
             logger.warning(
                 f"Stamping the cover at approval failed for lifecycle {item_id}; the file is published "
@@ -2918,12 +2922,8 @@ async def _save_file(item_id: str, fields: dict, data: bytes) -> document_file.D
     f = await _item_file(fields)
     try:
         saved = await document_file.save(f, data)
-    except GraphAPIError as exc:
-        if exc.status_code == 423:
-            raise HTTPException(status_code=409, detail=(
-                f"“{f.name}” is locked in SharePoint (checked out, or held open by someone). "
-                "Close it or check it in, then try again."))
-        raise
+    except document_file.FileLocked as exc:
+        raise HTTPException(status_code=409, detail=f"{exc} Nothing was changed.")
     await _remember_file(item_id, saved, fields, data)
     return saved
 

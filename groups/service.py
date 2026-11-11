@@ -57,11 +57,12 @@ _MAX_ALIASES = 6
 
 def _clean_aliases(aliases) -> list[str]:
     """Normalise a list of alias strings: trim, drop blanks/dupes, cap at 6."""
+    from doc_standards.roles import norm
     out: list[str] = []
     seen: set = set()
     for a in (aliases or []):
         s = (a or "").strip()
-        key = s.lower()
+        key = norm(s)
         if s and key not in seen:
             seen.add(key)
             out.append(s)
@@ -247,17 +248,65 @@ async def find_group_by_name(name: str) -> Optional[dict]:
     return None
 
 
+class NameClash(ValueError):
+    """A name or alias another role already answers to. One spelling means one role, or a document
+    that writes it could not say whose control it is. `clashes`: one dict per spelling —
+    {text, role, role_id, kind: "name" | "alias" | "field", movable}. An alias of another role can
+    be moved here (that role stops answering to it); another role's own name cannot."""
+
+    def __init__(self, clashes: list[dict]):
+        self.clashes = clashes
+        super().__init__("These names can't be used: " + "; ".join(c["reason"] for c in clashes) + ".")
+
+
+async def _clashes(group_id: str, texts: list[str]) -> list[dict]:
+    from doc_standards.roles import is_placeholder, norm
+    held: dict[str, tuple[dict, str]] = {}
+    for g in await list_groups():
+        if g["id"] == group_id:
+            continue
+        for a in g.get("aliases", []):
+            if norm(a):
+                held.setdefault(norm(a), (g, "alias"))
+        if norm(g.get("name") or ""):
+            held[norm(g["name"])] = (g, "name")             # a role's own name wins over an alias
+    out = []
+    for t in texts:
+        if not (t or "").strip():
+            continue
+        if is_placeholder(t):
+            out.append({"text": t, "role": "", "role_id": "", "kind": "field", "movable": False,
+                        "reason": f"“{t}” is the name of a field, not a role"})
+        elif norm(t) in held:
+            g, kind = held[norm(t)]
+            out.append({"text": t, "role": g["name"], "role_id": g["id"], "kind": kind, "movable": kind == "alias",
+                        "reason": (f"“{t}” is already in Org Roles as {g['name']}" if kind == "name"
+                                   else f"“{t}” already means {g['name']}")})
+    return out
+
+
 async def _alias_clashes(group_id: str, aliases: list[str]) -> list[str]:
     """Aliases that are already the name or an alias of ANOTHER role, or a field name."""
-    from doc_standards.roles import is_placeholder, norm
-    others = {n: g["name"] for g in await list_groups() if g["id"] != group_id for n in _all_names(g)}
-    clashes = []
-    for a in aliases:
-        if is_placeholder(a):
-            clashes.append(f"“{a}” is the name of a field, not a role")
-        elif norm(a) in others:
-            clashes.append(f"“{a}” already means {others[norm(a)]}")
-    return clashes
+    return [c["reason"] for c in await _clashes(group_id, aliases)]
+
+
+async def _settle_clashes(group_id: str, texts: list[str], move: Optional[list[str]]) -> list[dict]:
+    """Refuse (NameClash) unless every clash is an alias the caller chose to move here; then take
+    those aliases from the roles that held them. Returns the moves made, for the audit log."""
+    from doc_standards.roles import norm
+    moving = {norm(m) for m in (move or [])}
+    clashes = await _clashes(group_id, texts)
+    unsettled = [c for c in clashes if not (c["movable"] and norm(c["text"]) in moving)]
+    if unsettled:
+        raise NameClash(unsettled)
+    lid = await get_groups_list_id()
+    moved = []
+    for c in clashes:
+        other = await get_group(c["role_id"])
+        keep = [a for a in other.get("aliases", []) if norm(a) != norm(c["text"])]
+        await update_list_item(lid, _LIST_NAME, c["role_id"], {"Aliases": json.dumps(keep)})
+        moved.append({"text": c["text"], "from": c["role"]})
+    return moved
 
 
 async def user_in_group(name: str, oid: str) -> bool:
@@ -272,17 +321,11 @@ async def user_in_group(name: str, oid: str) -> bool:
 
 async def create_group(name: str, description: str, category: str,
                        members: list[dict], creator_oid: str, creator_name: str,
-                       aliases: Optional[list[str]] = None) -> dict:
+                       aliases: Optional[list[str]] = None, move_aliases: Optional[list[str]] = None) -> dict:
     name = (name or "").strip()
     if not name:
         raise ValueError("Role name is required.")
-    existing = await find_group_by_name(name)
-    if existing:
-        raise ValueError(f"“{name}” is already in Org Roles as {existing['name']}.")
-    if aliases:
-        clashes = await _alias_clashes("", _clean_aliases(aliases))
-        if clashes:
-            raise ValueError("These aliases can't be used: " + "; ".join(clashes) + ".")
+    moved = await _settle_clashes("", [name, *_clean_aliases(aliases)], move_aliases)
 
     lid = await get_groups_list_id()
     fields = {
@@ -296,34 +339,29 @@ async def create_group(name: str, description: str, category: str,
     }
     if _has_col("Aliases"):
         fields["Aliases"] = json.dumps(_clean_aliases(aliases))
-    return _to_group(await create_list_item(lid, _LIST_NAME, fields))
+    return {**_to_group(await create_list_item(lid, _LIST_NAME, fields)), "moved": moved}
 
 
 async def update_group(group_id: str, description: Optional[str],
                        category: Optional[str], name: Optional[str],
-                       aliases: Optional[list[str]] = None) -> dict:
+                       aliases: Optional[list[str]] = None, move_aliases: Optional[list[str]] = None) -> dict:
     lid = await get_groups_list_id()
     fields: dict = {}
+    if name is not None and not name.strip():
+        raise ValueError("Role name cannot be empty.")
+    moved = await _settle_clashes(group_id, [*([name.strip()] if name is not None else []),
+                                             *(_clean_aliases(aliases) if aliases is not None else [])], move_aliases)
     if name is not None:
-        new_name = name.strip()
-        if not new_name:
-            raise ValueError("Role name cannot be empty.")
-        existing = await find_group_by_name(new_name)
-        if existing and existing["id"] != group_id:
-            raise ValueError(f"A role named '{new_name}' already exists.")
-        fields["Title"] = new_name
+        fields["Title"] = name.strip()
     if description is not None:
         fields["Description"] = description
     if category is not None:
         fields["Category"] = category
     if aliases is not None and _has_col("Aliases"):
-        clashes = await _alias_clashes(group_id, _clean_aliases(aliases))
-        if clashes:
-            raise ValueError("These aliases can't be used: " + "; ".join(clashes) + ".")
         fields["Aliases"] = json.dumps(_clean_aliases(aliases))
     if fields:
         await update_list_item(lid, _LIST_NAME, group_id, fields)
-    return await get_group(group_id)
+    return {**await get_group(group_id), "moved": moved}
 
 
 async def _resolve_member(oid: str, display_name: str, email: str) -> dict:

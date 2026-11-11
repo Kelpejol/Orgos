@@ -37,6 +37,58 @@ function MemberChip({ m, onRemove, roles = [] }) {
   );
 }
 
+// A name or alias another role already answers to. One spelling means one role, so the officer
+// chooses: move it here (the other role stops answering to it) or leave it out. Another role's
+// own name can't be moved: rename this role instead.
+function clashesOf(e) {
+  const d = e?.response?.data?.detail;
+  return e?.response?.status === 409 && d && Array.isArray(d.clashes) ? d.clashes : null;
+}
+
+function ClashChoice({ clashes, choice, setChoice, roleName }) {
+  return (
+    <div role="alert" style={{ marginTop: 10, padding: "12px 14px", borderRadius: 10, fontSize: 12.5, lineHeight: 1.5,
+      background: "#FDF3E2", border: "1px solid #F0CE94", color: "#5C3D00" }}>
+      <div style={{ fontWeight: 700, marginBottom: 6 }}>Some of these names already belong to another role</div>
+      <div style={{ marginBottom: 8 }}>One name can mean only one role, or a document that uses it can't say whose control it is.</div>
+      {clashes.map((c) => (
+        <div key={c.text} style={{ padding: "8px 0", borderTop: "1px solid #F0CE94" }}>
+          <div><b>“{c.text}”</b> {c.kind === "field" ? "is the name of a field, not a role."
+            : c.kind === "name" ? <>is the name of the role <b>{c.role}</b>.</>
+            : <>is an alternative name of <b>{c.role}</b>.</>}</div>
+          {c.movable ? (
+            <div style={{ display: "flex", gap: 14, marginTop: 5, flexWrap: "wrap" }}>
+              <label style={{ cursor: "pointer" }}>
+                <input type="radio" name={`clash-${c.text}`} checked={choice[c.text] === "move"}
+                  onChange={() => setChoice({ ...choice, [c.text]: "move" })} />{" "}
+                Move it to {roleName ? `“${roleName}”` : "this role"}: documents that say it will mean this role, not {c.role}
+              </label>
+              <label style={{ cursor: "pointer" }}>
+                <input type="radio" name={`clash-${c.text}`} checked={choice[c.text] === "drop"}
+                  onChange={() => setChoice({ ...choice, [c.text]: "drop" })} />{" "}
+                Leave it out
+              </label>
+            </div>
+          ) : (
+            <div style={{ marginTop: 4, color: "#8A5A00" }}>
+              {c.kind === "name" ? "Another role's own name can't be moved. Use a different name, or add people to "
+                + c.role + " instead." : "Remove it."}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// What to send after the choice: aliases without those left out, and the ones to move.
+function settle(name, aliasList, clashes, choice) {
+  const left = new Set(clashes.filter((c) => choice[c.text] === "drop").map((c) => c.text.toLowerCase()));
+  const move = clashes.filter((c) => c.movable && choice[c.text] === "move").map((c) => c.text);
+  return { aliases: aliasList.filter((a) => !left.has(a.toLowerCase())), move_aliases: move };
+}
+const unsettled = (clashes, choice) => clashes.some((c) => !c.movable || !choice[c.text]);
+
 function GroupCard({ group, canEdit, owns, rolesByPerson }) {
   const qc = useQueryClient();
   const { notify } = useAlert();
@@ -44,6 +96,8 @@ function GroupCard({ group, canEdit, owns, rolesByPerson }) {
   const [editing, setEditing] = useState(false);
   const [adding, setAdding] = useState(false);
   const [form, setForm] = useState({ name: "", description: "", category: "", aliases: "" });
+  const [clashes, setClashes] = useState(null);
+  const [choice, setChoice] = useState({});
   const refresh = () => { qc.invalidateQueries({ queryKey: ["groups"] }); qc.invalidateQueries({ queryKey: ["group-names"] }); };
 
   const startEdit = () => {
@@ -58,15 +112,18 @@ function GroupCard({ group, canEdit, owns, rolesByPerson }) {
   const saveEdit = async () => {
     if (!form.name.trim()) return;
     setBusy(true);
+    const aliasList = form.aliases.split(",").map((a) => a.trim()).filter(Boolean).slice(0, 6);
+    const extra = clashes ? settle(form.name, aliasList, clashes, choice) : { aliases: aliasList, move_aliases: [] };
     try {
       await groupsApi.update(group.id, {
-        name: form.name.trim(),
-        description: form.description,
-        category: form.category,
-        aliases: form.aliases.split(",").map((a) => a.trim()).filter(Boolean).slice(0, 6),
+        name: form.name.trim(), description: form.description, category: form.category, ...extra,
       });
-      refresh(); setEditing(false);
-    } catch (e) { notify({ tone: "danger", title: "Save failed", message: e.response?.data?.detail || e.message }); }
+      refresh(); setEditing(false); setClashes(null); setChoice({});
+    } catch (e) {
+      const found = clashesOf(e);
+      if (found) { setClashes(found); setChoice({}); }
+      else notify({ tone: "danger", title: "Save failed", message: e.response?.data?.detail?.message || e.response?.data?.detail || e.message });
+    }
     finally { setBusy(false); }
   };
 
@@ -104,11 +161,13 @@ function GroupCard({ group, canEdit, owns, rolesByPerson }) {
           <input value={form.category} onChange={(e) => setForm({ ...form, category: e.target.value })} placeholder="Category" style={editInput} />
           <input value={form.aliases} onChange={(e) => setForm({ ...form, aliases: e.target.value })}
             placeholder="Alternative names, comma-separated (up to 6)" style={editInput} />
-          <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
-            <button onClick={saveEdit} disabled={busy || !form.name.trim()} style={btn(!form.name.trim() ? "#C9CCD1" : "#085041")}>
+          {clashes && <ClashChoice clashes={clashes} choice={choice} setChoice={setChoice} roleName={form.name.trim()} />}
+          <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+            <button onClick={saveEdit} disabled={busy || !form.name.trim() || (clashes && unsettled(clashes, choice))}
+              style={btn(!form.name.trim() || (clashes && unsettled(clashes, choice)) ? "#C9CCD1" : "#085041")}>
               {busy ? "Saving…" : "Save"}
             </button>
-            <button onClick={() => setEditing(false)} style={btn("transparent", "var(--color-text-secondary)", "1.5px solid var(--color-border-tertiary)")}>Cancel</button>
+            <button onClick={() => { setEditing(false); setClashes(null); setChoice({}); }} style={btn("transparent", "var(--color-text-secondary)", "1.5px solid var(--color-border-tertiary)")}>Cancel</button>
           </div>
         </div>
       ) : (
@@ -185,6 +244,8 @@ function CreateGroupForm({ onDone }) {
   const [aliases, setAliases] = useState("");
   const [members, setMembers] = useState([]);
   const [busy, setBusy] = useState(false);
+  const [clashes, setClashes] = useState(null);
+  const [choice, setChoice] = useState({});
 
   const inputStyle = { width: "100%", padding: "8px 10px", fontSize: 13, borderRadius: 8,
     border: "1.5px solid var(--color-border-tertiary)", boxSizing: "border-box",
@@ -196,13 +257,17 @@ function CreateGroupForm({ onDone }) {
     setBusy(true);
     try {
       const aliasList = aliases.split(",").map((a) => a.trim()).filter(Boolean).slice(0, 6);
-      await groupsApi.create({ name: name.trim(), description, category, aliases: aliasList, members });
+      const extra = clashes ? settle(name, aliasList, clashes, choice) : { aliases: aliasList, move_aliases: [] };
+      const made = await groupsApi.create({ name: name.trim(), description, category, members, ...extra });
       qc.invalidateQueries({ queryKey: ["groups"] });
       qc.invalidateQueries({ queryKey: ["group-names"] });
-      notify({ tone: "success", title: "Role created", message: name.trim() });
+      const moved = (made?.moved || []).map((m) => `“${m.text}” moved from ${m.from}`).join("; ");
+      notify({ tone: "success", title: "Role created", message: name.trim() + (moved ? `. ${moved}.` : "") });
       onDone();
     } catch (e) {
-      notify({ tone: "danger", title: "Create failed", message: e.response?.data?.detail || e.message });
+      const found = clashesOf(e);
+      if (found) { setClashes(found); setChoice({}); }
+      else notify({ tone: "danger", title: "Create failed", message: e.response?.data?.detail?.message || e.response?.data?.detail || e.message });
     } finally { setBusy(false); }
   };
 
@@ -211,10 +276,10 @@ function CreateGroupForm({ onDone }) {
       background: "var(--color-background-secondary)" }}>
       <div style={{ fontSize: 13, fontWeight: 700, marginBottom: 10 }}>New role</div>
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="Role name (used in documents, e.g. Compliance Team)" style={inputStyle} />
+        <input value={name} onChange={(e) => { setName(e.target.value); setClashes(null); }} placeholder="Role name (used in documents, e.g. Compliance Team)" style={inputStyle} />
         <input value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Description (optional)" style={inputStyle} />
         <input value={category} onChange={(e) => setCategory(e.target.value)} placeholder="Category (optional, e.g. Compliance, Ops)" style={inputStyle} />
-        <input value={aliases} onChange={(e) => setAliases(e.target.value)}
+        <input value={aliases} onChange={(e) => { setAliases(e.target.value); setClashes(null); }}
           placeholder="Alternative names, comma-separated (up to 6) — e.g. Compliance, Compliance Function" style={inputStyle} />
         <div>
           <div style={{ fontSize: 11, fontWeight: 600, color: "var(--color-text-secondary)", marginBottom: 4 }}>Members</div>
@@ -228,9 +293,10 @@ function CreateGroupForm({ onDone }) {
           <UserSearchField onSelect={addMember} label="Add person" clearAfterSelect placeholder="Add a person to this role…" />
         </div>
       </div>
+      {clashes && <ClashChoice clashes={clashes} choice={choice} setChoice={setChoice} roleName={name.trim()} />}
       <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-        <button onClick={create} disabled={busy || !name.trim()}
-          style={btn(!name.trim() ? "#C9CCD1" : "#085041")}>{busy ? "Creating…" : "Create role"}</button>
+        <button onClick={create} disabled={busy || !name.trim() || (clashes && unsettled(clashes, choice))}
+          style={btn(!name.trim() || (clashes && unsettled(clashes, choice)) ? "#C9CCD1" : "#085041")}>{busy ? "Creating…" : "Create role"}</button>
         <button onClick={onDone} style={btn("transparent", "var(--color-text-secondary)", "1.5px solid var(--color-border-tertiary)")}>Cancel</button>
       </div>
     </div>
