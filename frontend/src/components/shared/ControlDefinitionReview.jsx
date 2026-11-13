@@ -11,7 +11,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useAlert } from "./AlertModal.jsx";
 import apiClient from "../../api/grcApi.js";
 
-const acceptDocument = (document, rationale) =>
+const acceptDocument = (document, rationale = "") =>
   apiClient
     .post("/api/v1/queue/definitions/accept-document", { document, rationale })
     .then((r) => r.data);
@@ -134,7 +134,6 @@ export const DefinitionPanel = ({ item }) => {
 
 export const DocumentBatches = ({ items }) => {
   const [open, setOpen] = useState(null);
-  const [rationale, setRationale] = useState("");
   const [busy, setBusy] = useState(false);
   const { notify } = useAlert();
   const queryClient = useQueryClient();
@@ -153,10 +152,9 @@ export const DocumentBatches = ({ items }) => {
   const accept = async (doc) => {
     setBusy(true);
     try {
-      const r = await acceptDocument(doc, rationale.trim());
+      const r = await acceptDocument(doc);
       notify({ tone: r.failed?.length || r.refused?.length ? "warning" : "success", title: "Controls accepted", message: r.message });
       setOpen(null);
-      setRationale("");
     } catch (err) {
       notify({ tone: "danger", title: "Not accepted", message: err.message || "Could not accept." });
     } finally {
@@ -173,13 +171,13 @@ export const DocumentBatches = ({ items }) => {
         New controls by document
       </div>
       <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginBottom: 8 }}>
-        Read a document's controls below, then accept them together with one rationale. Each is
+        Read a document's controls below, then accept them together. Each is
         still recorded individually. Refused controls stay pending for the document author to revise.
         Changed controls are reviewed one by one.
       </div>
       {groups.map(([doc, list]) => {
         const eligible = list.filter(i => !i.AcceptanceRefusal).length;
-        const cannotAccept = busy || rationale.trim().length < 10 || !eligible;
+        const cannotAccept = busy || !eligible;
         return (
           <div key={doc} style={{ padding: "7px 0", borderTop: "0.5px solid #D4E8FA" }}>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
@@ -189,7 +187,7 @@ export const DocumentBatches = ({ items }) => {
               </span>
               {open !== doc && (
                 <button disabled={!eligible} title={!eligible ? "All controls require a document revision before acceptance" : undefined}
-                  onClick={() => { setOpen(doc); setRationale(""); }}
+                  onClick={() => setOpen(doc)}
                   style={{ padding: "4px 10px", fontSize: 11, borderRadius: 6, cursor: "pointer",
                            border: "1px solid #0C447C", background: "transparent", color: "#0C447C" }}>
                   Accept {eligible} eligible
@@ -199,10 +197,6 @@ export const DocumentBatches = ({ items }) => {
             {list.filter(i => i.AcceptanceRefusal).map(i => <AcceptanceWarning key={i.id} item={i} />)}
             {open === doc && (
               <div style={{ marginTop: 8 }}>
-                <textarea value={rationale} onChange={(e) => setRationale(e.target.value)} rows={2}
-                  placeholder={`Why these ${eligible} controls are right as stated (e.g. "Matches the approved Standard, v06")`}
-                  style={{ width: "100%", fontSize: 12, padding: "8px 10px", borderRadius: 8, boxSizing: "border-box",
-                           border: "1.5px solid #C0C0C0", fontFamily: "var(--font-sans)", resize: "vertical" }} />
                 <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
                   <button disabled={cannotAccept} onClick={() => accept(doc)}
                     style={{ padding: "7px 14px", fontSize: 12, fontWeight: 600, borderRadius: 8, border: "none",

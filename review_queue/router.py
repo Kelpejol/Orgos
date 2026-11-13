@@ -3,7 +3,7 @@
 # Three zone decide endpoints, each with correct decisions and cascade logic.
 #
 # Zone 1 — Extraction Review
-#   Decisions: Accept, Edit and Accept, Reject, Mark False Positive,
+#   Decisions: Accept, Edit and Accept, Reject (the only one that needs a reason),
 #              Request Second Review, Route to Owner
 #   Cascade on Accept: creates Control Register + Record Tracker + Audit Log
 #
@@ -52,6 +52,15 @@ class CascadeError(Exception):
         self.completed = completed
         self.original = original
         super().__init__(f"Cascade failed at step '{step}': {original}")
+
+
+# A reason is asked for only when an item is turned down: accepting a control the document
+# states needs no explanation, and asking for one produced filler text in the audit trail.
+REASON_REQUIRED_FOR = {"Reject"}
+
+
+def _reason_for(decision: str, rationale: str) -> str:
+    return _require_rationale(rationale) if decision in REASON_REQUIRED_FOR else (rationale or "").strip()
 
 
 def _require_rationale(rationale: str) -> str:
@@ -257,7 +266,6 @@ ZONE1_DECISIONS = {
     "Accept",
     "Edit and Accept",
     "Reject",
-    "Mark False Positive",
     "Request Second Review",
     "Route to Owner",
 }
@@ -289,7 +297,7 @@ class Zone1Overrides(BaseModel):
 
 class Zone1DecideBody(Zone1Overrides):
     decision: str
-    rationale: str
+    rationale: str = ""        # required only to reject (see _reason_for)
 
 
 
@@ -577,7 +585,7 @@ async def zone1_decide(
             status_code=422,
             detail=f"Invalid decision for Zone 1. Must be one of: {', '.join(sorted(ZONE1_DECISIONS))}",
         )
-    rationale = _require_rationale(body.rationale)
+    rationale = _reason_for(body.decision, body.rationale)
 
     try:
         item = _sp_to_item(await get_list_item(_q_id(), _Q_LIST, item_id))
@@ -600,7 +608,6 @@ async def zone1_decide(
             "Accept":               "Accepted",
             "Edit and Accept":      "Accepted",
             "Reject":               "Rejected",
-            "Mark False Positive":  "False Positive",
             "Request Second Review":"Pending Second Review",
             "Route to Owner":       "Routed to Owner",
         }
@@ -1223,7 +1230,6 @@ async def _zone1_impact(item: dict, decision: str, impact: dict, overrides: dict
         "Accept":                "Accepted",
         "Edit and Accept":       "Accepted",
         "Reject":                "Rejected",
-        "Mark False Positive":   "False Positive",
         "Request Second Review": "Pending Second Review",
         "Route to Owner":        "Routed to Owner",
     }
@@ -1438,7 +1444,7 @@ async def decision_impact(
 
 class AcceptDocumentBody(BaseModel):
     document:        str                 # SourceDocumentCode as the queue shows it
-    rationale:       str
+    rationale:       str = ""            # optional: accepting needs no reason
     include_changed: bool = False
 
 
@@ -1456,7 +1462,7 @@ async def accept_document_definitions(
     body: AcceptDocumentBody,
     user: CurrentUser = Depends(require_compliance_lead),
 ) -> dict:
-    rationale = _require_rationale(body.rationale)
+    rationale = (body.rationale or "").strip()
     from graph.bulk import run_writes
     from ownership.resolver import get_ownership_index
 
@@ -1490,7 +1496,8 @@ async def accept_document_definitions(
         await update_list_item(_q_id(), _Q_LIST, item["id"], {
             "ReviewStatus":      "Accepted",
             "Decision":          "Accept",
-            "DecisionRationale": f"{rationale} (accepted with all of {body.document})",
+            "DecisionRationale": f"{rationale} (accepted with all of {body.document})" if rationale
+                                 else f"Accepted with all of {body.document}",
             "ReviewedByEntraId": user.oid,
             "CascadeResult":     result[:4000],
         })

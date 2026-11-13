@@ -170,7 +170,7 @@ const ChainPreview = ({ item, edits }) => {
         <div>→ Evidence Tracker — {records.length
           ? `an obligation for ${records.join(", ")}`
           : "no obligation: the control names no record by Record ID"}</div>
-        <div>→ Audit log — your identity, timestamp and rationale</div>
+        <div>→ Audit log — your identity and the time</div>
       </div>
     );
   }
@@ -231,11 +231,10 @@ const EvidencePanel = ({ item }) => {
 // =============================================================================
 
 const DecisionPanel = ({ item, onDecide, onRequestSecondReview, isPending }) => {
-  const [rationale, setRationale]     = useState("");
   const [editMode, setEditMode]       = useState(false);
   const [edits, setEdits]             = useState({});
   const [activeAction, setActiveAction] = useState(null);
-  const [confirmAction, setConfirmAction] = useState(null);   // "accept" | "reject" | "false_positive"
+  const [confirmAction, setConfirmAction] = useState(null);   // "accept" | "reject"
 
   useEffect(() => {
     if (!editMode) return;
@@ -255,11 +254,10 @@ const DecisionPanel = ({ item, onDecide, onRequestSecondReview, isPending }) => 
     }));
   }, [editMode, item]);
 
-  const ratOk = rationale.trim().length >= 10;
-  const cannotAccept = !ratOk || isPending || !!item.AcceptanceRefusal;
+  // A reason is asked for only to reject, in its confirmation; accepting needs none.
+  const cannotAccept = isPending || !!item.AcceptanceRefusal;
 
   const handleAction = async (action) => {
-    if (!ratOk) return;
     if (action === "second_review") {
       setActiveAction(action);
       await onRequestSecondReview();
@@ -271,22 +269,16 @@ const DecisionPanel = ({ item, onDecide, onRequestSecondReview, isPending }) => 
   };
 
   const impactDecision =
-    confirmAction === "accept"
-      ? (editMode ? "Edit and Accept" : "Accept")
-      : confirmAction === "reject"
-        ? "Reject"
-        : "Mark False Positive";
+    confirmAction === "accept" ? (editMode ? "Edit and Accept" : "Accept") : "Reject";
 
   const confirmTitles = {
-    accept:         editMode ? "Edit & accept — cascade impact" : "Accept control — cascade impact",
-    reject:         "Reject item — confirm",
-    false_positive: "Mark false positive — confirm",
+    accept: editMode ? "Edit & accept — cascade impact" : "Accept control — cascade impact",
+    reject: "Reject item — say why",
   };
 
   const handleConfirm = async (confirmedRationale) => {
     const action = confirmAction;
     setConfirmAction(null);
-    setRationale(confirmedRationale);
     setActiveAction(action);
     await onDecide(action, confirmedRationale, editMode ? edits : {});
     setActiveAction(null);
@@ -431,30 +423,6 @@ const DecisionPanel = ({ item, onDecide, onRequestSecondReview, isPending }) => 
         </div>
       )}
 
-      {/* Rationale */}
-      <textarea
-        value={rationale}
-        onChange={e => setRationale(e.target.value)}
-        placeholder="Decision rationale — required (min 10 characters). Explain why you are making this decision. This is your audit trail."
-        rows={3}
-        style={{
-          width: "100%", fontSize: 12, padding: "9px 12px", borderRadius: 8,
-          border: `1.5px solid ${ratOk ? "#5DCAA5" : "#C0C0C0"}`,
-          background: "var(--color-background-primary)",
-          color: "var(--color-text-primary)", resize: "vertical",
-          fontFamily: "var(--font-sans)", marginBottom: 10,
-          boxSizing: "border-box", outline: "none",
-        }}
-        onFocus={e => (e.target.style.borderColor = "#378ADD")}
-        onBlur={e => (e.target.style.borderColor = ratOk ? "#5DCAA5" : "#C0C0C0")}
-      />
-
-      {!ratOk && rationale.length > 0 && (
-        <div style={{ fontSize: 10, color: "#A32D2D", marginBottom: 8 }}>
-          Rationale must be at least 10 characters
-        </div>
-      )}
-
       {/* Decision buttons */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
         <button
@@ -484,33 +452,22 @@ const DecisionPanel = ({ item, onDecide, onRequestSecondReview, isPending }) => 
 
         <button
           onClick={() => handleAction("reject")}
-          disabled={!ratOk || isPending}
+          disabled={isPending}
           style={{ padding: "10px", fontSize: 12, borderRadius: 8, border: "none",
-                   background: !ratOk || isPending ? "#E8E8E8" : "#A32D2D",
-                   color: !ratOk || isPending ? "#999" : "#fff",
-                   cursor: !ratOk || isPending ? "not-allowed" : "pointer", fontWeight: 500 }}
+                   background: isPending ? "#E8E8E8" : "#A32D2D",
+                   color: isPending ? "#999" : "#fff",
+                   cursor: isPending ? "not-allowed" : "pointer", fontWeight: 500 }}
         >
           Reject
         </button>
 
         <button
-          onClick={() => handleAction("false_positive")}
-          disabled={!ratOk || isPending}
-          style={{ padding: "10px", fontSize: 12, borderRadius: 8,
-                   border: "1.5px solid #C0C0C0", background: "transparent",
-                   color: "var(--color-text-secondary)",
-                   cursor: !ratOk || isPending ? "not-allowed" : "pointer" }}
-        >
-          Mark false positive
-        </button>
-
-        <button
           onClick={() => handleAction("second_review")}
-          disabled={!ratOk || isPending}
+          disabled={isPending}
           style={{ padding: "10px", fontSize: 12, borderRadius: 8,
                    border: "1.5px solid #C0C0C0", background: "transparent",
                    color: "var(--color-text-secondary)",
-                   cursor: !ratOk || isPending ? "not-allowed" : "pointer" }}
+                   cursor: isPending ? "not-allowed" : "pointer" }}
         >
           Request 2nd review
         </button>
@@ -524,13 +481,13 @@ const DecisionPanel = ({ item, onDecide, onRequestSecondReview, isPending }) => 
         subtitle={`${item.SourceDocumentCode || "Queue item"}${item.SourceClause ? ` · ${item.SourceClause}` : ""}`}
         impactUrl={`/api/v1/queue/items/${item.id}/impact`}
         impactParams={{ zone: "1", decision: impactDecision, ...(editMode ? edits : {}) }}
-        initialRationale={rationale}
+        requireRationale={confirmAction === "reject" ? 10 : false}
         confirmLabel={
           confirmAction === "accept"
             ? (editMode ? "Edit & accept — apply cascade" : "Accept — apply cascade")
-            : confirmAction === "reject" ? "Reject item" : "Mark false positive"
+            : "Reject item"
         }
-        danger={confirmAction === "reject" || confirmAction === "false_positive"}
+        danger={confirmAction === "reject"}
         isPending={isPending}
         onConfirm={handleConfirm}
       />
@@ -567,7 +524,7 @@ const SecondReviewModal = ({ open, item, onClose, onSubmit, isPending }) => {
           <div>
             <div style={{ fontSize: 16, fontWeight: 700 }}>Request second review</div>
             <div style={{ fontSize: 12, color: "var(--color-text-tertiary)", marginTop: 4 }}>
-              Search for the person who should conduct the second review and add a rationale.
+              Search for the person who should do the second review, and tell them what to look at.
             </div>
           </div>
           <button onClick={onClose} style={{ border: "none", background: "transparent", cursor: "pointer", fontSize: 18, lineHeight: 1 }}>
@@ -600,7 +557,7 @@ const SecondReviewModal = ({ open, item, onClose, onSubmit, isPending }) => {
           />
           {rationale.trim().length > 0 && rationale.trim().length < 10 && (
             <div style={{ marginTop: 6, fontSize: 11, color: "#A32D2D" }}>
-              Rationale must be at least 10 characters.
+              Say a little more (at least 10 characters).
             </div>
           )}
         </div>
@@ -973,8 +930,6 @@ export default function ExtractionReview() {
         });
       } else if (action === "reject") {
         await zone1Api.reject(itemId, rationale, "Reject");
-      } else if (action === "false_positive") {
-        await zone1Api.reject(itemId, rationale, "Mark False Positive");
       }
       qc.invalidateQueries({ queryKey: ["zone1"] });
     } catch (err) {
@@ -1035,7 +990,8 @@ export default function ExtractionReview() {
           { k: "pending",       l: `Pending (${pendingCount})` },
           { k: "accepted",      l: `Accepted (${acceptedCount})` },
           { k: "rejected",      l: `Rejected (${rejectedCount})` },
-          { k: "false_positive", l: `False positive (${falsePositiveCount})` },
+          // "Mark false positive" is withdrawn; items marked before keep a tab while any exist
+          ...(falsePositiveCount > 0 ? [{ k: "false_positive", l: `False positive (${falsePositiveCount})` }] : []),
           { k: "second_review", l: `2nd review (${secondReviewCount})` },
           ...(blockedCount > 0 ? [{ k: "blocked", l: `Cascade failed (${blockedCount})` }] : []),
         ].map(f => (

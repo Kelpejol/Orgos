@@ -249,7 +249,7 @@ async def reassign_control_owner(
 
 class RejectItem(BaseModel):
     rationale:   str
-    reject_type: str = "Reject"  # "Reject" or "Mark False Positive"
+    reject_type: str = "Reject"  # only "Reject" ("Mark False Positive" is withdrawn)
 
 
 class RequestSecondReview(BaseModel):
@@ -369,7 +369,7 @@ async def _mark_queue_cascade_failed(
 
 
 # =============================================================================
-#  Zone 1 — Reject / Mark False Positive
+#  Zone 1 — Reject
 # =============================================================================
 
 @router.post("/api/v1/queue/items/{item_id}/reject")
@@ -378,11 +378,11 @@ async def reject_item(
     body: RejectItem,
     user: CurrentUser = Depends(require_compliance_lead),
 ) -> dict:
-    """Reject a queue item or mark it as a false positive."""
+    """Reject a queue item. A reason is required: it is the one decision that needs one."""
     if len(body.rationale.strip()) < MIN_RATIONALE_CHARS:
-        raise HTTPException(status_code=422, detail=f"Rationale must be at least {MIN_RATIONALE_CHARS} characters.")
+        raise HTTPException(status_code=422, detail=f"Say why it is rejected (at least {MIN_RATIONALE_CHARS} characters).")
 
-    valid = {"Reject", "Mark False Positive"}
+    valid = {"Reject"}   # "Mark False Positive" is withdrawn; items already marked keep their status
     if body.reject_type not in valid:
         raise HTTPException(status_code=422, detail=f"reject_type must be one of: {valid}")
 
