@@ -260,6 +260,12 @@ LISTS: dict[str, dict] = {
             "StakeholderResponseCount":  (NUM,    None),
             "SensitisationDeadline":     (DATE,   None),
             "ReadDocumentUrl":           (TEXT,   None),
+            # Teams approval cards (docs/TEAMS-APPROVAL-CARDS.md): OrgOS writes the first two,
+            # the Power Automate flows the last two
+            "ApproveUrl":                (TEXT,   None),
+            "DecisionSummary":           (TEXT,   None),
+            "TeamsMessageId":            (TEXT,   None),
+            "TeamsCardFor":              (TEXT,   None),
             "ParentDocumentTitle":       (TEXT,   None),
             "ParentDocumentUrl":         (TEXT,   None),
         },

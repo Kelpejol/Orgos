@@ -119,6 +119,8 @@ From then on, a daily job (07:30) keeps evidence obligations in step with the co
 
 Add one flow on the **Evidence Tracker** list: when **State** changes to *Missing, Late, Stale, Rejected* or *Due soon*, notify the holders of **OwnerRole** (and Compliance for Missing/Late).
 
+**Teams approval cards (13 Nov 2026):** a decided document's card is greyed out with what happened, and each approver gets a morning list of what is still waiting. Add the four Document Lifecycle columns (`ApproveUrl`, `DecisionSummary`, `TeamsMessageId`, `TeamsCardFor`) with the provisioning script, then follow **docs/TEAMS-APPROVAL-CARDS.md** (Flow A post, Flow B grey out, Flow C daily list). Until the columns exist OrgOS simply skips writing the decision line; approvals are unaffected.
+
 ---
 
 ## 6. Tidy up existing data

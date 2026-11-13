@@ -326,3 +326,33 @@ async def test_only_the_owner_or_compliance_sets_the_version_and_not_after_appro
     assert isinstance(out, HTTPException) and out.status_code == 403 and env.nothing_written()
     env, out = await _set(_lifecycle_doc(Stage="Approval", ApprovalStatus="Approved"), lr.VersionPlanBody(change_summary=GOOD))
     assert isinstance(out, HTTPException) and out.status_code == 409 and env.nothing_written()
+
+
+# ── the Teams card's "done" line (docs/TEAMS-APPROVAL-CARDS.md) ─────────────
+
+def _decision_lines(env):
+    return [c.args[3]["DecisionSummary"] for c in env.update.call_args_list if "DecisionSummary" in c.args[3]]
+
+
+async def test_an_approval_leaves_a_line_for_the_teams_card():
+    doc = _at_approval(revision(), ApproverEntraId="a", VersionDecision="new", ChangeSummary=GOOD)
+    env, error = await _approve_as_approver(doc, REGISTER)
+    assert error is None and _decision_lines(env)[-1].startswith("Approved by Jane Approver on ")
+    writes = [c.args[3] for c in env.update.call_args_list if c.args[1] == "Document Lifecycle"]
+    line = next(i for i, w in enumerate(writes) if "DecisionSummary" in w)
+    approved = next(i for i, w in enumerate(writes) if w.get("ApprovalStatus") == "Approved")
+    assert line < approved            # the Teams flow reacting to "Approved" always finds the line
+
+
+async def test_the_line_is_never_a_reason_to_fail_an_approval():
+    with patch("lifecycle.router.update_list_item", new=AsyncMock(side_effect=RuntimeError("no such column"))):
+        await lr._note_decision("10", "Approved by X")          # logged, not raised
+
+
+async def test_sending_for_approval_clears_the_old_line_and_gives_the_card_its_link():
+    doc = {**_lifecycle_doc(), "Stage": "Sensitisation", "ApprovalStatus": "", "VersionDecision": "new", "ChangeSummary": GOOD}
+    with patch.object(type(lr.settings), "app_url", property(lambda s: "https://orgos")):
+        env, error = await _send_for_approval(doc, lr.ProgressDoc(current_stage="Sensitisation", approver_id="a"))
+    assert error is None
+    card = [c.args[3] for c in env.update.call_args_list if "ApproveUrl" in c.args[3]]
+    assert card == [{"DecisionSummary": "", "ApproveUrl": "https://orgos/lifecycle/approve/10"}]

@@ -252,6 +252,9 @@ async def _sp_to_doc(item: dict) -> dict:
         "ParentDocumentUrl":        f.get("ParentDocumentUrl", ""),
         # Ready-made read-only link for Teams notifications — see progress_doc().
         "ReadDocumentUrl":          f.get("ReadDocumentUrl", ""),
+        # For the Teams approval cards (docs/TEAMS-APPROVAL-CARDS.md)
+        "ApproveUrl":               f.get("ApproveUrl", ""),
+        "DecisionSummary":          f.get("DecisionSummary", ""),
         # CDT control facts (v06) — absent/blank until the CDTCoverFacts column
         # has been added by an admin (OrgOS cannot create columns itself) and/or
         # until Compliance has entered any cover facts for this document.
@@ -948,6 +951,8 @@ async def progress_doc(
                     f"Approver skipped — document auto-finalised by "
                     f"{finaliser.get('display_name') or user.name} on {date.today().isoformat()}."
                 )
+                await _note_decision(item_id, f"Approved without a separate approver by "
+                                              f"{finaliser.get('display_name') or user.name} on {_day()}")
                 register_item_id, extraction_result = await _finalize_document_approval(
                     item_id,
                     doc,
@@ -1014,6 +1019,17 @@ async def progress_doc(
 
         # ── Critical write — text columns always succeed ───────────────────────
         await update_list_item(_get_list_id(), _LIST_NAME, item_id, fields)
+
+        # ── Best-effort: for the Teams approval card, where "Review & Decide" goes, and no old
+        # decision line (its own write: those columns may not exist yet) ───────────────────────
+        if body.current_stage == "Sensitisation":
+            card = {"DecisionSummary": ""}
+            if settings.app_url:
+                card["ApproveUrl"] = f"{settings.app_url}/lifecycle/approve/{item_id}"
+            try:
+                await update_list_item(_get_list_id(), _LIST_NAME, item_id, card)
+            except Exception as exc:
+                logger.info(f"Lifecycle {item_id}: Teams card link not saved (ApproveUrl/DecisionSummary columns?): {exc}")
 
         # ── Best-effort: Parent Document link, separate write ───────────────────
         # An admin must have added the ParentDocumentTitle/ParentDocumentUrl
@@ -1678,6 +1694,8 @@ async def approve_doc(
         decision, summary = _version_plan_of(doc)
 
         approval_note = f"Approval note: {body.notes}" if body.notes else ""
+        # Written BEFORE the decision, so the Teams flow that greys the card on "Approved" finds it
+        await _note_decision(item_id, f"Approved by {approver_resolved.get('display_name') or user.name} on {_day()}")
         register_item_id, extraction_result = await _finalize_document_approval(
             item_id,
             doc,
@@ -1744,6 +1762,7 @@ async def reject_doc(
             "Revised":         False,          # Owner must re-upload after addressing rejection
             "CDIStatus":       "Pending",      # Reset CDI so re-upload triggers fresh check
         }
+        await _note_decision(item_id, f"Returned to Review by {user.name or 'the approver'} on {_day()}")
         await update_list_item(_get_list_id(), _LIST_NAME, item_id, fields)
         updated = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
         return await _sp_to_doc(updated)
@@ -1787,6 +1806,7 @@ async def recall_doc(
             "Approver":            "",
             "SubmittedForApproval": "",
         }
+        await _note_decision(item_id, f"Recalled by the document owner on {_day()}; no decision needed")
         await update_list_item(_get_list_id(), _LIST_NAME, item_id, fields)
         updated = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
         return await _sp_to_doc(updated)
@@ -1805,6 +1825,25 @@ async def recall_doc(
 #  reverse or edit it." Both actions are open to Compliance OR the document
 #  owner, and both are audit-logged.
 # =============================================================================
+
+# Teams approval cards (docs/TEAMS-APPROVAL-CARDS.md). Power Automate posts a card when a document
+# waits for its approver, and replaces it with a greyed one, without the button, once something
+# happens. OrgOS writes what happened, ready to show: DecisionSummary — just BEFORE the decision
+# itself, so the flow that reacts to the decision always finds the line. Best-effort and a
+# separate write: a missing column must never stop an approval.
+
+def _day(d: Optional[date] = None) -> str:
+    d = d or date.today()
+    return f"{d.day} {d:%b %Y}"
+
+
+async def _note_decision(item_id: str, text: str) -> None:
+    try:
+        await update_list_item(_get_list_id(), _LIST_NAME, item_id, {"DecisionSummary": text[:255]})
+    except Exception as exc:
+        logger.info(f"Lifecycle {item_id}: decision line for the Teams card not saved "
+                    f"(is the DecisionSummary column on the Document Lifecycle list?): {exc}")
+
 
 def _may_correct_approval(doc: dict, user: CurrentUser) -> bool:
     """Compliance/Admin, or the document owner."""
@@ -1871,6 +1910,7 @@ async def change_approver(
         previous = doc.get("ApproverName") or doc.get("ApproverEntraId") or "(none)"
         approver_name = await _resolve_display_name(body.approver_id, body.approver_name or "")
 
+        await _note_decision(item_id, f"Moved to {approver_name or 'another approver'} on {_day()}; no decision needed from you")
         await update_list_item(_get_list_id(), _LIST_NAME, item_id, {
             "ApproverEntraId": body.approver_id,
             "Approver":        approver_name,
@@ -2006,6 +2046,7 @@ async def reverse_approval(
             "ApprovedDate":                "",
             "LinkedDocumentRegisterItem":  "",
         })
+        await _note_decision(item_id, f"Approval reversed by {user.name or 'Compliance'} on {_day()}")
         await _audit_lifecycle_action(
             doc, user, "Approval reversed",
             f"{reason} (register item {register_id or 'n/a'}: {register_outcome}; file: {file_outcome})",
