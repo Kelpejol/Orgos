@@ -216,6 +216,22 @@ def parse_mapping(text: str) -> tuple[list[StandardsRef], list[str]]:
 #  Evidence
 # =============================================================================
 
+def _record_name(text: str) -> str:
+    """
+    The name around a Record ID, without the punctuation that joined them — but a bracket that
+    belongs to the name stays: "Strategic Risk Register entry (ROM-C09)" keeps its ")".
+    """
+    name = re.sub(r"[(\[]\s*[)\]]", " ", text)                 # brackets the Record ID sat in: "(REC-0001)"
+    name = re.sub(r"\s+", " ", name).strip(" .,:;-–")
+    while name.startswith("(") and name.endswith(")") and name.count("(") == 1:
+        name = name[1:-1].strip(" .,:;-–")                     # "(Change log)" → "Change log"
+    while name.endswith(")") and name.count(")") > name.count("("):
+        name = name[:-1].rstrip(" .,:;-–")                     # a stray closing bracket
+    while name.startswith("(") and name.count("(") > name.count(")"):
+        name = name[1:].lstrip(" .,:;-–")                      # a stray opening bracket
+    return name
+
+
 def parse_evidence(text: str) -> list[RecordRef]:
     """
     Parse an Evidence line into record references. A record named without a
@@ -230,8 +246,7 @@ def parse_evidence(text: str) -> list[RecordRef]:
         if not ids:
             refs.append(RecordRef(record_id=None, name=part.strip(" .,"), as_written=part))
         elif len(ids) == 1:
-            name = part.replace(ids[0], " ")
-            name = re.sub(r"\s+", " ", name).strip(" .,:;-–()")
+            name = _record_name(part.replace(ids[0], " "))
             refs.append(RecordRef(record_id=ids[0], name=name, as_written=part))
         else:
             refs.extend(RecordRef(record_id=rid, as_written=part) for rid in ids)

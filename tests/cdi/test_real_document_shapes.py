@@ -62,3 +62,14 @@ def test_a_header_table_captioned_control_field_value_is_read():
     buf = io.BytesIO(); d.save(buf)
     header = parse_document(buf.getvalue(), "Context and Interested Parties Policy.docx").header
     assert header.code == "DRG-QI-POL-CIP"
+
+
+def test_a_bracket_that_belongs_to_a_records_name_is_kept():
+    from cdi.fields import parse_evidence
+    names = lambda text: [(r.record_id, r.name) for r in parse_evidence(text)]
+    assert names("REC-0479 Strategic Risk Register entry, under the Risk Procedure (ROM-C09)") == [
+        ("REC-0479", "Strategic Risk Register entry, under the Risk Procedure (ROM-C09)")]
+    assert names("REC-0277 Internal & External Context Analysis (the issue entry).") == [
+        ("REC-0277", "Internal & External Context Analysis (the issue entry)")]
+    assert names("Change log (REC-0001)") == [("REC-0001", "Change log")]
+    assert names("(REC-0001 Change log)") == [("REC-0001", "Change log")]
