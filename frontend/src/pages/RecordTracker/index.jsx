@@ -16,6 +16,8 @@ import { useAlert } from "../../components/shared/AlertModal.jsx";
 import JobTitleInput from "../../components/shared/JobTitleInput.jsx";
 import OwnerDisplay from "../../components/shared/OwnerDisplay.jsx";
 import apiClient from "../../api/grcApi.js";
+import { DUE, dueForMe, dueState, dueText, formatDay } from "../../components/shared/recordDue.js";
+import { describeEvery } from "../../components/shared/recordSchedule.js";
 
 // =============================================================================
 //  API
@@ -25,11 +27,11 @@ const recordApi = {
   list: (params) =>
     apiClient.get("/api/v1/records", { params }).then(r => r.data),
 
-  submit: async (id, file, notes, recordDate) => {
+  // The record is dated the day it is submitted (the server sets it).
+  submit: async (id, file, notes) => {
     const form = new FormData();
     form.append("file", file);
     if (notes) form.append("submission_notes", notes);
-    if (recordDate) form.append("record_date", recordDate);
 
     const BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
     const resp = await fetch(`${BASE}/api/v1/records/${id}/upload`, {
@@ -46,11 +48,10 @@ const recordApi = {
 
   // A record that lives in another system (Intune, Entra, CPR, GitHub…) is
   // submitted as a link to the artefact's location — no copy uploaded.
-  submitLink: (id, link, notes, recordDate) =>
+  submitLink: (id, link, notes) =>
     apiClient.patch(`/api/v1/records/${id}/submit`, {
       record_link: link,
       submission_notes: notes || undefined,
-      record_date: recordDate || undefined,
     }).then(r => r.data),
 
   verify: (id, accepted, rejectionNote) =>
@@ -106,11 +107,14 @@ const STATE_STYLES = {
 };
 const ATTENTION = new Set(["Missing", "Late", "Stale", "Rejected"]);
 
-const FREQUENCY_PRESETS = [["Monthly", 30], ["Quarterly", 91], ["Six-monthly", 182], ["Annually", 365]];
-
-const describeDays = (days) => {
-  const named = FREQUENCY_PRESETS.find(([, d]) => d === days);
-  return named ? named[0] : `Every ${days} days`;
+// When the record is due, in a few words, for the top of its card.
+const whenLine = (item) => {
+  const state = dueState(item);
+  if (DUE.has(state)) return dueText(item);
+  if (state === "Current" && item.NextDue) return `Next due ${formatDay(item.NextDue)}`;
+  if (state === "Submitted") return "Waiting for Compliance to verify";
+  if (state === "Waiting for an owner") return "Starts when someone holds the role";
+  return "";
 };
 
 const stateOf = (item) => (item.IsObligation ? item.State : item.Status);
@@ -159,25 +163,23 @@ const SubmitPanel = ({ item, onSubmit, onSubmitLink, onClose, isPending }) => {
   // only when OrgOS itself is the record's authoritative home.
   const canUpload = !item.IsObligation || item.MayUpload;
   const [mode,  setMode]  = useState(canUpload ? "file" : "link");   // "file" | "link"
-  const [recordDate, setRecordDate] = useState("");
   const [file,  setFile]  = useState(null);
   const [link,  setLink]  = useState("");
   const [notes, setNotes] = useState("");
   const [error, setError] = useState("");
 
   const linkOk = /^https?:\/\/\S+/i.test(link.trim());
-  const dateOk = !item.IsObligation || (recordDate && recordDate <= todayIso());
-  const ready  = (mode === "file" ? !!file : linkOk) && dateOk;
+  const ready  = mode === "file" ? !!file : linkOk;
 
   const handleSubmit = async () => {
     if (mode === "file") {
       if (!file) { setError("Record file is required."); return; }
       setError("");
-      await onSubmit(item.id, file, notes.trim(), recordDate);
+      await onSubmit(item.id, file, notes.trim());
     } else {
       if (!linkOk) { setError("Paste a valid link (http/https) to the artefact."); return; }
       setError("");
-      await onSubmitLink(item.id, link.trim(), notes.trim(), recordDate);
+      await onSubmitLink(item.id, link.trim(), notes.trim());
     }
   };
 
@@ -271,21 +273,8 @@ const SubmitPanel = ({ item, onSubmit, onSubmitLink, onClose, isPending }) => {
       )}
 
       {item.IsObligation && (
-        <div style={{ marginBottom: 8 }}>
-          <label style={{ display: "block", fontSize: 10, fontWeight: 500,
-                          color: "var(--color-text-secondary)", marginBottom: 3,
-                          textTransform: "uppercase", letterSpacing: "0.4px" }}>
-            Date of the record <span style={{ color: "#A32D2D" }}>*</span>
-          </label>
-          <input type="date" value={recordDate} max={todayIso()}
-            onChange={e => setRecordDate(e.target.value)}
-            style={{ fontSize: 12, padding: "7px 10px", borderRadius: 8,
-                     border: `1.5px solid ${dateOk ? "#5DCAA5" : "#C0C0C0"}`,
-                     background: "var(--color-background-primary)", color: "var(--color-text-primary)" }} />
-          <div style={{ fontSize: 10, color: "#0C447C", marginTop: 4 }}>
-            When the record itself was produced (the meeting, the review, the export) — the next one
-            falls due from this date.
-          </div>
+        <div style={{ fontSize: 11, color: "#0C447C", marginBottom: 8 }}>
+          The record is dated today, {formatDateOnly(todayIso())}. The next one falls due from today.
         </div>
       )}
 
@@ -420,7 +409,6 @@ const RecordCard = ({ item, currentOid, isCompliance, onSubmit, onSubmitLink, on
   // The server resolves role holders and still supports legacy directory-title
   // rows. OwnedByMe determines access; OwnerEntraId is not populated here.
   const canAct      = item.OwnedByMe === true;
-  const isOwner      = canAct;
   const canSubmit   = canAct && (ob
     ? !["Submitted", "Withdrawn"].includes(item.State)        // a recurring record: next period's proof
     : ["Pending", "Due Soon", "Overdue", "Rejected"].includes(item.Status));
@@ -446,79 +434,56 @@ const RecordCard = ({ item, currentOid, isCompliance, onSubmit, onSubmitLink, on
       onMouseEnter={e => (e.currentTarget.style.boxShadow = "0 4px 16px rgba(0,0,0,0.08)")}
       onMouseLeave={e => (e.currentTarget.style.boxShadow = "none")}
     >
-      {/* Header */}
+      {/* Header: the record to submit first, then the control it proves and when it is due */}
       <div
         role="button" tabIndex={0}
         onClick={() => { setExpanded(!expanded); setShowSubmit(false); setShowVerify(false); setShowReassign(false); }}
         onKeyDown={e => e.key === "Enter" && setExpanded(!expanded)}
         style={{ padding: "11px 14px", cursor: "pointer" }}
       >
-        <div style={{ display: "flex", justifyContent: "space-between",
-                      alignItems: "center", marginBottom: 5, flexWrap: "wrap", gap: 4 }}>
-          <div style={{ display: "flex", gap: 4, flexWrap: "wrap", alignItems: "center" }}>
-            <span style={{ fontSize: 10, padding: "1px 7px", borderRadius: 3,
-                           fontWeight: 600, background: ss.bg, color: ss.color,
-                           border: `0.5px solid ${ss.bd}` }}>
-              {stateOf(item)}
-            </span>
-            {ob && (
-              <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 3, fontFamily: "var(--font-mono)",
-                             background: "var(--color-background-info)", color: "var(--color-text-info)" }}>
-                {item.LinkedControlId} · {item.RecordId}
-              </span>
-            )}
-            {item.EvidenceType && (
-              <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 3,
-                             background: "var(--color-background-secondary)",
-                             color: "var(--color-text-tertiary)",
-                             border: "0.5px solid var(--color-border-tertiary)",
-                             fontFamily: "var(--font-mono)", fontWeight: 600 }}>
-                {item.EvidenceType}
-              </span>
-            )}
-            {isOwner && canSubmit && (
-              <span style={{ fontSize: 9, fontWeight: 600, color: ss.color,
-                             textTransform: "uppercase", letterSpacing: "0.5px" }}>
-                Action needed
-              </span>
-            )}
-          </div>
-          <span style={{ fontSize: 11, color: "var(--color-text-tertiary)" }}>
-            {expanded ? "▲" : "▼"}
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center",
+                      marginBottom: 6, flexWrap: "wrap", gap: 6 }}>
+          <span style={{ fontSize: 10, padding: "1px 7px", borderRadius: 3, fontWeight: 600,
+                         background: ss.bg, color: ss.color, border: `0.5px solid ${ss.bd}` }}>
+            {stateOf(item)}
+          </span>
+          <span style={{ fontSize: 11.5, fontWeight: 600, color: ss.color }}>
+            {whenLine(item)}
+            <span style={{ marginLeft: 8, fontWeight: 400, color: "var(--color-text-tertiary)" }}>{expanded ? "▲" : "▼"}</span>
           </span>
         </div>
 
-        <div style={{ fontSize: 12, fontWeight: 600, lineHeight: 1.4, marginBottom: 3 }}>
+        <div style={{ fontSize: 10, color: "var(--color-text-tertiary)", textTransform: "uppercase", letterSpacing: "0.4px" }}>
+          Record to submit
+        </div>
+        <div style={{ fontSize: 13, fontWeight: 600, lineHeight: 1.4 }}>
           {item.RecordDescription || item.Title}
         </div>
-
-        <div style={{ display: "flex", justifyContent: "space-between",
-                      fontSize: 11, color: "var(--color-text-secondary)" }}>
-          <span>
-            {item.OwnerRole || "No owner"}
-            {item.OwnerKind === "group" && (
-              <span title={`Role — ${(item.OwnerPeople || []).map(p => p.display_name).join(", ") || "no members"}`}
-                style={{ marginLeft: 5, fontSize: 9, fontWeight: 700, color: "#3C3489",
-                         background: "#EEEDFE", border: "0.5px solid #AFA9EC", borderRadius: 20,
-                         padding: "1px 6px" }}>ROLE</span>
-            )}
-            {item.OwnerResolved === false && item.OwnerRole && (
-              <span title="This owner could not be resolved. Check the role and its members in Org Roles."
-                style={{ marginLeft: 5, fontSize: 9, fontWeight: 700, color: "#8A5A00",
-                         background: "#FDF3E2", border: "0.5px solid #F0CE94", borderRadius: 20,
-                         padding: "1px 6px" }}>UNASSIGNED</span>
-            )}
-            {" · "}{ob
-              ? (item.CheckFrequencyDays ? describeDays(item.CheckFrequencyDays) : "No schedule")
+        {item.ControlName && (
+          <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", lineHeight: 1.45, marginTop: 3 }}>
+            Proves: {item.ControlName}
+          </div>
+        )}
+        <div style={{ fontSize: 11, color: "var(--color-text-tertiary)", marginTop: 3 }}>
+          {ob ? (item.CheckFrequencyDays ? `Due ${describeEvery(item.CheckFrequencyDays)}` : "No schedule yet")
               : (item.Frequency || "No frequency")}
-            {ob && item.NextDue && ` · due ${formatDateOnly(item.NextDue)}`}
-          </span>
-          {!ob && item.LinkedControlId && (
-            <span style={{ color: "var(--color-text-tertiary)" }}>
-              CTL-{item.LinkedControlId.slice(-4)}
-            </span>
+          {item.ControlDocument && ` · ${item.ControlDocument}`}
+          {" · "}{item.OwnerRole || "No owner"}
+          {item.OwnerResolved === false && item.OwnerRole && (
+            <span title="Nobody holds this role yet. Add its members in Org Roles."
+              style={{ marginLeft: 5, fontSize: 9, fontWeight: 700, color: "#8A5A00",
+                       background: "#FDF3E2", border: "0.5px solid #F0CE94", borderRadius: 20,
+                       padding: "1px 6px" }}>NOBODY ASSIGNED</span>
           )}
         </div>
+
+        {canSubmit && !showSubmit && (
+          <button onClick={e => { e.stopPropagation(); setExpanded(true); setShowSubmit(true); }}
+            style={{ marginTop: 10, padding: "7px 14px", fontSize: 12, borderRadius: 8, border: "none",
+                     fontWeight: 600, background: "#0C447C", color: "#fff", cursor: "pointer" }}>
+            Submit record
+          </button>
+        )}
       </div>
 
       {/* Expanded */}
@@ -537,14 +502,10 @@ const RecordCard = ({ item, currentOid, isCompliance, onSubmit, onSubmitLink, on
           {ob && (
             <>
               <div style={{ fontSize: 12, color: ss.color, marginBottom: 8 }}>{item.StateDetail}</div>
-              <Field l="Control" v={`${item.LinkedControlId} — defined in ${item.SourceDocument || "its document"}`} />
-              <Field l="Control runs" v={item.OperatingTrigger || "Not stated"} />
-              <Field l="Record checked" v={item.CheckFrequencyDays
-                ? `${describeDays(item.CheckFrequencyDays)}${item.FreshnessDays ? ` · stale after ${item.FreshnessDays} days` : ""}`
-                : "Not scheduled yet"} />
-              <Field l="Where it lives" v={item.Location || "Not in the Records Catalogue"} />
+              {item.ControlSummary && <Field l="What the control requires" v={item.ControlSummary} />}
+              <Field l="Where the record lives" v={item.Location || "Not in the Records Catalogue"} />
               {item.Custodian && <Field l="Kept by" v={item.Custodian} />}
-              <Field l="Produced by" v={<OwnerDisplay item={item} />} />
+              <Field l="Who submits it" v={<OwnerDisplay item={item} />} />
               {item.LastRecordDate && <Field l="Last accepted record" v={formatDateOnly(item.LastRecordDate)} />}
               {item.PendingRecordDate && item.State === "Submitted" &&
                 <Field l="Submitted record dated" v={formatDateOnly(item.PendingRecordDate)} />}
@@ -576,15 +537,7 @@ const RecordCard = ({ item, currentOid, isCompliance, onSubmit, onSubmitLink, on
             </div>
           )}
 
-          {/* Submit action */}
-          {canSubmit && !showSubmit && (
-            <button onClick={e => { e.stopPropagation(); setShowSubmit(true); }}
-              style={{ marginTop: 10, width: "100%", padding: "9px", fontSize: 12,
-                       borderRadius: 8, border: "none", fontWeight: 500,
-                       background: "#0C447C", color: "#fff", cursor: "pointer" }}>
-              Submit record
-            </button>
-          )}
+          {/* Submit form — opened from "Submit record" above */}
           {showSubmit && (
             <SubmitPanel
               item={item}
@@ -682,7 +635,7 @@ const RecordCard = ({ item, currentOid, isCompliance, onSubmit, onSubmitLink, on
 // =============================================================================
 
 export default function RecordTracker({ focusRecordId = "" } = {}) {
-  const [view, setView]     = useState("all");
+  const [view, setView]     = useState("toSubmit");   // the records due from me come first
   const [search, setSearch] = useState("");
   const [actionItemId, setActionItemId] = useState(null);
 
@@ -699,8 +652,8 @@ export default function RecordTracker({ focusRecordId = "" } = {}) {
     const mine      = live.filter(ownsIt);
     const attention = live.filter(e => e.IsObligation ? ATTENTION.has(e.State) : e.Status === "Overdue");
     const submitted = live.filter(e => stateOf(e) === "Submitted");
-    const unscheduled = live.filter(e => e.IsObligation && e.State === "Unscheduled");
-    return { live, mine, attention, submitted, unscheduled };
+    const toSubmit  = dueForMe(live);                     // mine, due now or soon, overdue first
+    return { live, mine, attention, submitted, toSubmit };
   }, [all]);
 
   // A record opened from the Dashboard is shown in "My records" (or "All" if it is not mine).
@@ -709,20 +662,22 @@ export default function RecordTracker({ focusRecordId = "" } = {}) {
     const target = all.find((e) => e.id === focusRecordId);
     if (!target) return;
     setSearch("");
-    setView(ownsIt(target) ? "mine" : "all");
+    setView(views.toSubmit.some((e) => e.id === target.id) ? "toSubmit" : ownsIt(target) ? "mine" : "all");
   }, [focusRecordId, all.length]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   const activeItems = useMemo(() => {
-    let list = view === "mine"        ? views.mine
+    let list = view === "toSubmit"    ? views.toSubmit
+             : view === "mine"        ? views.mine
              : view === "attention"   ? views.attention
              : view === "submitted"   ? views.submitted
-             : view === "unscheduled" ? views.unscheduled
              : all;
 
     if (search.trim()) {
       const q = search.toLowerCase();
       list = list.filter(e =>
         (e.RecordDescription  || "").toLowerCase().includes(q) ||
+        (e.ControlName         || "").toLowerCase().includes(q) ||
+        (e.ControlDocument     || "").toLowerCase().includes(q) ||
         (e.LinkedControlId     || "").toLowerCase().includes(q) ||
         (e.RecordId            || "").toLowerCase().includes(q) ||
         (e.EvidenceType        || "").toLowerCase().includes(q) ||
@@ -733,10 +688,10 @@ export default function RecordTracker({ focusRecordId = "" } = {}) {
     return list;
   }, [view, views, all, search]);
 
-  const handleSubmit = async (id, file, notes, recordDate) => {
+  const handleSubmit = async (id, file, notes) => {
     setActionItemId(id);
     try {
-      await recordApi.submit(id, file, notes, recordDate);
+      await recordApi.submit(id, file, notes);
       qc.invalidateQueries({ queryKey: ["records"] });
     } catch (err) {
       notify({
@@ -749,10 +704,10 @@ export default function RecordTracker({ focusRecordId = "" } = {}) {
     }
   };
 
-  const handleSubmitLink = async (id, link, notes, recordDate) => {
+  const handleSubmitLink = async (id, link, notes) => {
     setActionItemId(id);
     try {
-      await recordApi.submitLink(id, link, notes, recordDate);
+      await recordApi.submitLink(id, link, notes);
       qc.invalidateQueries({ queryKey: ["records"] });
     } catch (err) {
       notify({
@@ -798,13 +753,12 @@ export default function RecordTracker({ focusRecordId = "" } = {}) {
     }
   };
 
+  // Schedules are set in Extraction Review, not here (13 Nov 2026).
   const tabViews = [
+    { k: "toSubmit",  l: `To submit (${views.toSubmit.length})` },
     { k: "mine",      l: `My records (${views.mine.length})` },
     { k: "attention", l: `Needs attention (${views.attention.length})` },
-    ...(isCompliance ? [
-      { k: "submitted",   l: `To verify (${views.submitted.length})` },
-      { k: "unscheduled", l: `Unscheduled (${views.unscheduled.length})` },
-    ] : []),
+    ...(isCompliance ? [{ k: "submitted", l: `To verify (${views.submitted.length})` }] : []),
     { k: "all", l: `All (${all.length})` },
   ];
 
@@ -819,8 +773,8 @@ export default function RecordTracker({ focusRecordId = "" } = {}) {
           <div>
             <div style={{ fontSize: 17, fontWeight: 600, marginBottom: 3 }}>Record tracker</div>
             <div style={{ fontSize: 12, color: "var(--color-text-secondary)" }}>
-              One row for each record a control names as its proof. Link the record where it
-              lives, date it, and get it verified — that is the proof of compliance.
+              The records you must submit come first. Each proves a control; submit it (a file, or a
+              link to where it lives) and Compliance verifies it.
             </div>
           </div>
           <div style={{ padding: "3px 10px", background: "#E1F5EE", borderRadius: 6,
@@ -859,6 +813,7 @@ export default function RecordTracker({ focusRecordId = "" } = {}) {
         <EmptyState message={
           all.length === 0
             ? "No record items yet. Accept extraction items in the Extraction Review screen to create record requirements here."
+            : view === "toSubmit" ? "Nothing is due from you right now."
             : `No items in this view.`
         } />
       ) : (

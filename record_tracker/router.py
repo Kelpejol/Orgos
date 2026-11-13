@@ -227,17 +227,22 @@ async def get_record(
 class SubmitRecord(BaseModel):
     record_link:      str   # Mandatory — link to the record where it lives
     submission_notes: Optional[str] = None
-    record_date:      Optional[str] = None   # when the record was produced; required for obligations
+    record_date:      Optional[str] = None   # the record's date; today when not given
 
 
 def _record_date(value: Optional[str]) -> str:
-    """The date the submitted record was produced — required, not in the future."""
+    """
+    The record's date: the day it is submitted (13 Nov 2026 — people no longer pick a date).
+    A date sent by an older screen or a script is still honoured if it is a real past date.
+    The next record falls due one period after it.
+    """
+    text = (value or "").strip()
+    if not text:
+        return date.today().isoformat()
     try:
-        d = date.fromisoformat((value or "").strip()[:10])
+        d = date.fromisoformat(text[:10])
     except ValueError:
-        raise HTTPException(status_code=422, detail=(
-            "record_date is required: the date the record itself was produced "
-            "(e.g. the review meeting's date), not today's date by default."))
+        raise HTTPException(status_code=422, detail="record_date must be a date (YYYY-MM-DD).")
     if d > date.today():
         raise HTTPException(status_code=422, detail="record_date cannot be in the future.")
     return d.isoformat()

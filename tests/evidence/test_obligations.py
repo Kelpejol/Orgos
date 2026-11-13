@@ -219,15 +219,23 @@ def _patched(fields):
         patch.object(rt, "update_list_item", side_effect=update)
 
 
-async def test_the_next_periods_record_is_submitted_over_an_accepted_one_with_its_own_date():
+async def test_a_submitted_record_is_dated_the_day_it_is_submitted():
     store, g, u = _patched(OBLIGATION)
     with g, u:
+        result = await rt.submit_record("5", rt.SubmitRecord(record_link="https://sharepoint/rec"), user=USER)
+    assert result["Status"] == "Submitted" and store["fields"]["PendingRecordDate"] == date.today().isoformat()
+
+
+async def test_a_date_sent_by_a_script_is_honoured_but_never_a_future_one():
+    store, g, u = _patched(OBLIGATION)
+    with g, u:
+        await rt.submit_record("5", rt.SubmitRecord(record_link="https://x/rec", record_date="2026-10-12"), user=USER)
+    assert store["fields"]["PendingRecordDate"] == "2026-10-12"
+    _, g, u = _patched(OBLIGATION)
+    with g, u:
         with pytest.raises(rt.HTTPException) as exc:
-            await rt.submit_record("5", rt.SubmitRecord(record_link="https://x/rec"), user=USER)
-        assert exc.value.status_code == 422 and "record_date" in exc.value.detail
-        result = await rt.submit_record("5", rt.SubmitRecord(
-            record_link="https://sharepoint/rec", record_date="2026-10-12"), user=USER)
-    assert result["Status"] == "Submitted" and store["fields"]["PendingRecordDate"] == "2026-10-12"
+            await rt.submit_record("5", rt.SubmitRecord(record_link="https://x/rec", record_date="2999-01-01"), user=USER)
+    assert exc.value.status_code == 422 and "future" in exc.value.detail
 
 
 async def test_accepting_dates_the_schedule_from_the_record_not_the_check():
