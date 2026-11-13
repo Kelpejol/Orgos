@@ -22,6 +22,7 @@ from observability import (
 )
 from graph import client as graph_client
 from auth.router import router as auth_router
+from auth.validator import SESSION_HEADER
 from grc.router import router as grc_router
 from agents.extractor.router import router as extractor_router
 from sharepoint.router import router as sharepoint_router
@@ -128,6 +129,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
     allow_headers=["Authorization", "Content-Type", "Accept"],
+    expose_headers=[SESSION_HEADER],      # lets the screen tell an ended sign-in from other errors
 )
 
 

@@ -16,7 +16,7 @@ from threading import Timer
 from fastapi import APIRouter, HTTPException, Request, Response, status
 from pydantic import BaseModel
 
-from auth.validator import ROLE_ADMIN, validate_entra_id_token
+from auth.validator import ROLE_ADMIN, SESSION_ENDED, validate_entra_id_token
 from config import settings
 
 logger = logging.getLogger(__name__)
@@ -56,19 +56,19 @@ async def get_session(request: Request, response: Response) -> dict:
 
     token = request.cookies.get("erp_auth")
     if not token:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "No session")
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "No session", headers=SESSION_ENDED)
 
     try:
         user = await validate_entra_id_token(token)
     except HTTPException:
         response.delete_cookie("erp_auth")
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Session expired")
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Session expired", headers=SESSION_ENDED)
 
     email = user.email.lower()
     if email in _revoked_emails:
         _revoked_emails.discard(email)
         response.delete_cookie("erp_auth")
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Session revoked")
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Session revoked", headers=SESSION_ENDED)
 
     return {
         "name": user.name,

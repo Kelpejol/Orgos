@@ -57,6 +57,13 @@ class CurrentUser:
     exp: int = 0     # Token expiry (unix seconds) — used for session expiresOn
 
 
+# Every 401 below is about the person's own sign-in (the erp_auth cookie): missing, malformed or
+# expired. It carries this header so the screen can tell it apart from any other failure and
+# send the person back through the ERP for a fresh sign-in, instead of showing "Unable to load".
+SESSION_HEADER = "X-OrgOS-Session"
+SESSION_ENDED = {SESSION_HEADER: "ended"}
+
+
 async def _get_jwks() -> list[dict]:
     """
     Fetch and cache Microsoft's public signing keys (JWKS).
@@ -96,7 +103,7 @@ async def _find_signing_key(token: str, jwks: dict) -> str:
         unverified_header = jwt.get_unverified_header(token)
     except JWTError as exc:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
+            status_code=status.HTTP_401_UNAUTHORIZED, headers=SESSION_ENDED,
             detail=f"Invalid token format: {exc}",
         )
     kid = unverified_header.get("kid")
@@ -121,7 +128,7 @@ async def _find_signing_key(token: str, jwks: dict) -> str:
     key = _search(keys_list)
     if not key:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
+            status_code=status.HTTP_401_UNAUTHORIZED, headers=SESSION_ENDED,
             detail="Token signing key not found after JWKS refresh. Try signing out and back in.",
         )
     return key
@@ -164,7 +171,7 @@ async def validate_entra_id_token(token: str) -> CurrentUser:
             tid = claims.get("tid")
             if tid != settings.tenant_id:
                 raise HTTPException(
-                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    status_code=status.HTTP_401_UNAUTHORIZED, headers=SESSION_ENDED,
                     detail="Token tenant does not match expected tenant",
                 )
 
@@ -182,7 +189,7 @@ async def validate_entra_id_token(token: str) -> CurrentUser:
 
     logger.warning(f"Token validation failed: {last_error}")
     raise HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
+        status_code=status.HTTP_401_UNAUTHORIZED, headers=SESSION_ENDED,
         detail=f"Token invalid or expired: {last_error}",
     )
 async def get_current_user(
@@ -206,7 +213,7 @@ async def get_current_user(
     )
     if token is None:
         raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
+            status_code=status.HTTP_401_UNAUTHORIZED, headers=SESSION_ENDED,
             detail="Not authenticated",
         )
     return await validate_entra_id_token(token)

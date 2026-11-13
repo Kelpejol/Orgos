@@ -10,19 +10,20 @@ import React from "react";
 import ReactDOM from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { BrowserRouter } from "react-router-dom";
-import { verifySession, redirectToShell } from "./auth/authBridge.js";
+import { redirectToShell, verifySession } from "./auth/authBridge.js";
+import { configureSession, renewSignIn, sessionHasEnded, watchFetch } from "./auth/session.js";
 import { AuthProvider } from "./context/AuthContext.jsx";
+import SessionGuard from "./components/shared/SessionGuard.jsx";
 import App from "./App.jsx";
 import "./index.css";
-
-const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
 // React Query client — global configuration
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
-      // Retry failed queries twice before showing an error
-      retry: 2,
+      // Retry failed queries twice before showing an error — but not when the sign-in has
+      // ended: SessionGuard is renewing it, and retrying only fills the screen with errors.
+      retry: (count) => !sessionHasEnded() && count < 2,
       // Show stale data while refetching (better UX)
       staleTime: 30_000,
       // Don't refetch when window regains focus in development
@@ -35,11 +36,22 @@ const queryClient = new QueryClient({
   },
 });
 
+function cannotSignIn() {
+  document.getElementById("root").innerHTML =
+    '<div style="font-family:system-ui,sans-serif;max-width:440px;margin:80px auto;padding:0 16px;line-height:1.5">' +
+    "<h2 style=\"font-size:18px\">OrgOS could not sign you in</h2>" +
+    "<p>The ERP did not return a valid sign-in after several tries. Open the ERP, sign in there, " +
+    "then reload this page.</p></div>";
+}
+
 async function bootstrap() {
+  configureSession({ redirect: redirectToShell });
+  watchFetch();
   const auth = await verifySession();
 
   if (!auth) {
-    redirectToShell();
+    // Through the ERP for a sign-in, back to this page; stop if it keeps coming back without one.
+    if (!renewSignIn()) cannotSignIn();
     return; // browser is navigating away — never render
   }
 
@@ -48,16 +60,9 @@ async function bootstrap() {
       <AuthProvider
         user={{ name: auth.name, email: auth.email, oid: auth.oid }}
         roles={auth.roles}
-        refreshToken={async () => {
-          // Session expired mid-use — clear it and send the user back to the
-          // ERP shell for a fresh one.
-          await fetch(`${API_BASE}/api/auth/session`, {
-            method: "DELETE",
-            credentials: "include",
-          });
-          redirectToShell();
-        }}
+        refreshToken={async () => { renewSignIn(); }}
       >
+        <SessionGuard expiresOn={auth.expiresOn} />
         <BrowserRouter>
           <QueryClientProvider client={queryClient}>
             <App />

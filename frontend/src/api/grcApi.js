@@ -7,6 +7,7 @@
 // =============================================================================
 
 import axios from "axios";
+import { SESSION_HEADER, isSessionEnded, reportSessionEnded } from "../auth/session.js";
 
 const BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
@@ -28,6 +29,13 @@ const apiClient = axios.create({
 apiClient.interceptors.response.use(
   (response) => response,
   (error) => {
+    // The person's sign-in has ended: SessionGuard renews it and brings them back here.
+    if (isSessionEnded(error.response?.status, error.response?.headers?.[SESSION_HEADER])) {
+      reportSessionEnded();
+      const ended = new Error("Your sign-in has ended. OrgOS is renewing it; this page will come back.");
+      ended.sessionEnded = true;
+      return Promise.reject(ended);
+    }
     const detail = error.response?.data?.detail;
     const message =
       typeof detail === "string"
