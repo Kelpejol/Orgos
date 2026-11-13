@@ -8,6 +8,7 @@ import StatusBadge from "../../components/shared/StatusBadge.jsx";
 import { LoadingState } from "../../components/shared/LoadingState.jsx";
 import { useCurrentUserRole } from "../../hooks/useCurrentUserRole.js";
 import apiClient, { complianceApi, contractsApi } from "../../api/grcApi.js";
+import { OVERDUE, controlLine, dueForMe, dueState, dueText } from "../../components/shared/recordDue.js";
 
 // =============================================================================
 //  Data hooks
@@ -42,12 +43,16 @@ const needsAttention = (r) => r.IsObligation
   ? ATTENTION.has(r.State)
   : r.Status === "Rejected" || (["Pending", "Submitted"].includes(r.Status) && r.DueDate && r.DueDate.slice(0, 10) < new Date().toISOString().slice(0, 10));
 
-const useOverdueRecords = () =>
+const useRecords = () =>
   useQuery({
-    queryKey: ["records", "attention"],
-    queryFn: () => apiClient.get("/api/v1/records").then((r) => (r.data || []).filter(needsAttention)),
+    queryKey: ["records", "wh"],
+    queryFn: () => apiClient.get("/api/v1/records").then((r) => r.data || []),
     staleTime: 60_000,
   });
+
+// Open one record in the Record Tracker, ready to submit.
+const openRecord = (id) =>
+  window.dispatchEvent(new CustomEvent("orgos:navigate", { detail: { to: "records", recordId: id } }));
 
 const useOverdueObligations = () =>
   useQuery({
@@ -139,6 +144,66 @@ const Stat = ({ label, value, color }) => (
   </div>
 );
 
+// "Due for me": the records I must produce, overdue first. Each says which control it proves,
+// in words, and opens straight on its submit form.
+const DueForMe = ({ records, onSeeAll }) => {
+  const shown = records.slice(0, 6);
+  return (
+    <div style={{ marginBottom: 22 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 10 }}>
+        <div style={{ fontSize: 13, fontWeight: 600 }}>
+          Due for me {records.length > 0 && <span style={{ color: "var(--color-text-tertiary)", fontWeight: 400 }}>({records.length})</span>}
+        </div>
+        {records.length > 0 && (
+          <button onClick={onSeeAll} style={{ background: "none", border: "none", padding: 0, fontSize: 12,
+                                              color: "var(--color-text-info)", cursor: "pointer" }}>
+            See all in Record tracker →
+          </button>
+        )}
+      </div>
+      {records.length === 0 ? (
+        <div style={{ padding: "16px", border: "1px dashed var(--color-border-tertiary)", borderRadius: 12,
+                      fontSize: 12.5, color: "var(--color-text-tertiary)", textAlign: "center" }}>
+          No records are due from you.
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {shown.map((r) => {
+            const overdue = OVERDUE.has(dueState(r));
+            const tone = overdue ? { c: "#A32D2D", bg: "#FFF8F8", bd: "#F09595" } : { c: "#8A5A00", bg: "#FFFBF2", bd: "#F0CE94" };
+            return (
+              <div key={r.id} style={{ border: `1px solid ${tone.bd}`, borderLeft: `4px solid ${tone.c}`, borderRadius: 10,
+                                       background: tone.bg, padding: "10px 14px", display: "flex", gap: 12,
+                                       alignItems: "center", justifyContent: "space-between", flexWrap: "wrap" }}>
+                <div style={{ flex: "1 1 260px", minWidth: 0 }}>
+                  <div style={{ fontSize: 12.5, fontWeight: 600, lineHeight: 1.4 }}>{controlLine(r)}</div>
+                  <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", marginTop: 2 }}>
+                    Record: {r.RecordDescription || r.Title}
+                    {r.ControlDocument && <span> · {r.ControlDocument}</span>}
+                  </div>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+                  <span style={{ fontSize: 11.5, fontWeight: 600, color: tone.c }}>{dueText(r)}</span>
+                  <button onClick={() => openRecord(r.id)}
+                    style={{ padding: "6px 12px", fontSize: 11.5, fontWeight: 600, borderRadius: 7, border: "none",
+                             background: "#0C447C", color: "#fff", cursor: "pointer", whiteSpace: "nowrap" }}>
+                    Submit record
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+          {records.length > shown.length && (
+            <div style={{ fontSize: 11.5, color: "var(--color-text-tertiary)" }}>
+              +{records.length - shown.length} more in the Record tracker.
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
 const QuickLink = ({ label, icon, onClick }) => (
   <button
     onClick={onClick}
@@ -170,13 +235,15 @@ export default function WorkHub({ go }) {
 
   const queueQ       = usePendingQueue();
   const lifecycleQ   = useLifecycleDocs();
-  const overdueEvidQ = useOverdueRecords();
+  const recordsQ     = useRecords();
   const overdueObligQ= useOverdueObligations();
   const expiringQ    = useExpiringContracts();
   const gapsQ        = useOpenGaps();
   const controlsQ    = useControls(isCompliance);
 
-  const allEvid    = overdueEvidQ.data  || [];
+  const allRecords = recordsQ.data      || [];
+  const allEvid    = useMemo(() => allRecords.filter(needsAttention), [allRecords]);
+  const dueMine    = useMemo(() => dueForMe(allRecords), [allRecords]);
   const allOblig   = overdueObligQ.data || [];
   const allQueue   = queueQ.data        || [];
   const allLife    = lifecycleQ.data    || [];
@@ -205,7 +272,7 @@ export default function WorkHub({ go }) {
   const myDocs       = useMemo(() => allLife.filter((d) => d.OwnerEntraId === oid && d.ApprovalStatus !== "Approved"
     && ["Review", "Sensitisation"].includes(d.Stage)), [allLife, oid]);
 
-  if (overdueEvidQ.isLoading || overdueObligQ.isLoading) {
+  if (recordsQ.isLoading || overdueObligQ.isLoading) {
     return <LoadingState message="Loading work hub..." />;
   }
 
@@ -300,6 +367,9 @@ export default function WorkHub({ go }) {
             : "Compliance overview — urgency items across OrgOS."}
         </div>
       </div>
+
+      {/* The records I must produce — first, for everyone */}
+      <DueForMe records={dueMine} onSeeAll={() => go("records")} />
 
       {/* Quick links — Compliance/Admin */}
       {isCompliance && (

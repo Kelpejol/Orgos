@@ -6,7 +6,7 @@
 // Compliance view: submitted items to verify, overdue items to chase.
 // =============================================================================
 
-import { useState, useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import StatusBadge from "../../components/shared/StatusBadge.jsx";
 import { Field } from "../../components/shared/Forms.jsx";
@@ -467,7 +467,8 @@ const SchedulePanel = ({ item, onSchedule, onClose, isPending }) => {
 //  Record card
 // =============================================================================
 
-const RecordCard = ({ item, currentOid, isCompliance, onSubmit, onSubmitLink, onVerify, onReassignOwner, onSchedule, actionItemId }) => {
+const RecordCard = ({ item, currentOid, isCompliance, onSubmit, onSubmitLink, onVerify, onReassignOwner, onSchedule, actionItemId, focused }) => {
+  const cardRef = useRef(null);
   const [showSchedule, setShowSchedule] = useState(false);
   const [expanded, setExpanded]     = useState(false);
   const [showSubmit, setShowSubmit] = useState(false);
@@ -487,8 +488,16 @@ const RecordCard = ({ item, currentOid, isCompliance, onSubmit, onSubmitLink, on
   const canVerify   = isCompliance && item.Status === "Submitted";
   const isPending   = actionItemId === item.id;
 
+  // Opened from the Dashboard's "Due for me": open on its submit form and bring it into view.
+  useEffect(() => {
+    if (!focused) return;
+    setExpanded(true);
+    if (canSubmit) setShowSubmit(true);
+    cardRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+  }, [focused]);   // eslint-disable-line react-hooks/exhaustive-deps
+
   return (
-    <div style={{
+    <div ref={cardRef} style={{
       border: `1px solid ${ss.bd}`,
       borderLeft: `4px solid ${ss.color}`,
       borderRadius: 12,
@@ -747,7 +756,7 @@ const RecordCard = ({ item, currentOid, isCompliance, onSubmit, onSubmitLink, on
 //  Main component
 // =============================================================================
 
-export default function RecordTracker() {
+export default function RecordTracker({ focusRecordId = "" } = {}) {
   const [view, setView]     = useState("all");
   const [search, setSearch] = useState("");
   const [actionItemId, setActionItemId] = useState(null);
@@ -768,6 +777,15 @@ export default function RecordTracker() {
     const unscheduled = live.filter(e => e.IsObligation && e.State === "Unscheduled");
     return { live, mine, attention, submitted, unscheduled };
   }, [all]);
+
+  // A record opened from the Dashboard is shown in "My records" (or "All" if it is not mine).
+  useEffect(() => {
+    if (!focusRecordId || !all.length) return;
+    const target = all.find((e) => e.id === focusRecordId);
+    if (!target) return;
+    setSearch("");
+    setView(ownsIt(target) ? "mine" : "all");
+  }, [focusRecordId, all.length]);   // eslint-disable-line react-hooks/exhaustive-deps
 
   const activeItems = useMemo(() => {
     let list = view === "mine"        ? views.mine
@@ -945,6 +963,7 @@ export default function RecordTracker() {
               onReassignOwner={handleReassignOwner}
               onSchedule={handleSchedule}
               actionItemId={actionItemId}
+              focused={item.id === focusRecordId}
             />
           ))}
         </div>

@@ -128,6 +128,28 @@ def _obligation_view(f: dict) -> dict:
 #  Endpoints
 # =============================================================================
 
+_NO_CONTROL = {"ControlName": "", "ControlSummary": "", "ControlDocument": "", "ControlDocumentCode": "",
+               "ControlTrigger": ""}
+
+
+async def _describe_controls(records: list[dict]) -> None:
+    """
+    Say which control each record proves in words (what it requires, and the name of the
+    document defining it) rather than by Control ID. A record whose control can't be read
+    keeps blanks; the screen then falls back to the record's own name.
+    """
+    from control_register.describe import by_control_id, for_record
+    controls: dict = {}
+    if settings.is_list_configured(settings.control_register_list_id):
+        try:
+            controls = by_control_id(await get_list_items(settings.control_register_list_id, "Control Register"))
+        except Exception as exc:
+            logger.warning(f"Could not read the Control Register to describe records: {exc}")
+    for r in records:
+        desc = for_record(r, controls) or {}
+        r.update({k: desc.get(k, "") for k in _NO_CONTROL})
+
+
 @router.get("/api/v1/records")
 async def list_records(
     owner_oid:  Optional[str] = None,
@@ -164,6 +186,8 @@ async def list_records(
                 r.setdefault("OwnerKind", "unresolved")
                 r.setdefault("OwnerPeople", [])
                 r.setdefault("OwnerResolved", False)
+
+        await _describe_controls(records)
 
         if owner_oid:
             # Filter by who actually holds the owning role.

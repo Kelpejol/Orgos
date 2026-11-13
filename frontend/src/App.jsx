@@ -55,16 +55,18 @@ const ROUTE_NAMES = {
 function OrgOSShell() {
   const [nav, setNav] = useState("workhub");
   const [documentFocus, setDocumentFocus] = useState("");
+  const [recordFocus, setRecordFocus] = useState("");
 
   const { isCompliance } = useCurrentUserRole();
 
-  const go = (id) => { setDocumentFocus(""); setNav(id); };
+  const go = (id) => { setDocumentFocus(""); setRecordFocus(""); setNav(id); };
 
   // Other screens can send the user somewhere (e.g. a check's "Create role" opens Org Roles).
   useEffect(() => {
     const onNavigate = (e) => {
       if (!e.detail?.to) return;
       setDocumentFocus(e.detail.documentCode || "");
+      setRecordFocus(e.detail.recordId || "");
       setNav(e.detail.to);
     };
     window.addEventListener("orgos:navigate", onNavigate);
@@ -107,7 +109,7 @@ function OrgOSShell() {
       case "risk":
         return <StrategicRisks />;
       case "records":
-        return <RecordTracker />;
+        return <RecordTracker focusRecordId={recordFocus} onClearFocus={() => setRecordFocus("")} />;
       case "standards":
         return <StandardsMap />;
       case "gap":
