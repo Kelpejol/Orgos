@@ -3109,7 +3109,7 @@ class VersionPlanBody(BaseModel):
     change_summary:   str = ""
 
 
-@router.put("/documents/{item_id}/version-plan")
+@router.patch("/documents/{item_id}/version-plan")
 async def set_version_plan(item_id: str, body: VersionPlanBody,
                            user: CurrentUser = Depends(get_current_user)) -> dict:
     """

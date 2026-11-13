@@ -131,7 +131,7 @@ export function VersionPlanPanel({ doc, canEdit }) {
   const save = async () => {
     setBusy(true); setError("");
     try {
-      await apiClient.put(`/api/v1/lifecycle/documents/${doc.id}/version-plan`, {
+      await apiClient.patch(`/api/v1/lifecycle/documents/${doc.id}/version-plan`, {
         version_decision: value.decision || undefined, change_summary: value.summary.trim(),
       });
       await qc.invalidateQueries({ queryKey: ["lifecycle"] });
