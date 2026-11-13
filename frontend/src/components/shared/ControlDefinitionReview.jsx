@@ -10,6 +10,7 @@ import { useState, useMemo } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAlert } from "./AlertModal.jsx";
 import apiClient from "../../api/grcApi.js";
+import { needsScheduleChoice } from "./RecordSchedule.jsx";
 
 const acceptDocument = (document, rationale = "") =>
   apiClient
@@ -176,7 +177,9 @@ export const DocumentBatches = ({ items }) => {
         Changed controls are reviewed one by one.
       </div>
       {groups.map(([doc, list]) => {
-        const eligible = list.filter(i => !i.AcceptanceRefusal).length;
+        // A control whose document states no record schedule is accepted on its own, with a schedule chosen.
+        const needSchedule = list.filter(i => !i.AcceptanceRefusal && needsScheduleChoice(i, 0)).length;
+        const eligible = list.filter(i => !i.AcceptanceRefusal && !needsScheduleChoice(i, 0)).length;
         const cannotAccept = busy || !eligible;
         return (
           <div key={doc} style={{ padding: "7px 0", borderTop: "0.5px solid #D4E8FA" }}>
@@ -186,7 +189,8 @@ export const DocumentBatches = ({ items }) => {
                 <span style={{ color: "var(--color-text-tertiary)" }}> · {list.length} new</span>
               </span>
               {open !== doc && (
-                <button disabled={!eligible} title={!eligible ? "All controls require a document revision before acceptance" : undefined}
+                <button disabled={!eligible} title={!eligible ? (needSchedule ? "Accept these one by one, choosing how often each record is due"
+                                                          : "All controls require a document revision before acceptance") : undefined}
                   onClick={() => setOpen(doc)}
                   style={{ padding: "4px 10px", fontSize: 11, borderRadius: 6, cursor: "pointer",
                            border: "1px solid #0C447C", background: "transparent", color: "#0C447C" }}>
@@ -195,6 +199,12 @@ export const DocumentBatches = ({ items }) => {
               )}
             </div>
             {list.filter(i => i.AcceptanceRefusal).map(i => <AcceptanceWarning key={i.id} item={i} />)}
+            {needSchedule > 0 && (
+              <div style={{ fontSize: 11, color: "#633806", marginTop: 4 }}>
+                {needSchedule} of these {needSchedule === 1 ? "has" : "have"} no record schedule in the document:
+                accept {needSchedule === 1 ? "it" : "them"} one by one below and choose how often the record is due.
+              </div>
+            )}
             {open === doc && (
               <div style={{ marginTop: 8 }}>
                 <div style={{ display: "flex", gap: 8, marginTop: 6 }}>

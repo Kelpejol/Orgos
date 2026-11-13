@@ -35,7 +35,10 @@ from graph.client import (
 )
 from graph.exceptions import GraphAPIError, GraphNotFoundError
 
-from review_queue.acceptance import acceptance_refusal, definition_refusal, legacy_accept_plan, legacy_accept_preview
+from review_queue.acceptance import (
+    acceptance_refusal, definition_refusal, legacy_accept_plan, legacy_accept_preview, record_schedule,
+    schedule_missing,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +60,14 @@ class CascadeError(Exception):
 # A reason is asked for only when an item is turned down: accepting a control the document
 # states needs no explanation, and asking for one produced filler text in the audit trail.
 REASON_REQUIRED_FOR = {"Reject"}
+
+
+def _schedule_days(days: Optional[int]) -> int:
+    if days is None or days == 0:
+        return 0
+    if not 1 <= days <= 3650:
+        raise HTTPException(status_code=422, detail="A record schedule is 1 to 3650 days.")
+    return int(days)
 
 
 def _reason_for(decision: str, rationale: str) -> str:
@@ -205,6 +216,8 @@ def _sp_to_item(item: dict) -> dict:
         "Candidate":                _json_field(f, "CandidateJson"),
         "Diff":                     _json_field(f, "DiffJson") or [],
     }
+    if mapped["ControlId"]:
+        mapped["RecordSchedule"] = record_schedule(mapped["Candidate"])
     mapped["AcceptanceRefusal"] = acceptance_refusal(mapped)
     if not mapped.get("ControlId") and mapped["ItemType"] in ("", "Extraction"):
         mapped["AcceptPreview"] = (
@@ -298,6 +311,9 @@ class Zone1Overrides(BaseModel):
 class Zone1DecideBody(Zone1Overrides):
     decision: str
     rationale: str = ""        # required only to reject (see _reason_for)
+    # How often the control's record is due, in days — set by Compliance when the document states
+    # no schedule (review_queue/acceptance.schedule_missing). Ignored when the document states one.
+    schedule_days: Optional[int] = None
 
 
 
@@ -412,7 +428,7 @@ async def _zone1_accept_cascade(item: dict, user: CurrentUser, overrides: dict) 
 
 async def _definition_accept_cascade(item: dict, user: CurrentUser, rationale: str,
                                      owners=None, register_rows: Optional[list] = None,
-                                     sync_evidence: bool = True) -> str:
+                                     sync_evidence: bool = True, schedule_days: int = 0) -> str:
     """
     Accept a control definition from the library sync. Upserts the Control
     Register row by Control ID — a changed definition updates the row it
@@ -444,6 +460,11 @@ async def _definition_accept_cascade(item: dict, user: CurrentUser, rationale: s
         current = next((r for r in rows
                         if (r.get("fields") or {}).get("ControlId") == item["ControlId"]
                         and (r.get("fields") or {}).get("Status") not in RETIRED_CONTROL), None)
+        # The record schedule: the document's, else Compliance's (chosen now, or kept from before).
+        existing_days = int(float(((current or {}).get("fields") or {}).get("RecordScheduleDays") or 0))
+        missing = schedule_missing(candidate, schedule_days, existing_days)
+        if missing:
+            raise HTTPException(status_code=422, detail=f"{item['ControlId']}: {missing}")
         fields = {
             **control_fields(candidate, status, blocked_reason),
             "ConfirmedByEntraId": user.oid,
@@ -451,6 +472,9 @@ async def _definition_accept_cascade(item: dict, user: CurrentUser, rationale: s
             "DecisionRationale":  rationale,
             "QueueItemId":        item["id"],
         }
+        if schedule_days and not record_schedule(candidate)["document_days"]:
+            fields["RecordScheduleDays"] = schedule_days
+            fields["RecordScheduleSetBy"] = user.name or user.oid
         if current:
             before = _json_field(current.get("fields") or {}, "DefinitionJson")
             changed = [d["label"] for d in diff(before, candidate)]
@@ -461,7 +485,7 @@ async def _definition_accept_cascade(item: dict, user: CurrentUser, rationale: s
             cr_id = str((await create_list_item(_cr_id(), _CR_LIST, fields))["id"])
             created.append(f"Control Register {cr_id} created")
         created.append(f"Status {status}" + (f": {blocked_reason}" if blocked_reason else ""))
-    except CascadeError:
+    except (CascadeError, HTTPException):
         raise
     except Exception as exc:
         logger.error(f"Control Register upsert failed for {item.get('ControlId')}: {exc}")
@@ -491,9 +515,12 @@ async def _definition_accept_cascade(item: dict, user: CurrentUser, rationale: s
     if not sync_evidence:
         return " | ".join(created)
     try:
-        from evidence.service import sync_obligations
+        from evidence.service import start_clocks, sync_obligations
         synced = await sync_obligations()
         created.append(f"Evidence obligations: {synced['create']} created, {synced['update']} updated")
+        clocks = await start_clocks()
+        if clocks["started"]:
+            created.append(f"Record schedules started: {clocks['started']}")
         if synced.get("failures"):
             # The decision stands; the obligations are retried by the daily run.
             # Said here, on the item, rather than only in the server log.
@@ -631,7 +658,8 @@ async def zone1_decide(
             )
         if item.get("ControlId") and body.decision == "Accept":
             try:
-                cascade_result = await _definition_accept_cascade(item, user, rationale)
+                cascade_result = await _definition_accept_cascade(
+                    item, user, rationale, schedule_days=_schedule_days(body.schedule_days))
             except CascadeError as ce:
                 await _mark_cascade_failed(item_id, "1", body.decision, rationale, user, ce)
                 raise _cascade_failed_http(ce)
@@ -1478,6 +1506,14 @@ async def accept_document_definitions(
         eligible = [i for i in items if not definition_refusal(i)]
         owners = await get_ownership_index() if eligible else None
         rows = await get_list_items(_cr_id(), _CR_LIST) if eligible else []
+
+        # A control whose document states no record schedule is accepted on its own, with the
+        # schedule Compliance chooses — unless it already has one from before.
+        def chosen_before(i: dict) -> int:
+            cur = next((r for r in rows if (r.get("fields") or {}).get("ControlId") == i["ControlId"]), None)
+            return int(float(((cur or {}).get("fields") or {}).get("RecordScheduleDays") or 0))
+        need_schedule = sorted(i["ControlId"] for i in eligible if schedule_missing(i["Candidate"], 0, chosen_before(i)))
+        eligible = [i for i in eligible if i["ControlId"] not in need_schedule]
     except HTTPException:
         raise
     except Exception as exc:
@@ -1510,8 +1546,9 @@ async def accept_document_definitions(
     evidence = {}
     if accepted:
         try:
-            from evidence.service import sync_obligations
+            from evidence.service import start_clocks, sync_obligations
             evidence = await sync_obligations()
+            await start_clocks()
         except Exception as exc:
             logger.warning(f"Evidence obligation sync after bulk accept failed: {exc}")
 
@@ -1521,10 +1558,13 @@ async def accept_document_definitions(
         "blocked": sorted(blocked),
         "failed": failures,
         "refused": refused,
+        "need_schedule": need_schedule,
         "evidence_obligations_created": evidence.get("create", 0),
         "message": (f"Accepted {len(accepted)} of {len(items)} control(s) from {body.document}"
                     + (f"; {len(blocked)} recorded as Blocked (role not recognised)" if blocked else "")
                     + (f"; {len(refused)} refused: " + " ".join(r["reason"] for r in refused) if refused else "")
+                    + (f"; {len(need_schedule)} left to accept one by one, because their document states no "
+                       f"record schedule and you choose it: {', '.join(need_schedule)}" if need_schedule else "")
                     + (f"; {len(failures)} failed and were marked Blocked for retry" if failures else "")
                     + (f"; ⚠ {len(evidence['failures'])} evidence obligation write(s) failed — "
                        f"{evidence['failures'][0][:200]}" if evidence.get("failures") else "")

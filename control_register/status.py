@@ -54,6 +54,9 @@ def recheck_soon() -> None:
             from doc_standards import gate
             gate.invalidate()                  # a role changed: results that depend on Org Roles are out of date
             await recheck_control_statuses()
+            if settings.is_list_configured(settings.evidence_tracker_list_id):
+                from evidence.service import start_clocks
+                await start_clocks()           # someone may now hold a role whose records were waiting
         except Exception:
             logger.exception("Re-checking control statuses after a role change failed")
 

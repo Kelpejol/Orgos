@@ -3,6 +3,9 @@
 #
 # sync_obligations()  reconcile the Evidence Tracker with every confirmed
 #                     control's stated records (after an accept, and daily)
+# start_clocks()      start each scheduled obligation's clock once someone
+#                     holds its Control owner role (the first record is due
+#                     one period later)
 # refresh_states()    write each obligation's current state (Due soon, Late,
 #                     Missing, Stale, …) to its row when it changes, so Power
 #                     Automate flows watching the list notify the owner
@@ -43,7 +46,10 @@ async def _confirmed_controls() -> list[dict]:
             definition = None
         if f.get("ControlId") and definition:
             out.append({"control_id": f["ControlId"], "status": f.get("Status", ""),
-                        "definition": definition})
+                        "definition": definition,
+                        # set by Compliance in Extraction Review when the document states no schedule
+                        "schedule_days": int(float(f.get("RecordScheduleDays") or 0)),
+                        "schedule_set_by": f.get("RecordScheduleSetBy") or ""})
     return out
 
 
@@ -76,6 +82,42 @@ async def sync_obligations() -> dict:
               for k in ("create", "update", "retire")}
     logger.info("Evidence obligations synced: %s, %d failure(s)", counts, len(failures))
     return {**counts, "failures": failures}
+
+
+def clocks_to_start(items: list[dict], holders, today: Optional[date] = None) -> list[tuple[str, dict]]:
+    """
+    (item id, fields) for each scheduled obligation whose clock has not started and whose
+    Control owner role now has someone in it: it starts today. `holders(role)` → people. Pure.
+    """
+    today = today or date.today()
+    out = []
+    for item in items:
+        f = item.get("fields") or {}
+        if (f.get("ObligationKey") and f.get("Status") != "Withdrawn"
+                and int(float(f.get("CheckFrequencyDays") or 0)) > 0
+                and not f.get("ScheduledFrom") and not f.get("LastRecordDate")
+                and holders(f.get("OwnerRole") or "")):
+            out.append((str(item["id"]), {"ScheduledFrom": today.isoformat()}))
+    return out
+
+
+async def start_clocks(items: Optional[list[dict]] = None) -> dict:
+    """Start the clocks that can start: scheduled, and someone holds the Control owner role."""
+    from ownership.resolver import get_ownership_index
+
+    owners = await get_ownership_index()
+    if not getattr(owners, "groups_loaded", True):
+        return {"started": 0, "failed": 0}            # without Org Roles nobody holds anything: wait
+    items = items if items is not None else await get_list_items(_list_id(), LIST_NAME)
+    starts = clocks_to_start(items, lambda role: owners.resolve(role).get("people") if role else [])
+    failed = 0
+    for item_id, fields in starts:
+        try:
+            await update_list_item(_list_id(), LIST_NAME, item_id, fields)
+        except Exception as exc:
+            failed += 1
+            logger.error("Could not start the schedule of obligation %s: %s", item_id, exc)
+    return {"started": len(starts) - failed, "failed": failed}
 
 
 def state_changes(items: list[dict], today: Optional[date] = None) -> list[tuple[str, dict]]:
@@ -123,7 +165,8 @@ async def run_daily() -> None:
         logger.exception("Evidence daily run: re-checking control statuses failed")
     try:
         synced = await sync_obligations()
+        clocks = await start_clocks()
         states = await refresh_states()
-        logger.info("Evidence daily run: obligations %s; states %s", synced, states)
+        logger.info("Evidence daily run: obligations %s; clocks %s; states %s", synced, clocks, states)
     except Exception as exc:
         logger.error("Evidence daily run failed: %s", exc)

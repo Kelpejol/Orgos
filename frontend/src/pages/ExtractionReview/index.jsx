@@ -21,6 +21,8 @@ import { useAlert } from "../../components/shared/AlertModal.jsx";
 import { CascadeImpactModal, CascadeImpactPreview } from "../../components/shared/CascadeImpactModal.jsx";
 import apiClient from "../../api/grcApi.js";
 import { AcceptanceWarning, DefinitionPanel, DocumentBatches, isDefinition } from "../../components/shared/ControlDefinitionReview.jsx";
+import { ScheduleChoice, UnscheduledControls, needsScheduleChoice } from "../../components/shared/RecordSchedule.jsx";
+import { describeEvery } from "../../components/shared/recordSchedule.js";
 
 const EVIDENCE_TYPES = [
   ["", "Select evidence type"],
@@ -105,10 +107,11 @@ const zone1Api = {
 
   // The Zone 1 accept cascade: PATCH /decide (review_queue/router.py). For a
   // control definition it upserts by Control ID and creates evidence obligations.
-  acceptControl: (itemId, { rationale, ...overrides }) =>
+  acceptControl: (itemId, { rationale, schedule_days, ...overrides }) =>
     apiClient.patch(`/api/v1/queue/items/${itemId}/decide`, {
       decision: Object.keys(overrides).length ? "Edit and Accept" : "Accept",
       rationale,
+      ...(schedule_days ? { schedule_days } : {}),
       ...overrides,
     }).then(r => r.data),
 
@@ -168,7 +171,9 @@ const ChainPreview = ({ item, edits }) => {
         <div>→ Control Register — {item.ChangeKind === "Changed" ? `${item.ControlId} is updated` : `${item.ControlId} is created`},
           exactly as its document states it. Active if its Control owner is recognised; otherwise Blocked with the reason.</div>
         <div>→ Evidence Tracker — {records.length
-          ? `an obligation for ${records.join(", ")}`
+          ? `an obligation for ${records.join(", ")}` + (item.RecordSchedule?.document_days
+              ? `, due ${describeEvery(item.RecordSchedule.document_days)} (from the document)`
+              : ", due on the schedule you set below")
           : "no obligation: the control names no record by Record ID"}</div>
         <div>→ Audit log — your identity and the time</div>
       </div>
@@ -235,6 +240,7 @@ const DecisionPanel = ({ item, onDecide, onRequestSecondReview, isPending }) => 
   const [edits, setEdits]             = useState({});
   const [activeAction, setActiveAction] = useState(null);
   const [confirmAction, setConfirmAction] = useState(null);   // "accept" | "reject"
+  const [scheduleDays, setScheduleDays] = useState(0);        // only where the document states none
 
   useEffect(() => {
     if (!editMode) return;
@@ -255,7 +261,7 @@ const DecisionPanel = ({ item, onDecide, onRequestSecondReview, isPending }) => 
   }, [editMode, item]);
 
   // A reason is asked for only to reject, in its confirmation; accepting needs none.
-  const cannotAccept = isPending || !!item.AcceptanceRefusal;
+  const cannotAccept = isPending || !!item.AcceptanceRefusal || needsScheduleChoice(item, scheduleDays);
 
   const handleAction = async (action) => {
     if (action === "second_review") {
@@ -280,7 +286,7 @@ const DecisionPanel = ({ item, onDecide, onRequestSecondReview, isPending }) => 
     const action = confirmAction;
     setConfirmAction(null);
     setActiveAction(action);
-    await onDecide(action, confirmedRationale, editMode ? edits : {});
+    await onDecide(action, confirmedRationale, editMode ? edits : {}, scheduleDays);
     setActiveAction(null);
   };
 
@@ -423,12 +429,14 @@ const DecisionPanel = ({ item, onDecide, onRequestSecondReview, isPending }) => 
         </div>
       )}
 
+      {isDefinition(item) && <ScheduleChoice item={item} days={scheduleDays} onChange={setScheduleDays} />}
+
       {/* Decision buttons */}
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
         <button
           onClick={() => handleAction("accept")}
           disabled={cannotAccept}
-          title={item.AcceptanceRefusal || undefined}
+          title={item.AcceptanceRefusal || (needsScheduleChoice(item, scheduleDays) ? "Choose how often its record is due first" : undefined)}
           style={{ padding: "10px", fontSize: 12, borderRadius: 8, border: "none",
                    background: cannotAccept ? "#E8E8E8" : "#1D9E75",
                    color: cannotAccept ? "#999" : "#fff",
@@ -784,7 +792,7 @@ const ExtractionCard = ({ item, isCompliance, onDecide, onRequestSecondReview, i
             <>
               <DecisionPanel
                 item={item}
-                onDecide={(action, rationale, edits) => onDecide(item.id, action, rationale, edits)}
+                onDecide={(action, rationale, edits, scheduleDays) => onDecide(item.id, action, rationale, edits, scheduleDays)}
                 onRequestSecondReview={() => onRequestSecondReview(item)}
                 isPending={isPending}
               />
@@ -920,12 +928,13 @@ export default function ExtractionReview() {
     }
   };
 
-  const handleDecide = async (itemId, action, rationale, edits) => {
+  const handleDecide = async (itemId, action, rationale, edits, scheduleDays) => {
     setActionState({ pending: true, itemId });
     try {
       if (action === "accept") {
         await zone1Api.acceptControl(itemId, {
           rationale,
+          schedule_days: scheduleDays || undefined,
           ...Object.fromEntries(Object.entries(edits).filter(([, v]) => v)),
         });
       } else if (action === "reject") {
@@ -1015,6 +1024,7 @@ export default function ExtractionReview() {
         />
       </div>
 
+      {isCompliance && <UnscheduledControls />}
       {isCompliance && <DocumentBatches items={items} />}
 
       {/* Items */}

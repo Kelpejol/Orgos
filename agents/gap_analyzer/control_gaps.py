@@ -226,11 +226,11 @@ def find_evidence_gaps(obligations: list[dict], today=None) -> list[dict]:
         controls = sorted({f.get("LinkedControlId", "") for f in items})
         gaps.append(_gap(
             f"SCHED:{doc}", "Evidence gap", "Minor", doc, f"Evidence schedule not set for {doc}",
-            f"{len(items)} evidence obligation(s) for controls in {doc} have no check frequency, so "
+            f"{len(items)} evidence obligation(s) for controls in {doc} have no schedule, so "
             f"nothing is ever due: {', '.join(controls[:12])}{' and more' if len(controls) > 12 else ''}.",
             "Evidence with no schedule is never chased; gaps surface only at audit.",
-            "In the Evidence Tracker, set how often each record must be confirmed (accept the "
-            "suggestion where the trigger names a cadence).",
+            f"In Extraction Review (\"Set record schedules\"), set how often each record is due; or "
+            f"state the schedule in {doc} at its next revision, which then sets it.",
             ["Compliance Executive (QMS & NDPA)"],
             "Every listed obligation has a check frequency.",
             controls,

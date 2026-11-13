@@ -175,6 +175,13 @@ See docs/REMAINING-WORK.md §2. (The Role Catalogue is not needed: Org Roles is 
 - **Before deploying this (13 Nov 2026):** add two columns to the **Document Lifecycle** list, `VersionDecision` (single line of text) and `ChangeSummary` (multiple lines, plain text), with `python scripts/provision_sharepoint_columns.py --list "Document Lifecycle" --apply`. Without them the version cannot be saved and no document can be approved.
 
 
+## 11a. Record schedules come from the documents (13 Nov 2026)
+
+- A record's schedule is the one its control's document states ("Every quarter" → every 91 days; where several are named, the most frequent). Where the document is silent, **Compliance sets it in Extraction Review**: when accepting the control (required), or in "Set record schedules" for controls accepted without one. It is kept on the control. The Record tracker no longer sets or changes schedules.
+- The clock starts when the schedule is set **and** someone holds the Control owner role in Org Roles; the first record is due one period later. Until then the record shows "Waiting for an owner" and is never late.
+- **Before deploying:** add two columns to the **Control Register** list, `RecordScheduleDays` (number) and `RecordScheduleSetBy` (single line of text): `python scripts/provision_sharepoint_columns.py --list "Control Register" --apply`. Without them a schedule chosen in Extraction Review cannot be saved.
+- **After deploying:** `python scripts/sync_evidence_obligations.py` applies the documents' schedules to the existing records at once (the 07:30 job would do it next morning). On 13 Nov this changes ICX-001 (stays 91 days, now "from the document") and ICX-003 (becomes every quarter, from its document); ICX-002's document states none, so it appears in Extraction Review → "Set record schedules".
+
 ## 12. New columns and choice values (31 Oct fixes)
 
 Run `python scripts/provision_sharepoint_columns.py` (dry run), then `--apply`, to add the columns the code now writes. It never changes an existing column, so **choice values on existing columns must be added by hand** in the list's column settings:

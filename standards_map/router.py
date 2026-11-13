@@ -34,7 +34,7 @@ _RETIRED_CONTROL = {"Withdrawn", "Superseded"}
 # A record that needs attention now (evidence/obligations.ATTENTION) turns a clause Red; one that
 # is not settled yet turns it Amber.
 _RED_STATES = {"Missing", "Late", "Stale", "Rejected"}
-_AMBER_STATES = {"Unscheduled", "Awaiting first record", "Due soon", "Submitted"}
+_AMBER_STATES = {"Unscheduled", "Waiting for an owner", "Awaiting first record", "Due soon", "Submitted"}
 
 
 def record_state(fields: dict) -> str:

@@ -26,6 +26,33 @@ def definition_refusal(item: dict, is_role=None) -> str:
     return ""
 
 
+def record_schedule(candidate) -> dict:
+    """
+    What a control definition says about its record schedule, for Extraction Review:
+    whether it names a record (so it needs one) and the schedule its document states, if any.
+    Where the document is silent, Compliance sets it on accepting (13 Nov 2026).
+    """
+    from evidence.obligations import document_schedule
+
+    if not isinstance(candidate, dict):
+        return {"names_record": False, "document_days": 0, "document_words": ""}
+    stated = document_schedule(candidate)
+    return {
+        "names_record":   any((e or {}).get("record_id") for e in candidate.get("evidence") or []),
+        "document_days":  stated[0] if stated else 0,
+        "document_words": stated[1] if stated else "",
+    }
+
+
+def schedule_missing(candidate, chosen_days: int = 0, existing_days: int = 0) -> str:
+    """Why accepting needs a schedule first, or ""."""
+    s = record_schedule(candidate)
+    if not s["names_record"] or s["document_days"] or chosen_days or existing_days:
+        return ""
+    return ("Its document states no schedule for its record. Choose how often the record is due "
+            "(Monthly, Quarterly…) before accepting.")
+
+
 def acceptance_refusal(item: dict, is_role=None, owner: str | None = None) -> str:
     """Why this item can't be accepted, or "". For an older extraction, `owner` is the Control owner
     the reviewer is accepting (an edit may change it); it must be one role, not a field name."""

@@ -15,13 +15,16 @@ import pytest
 from agents.gap_analyzer.control_gaps import find_evidence_gaps
 from auth.validator import CurrentUser
 from evidence.obligations import (
+    FROM_THE_DOCUMENT,
+    WAITING,
     assess,
+    document_schedule,
     obligations_for,
     parse_frequency,
     plan_obligations,
-    suggest_frequency,
+    schedule_from_text,
 )
-from evidence.service import state_changes
+from evidence.service import clocks_to_start, state_changes
 from records_catalogue.model import RecordEntry
 
 TODAY = date(2026, 10, 19)
@@ -57,17 +60,35 @@ def test_a_withdrawn_duplicate_record_makes_no_obligation():
     assert obligations_for(definition(evidence=(("REC-0670", "Old"),)), CATALOGUE) == []
 
 
-def test_the_trigger_suggests_a_frequency_but_never_sets_one():
+def test_the_schedule_the_document_states_is_the_records_schedule():
     [ob] = obligations_for(definition(trigger="Quarterly access review."), CATALOGUE)
-    assert ob.suggested_frequency_days == 91
-    assert "CheckFrequencyDays" not in ob.fields()
-    assert suggest_frequency("Monthly check and annual audit") is None   # two cadences: no guess
+    assert ob.fields()["CheckFrequencyDays"] == 91 and ob.fields()["ScheduleSetBy"] == FROM_THE_DOCUMENT
+    assert ob.suggested_frequency_basis == "The document says “Quarterly”"
+    # Compliance's choice is not used when the document states one
+    [ob] = obligations_for(definition(trigger="Quarterly access review."), CATALOGUE, 30, "Victoria")
+    assert ob.fields()["CheckFrequencyDays"] == 91
+
+
+def test_where_the_document_is_silent_compliance_sets_it_and_until_then_there_is_none():
+    [silent] = obligations_for(definition(trigger="Each issue entered in the record."), CATALOGUE)
+    assert silent.fields()["CheckFrequencyDays"] == 0 and silent.fields()["ScheduleSetBy"] == ""
+    [chosen] = obligations_for(definition(trigger="Each issue entered in the record."), CATALOGUE, 30, "Victoria")
+    assert (chosen.fields()["CheckFrequencyDays"], chosen.fields()["ScheduleSetBy"]) == (30, "Victoria")
+
+
+def test_reading_a_schedule_from_the_words():
+    assert schedule_from_text("Every quarter, aligned to the ExCo session, and a full annual review") == (91, "Every quarter")
+    assert schedule_from_text("Monthly check and annual audit") == (30, "Monthly")      # the most frequent
+    assert schedule_from_text("every 2 weeks") == (14, "every 2 weeks")
+    assert schedule_from_text("within 30 days of exit") is None                          # a deadline, not a schedule
+    assert schedule_from_text("Each issue entered in the Context Analysis Record") is None
+    assert document_schedule({"trigger": "On request", "other_fields": {"Frequency": "Annually"}}) == (365, "Annually")
     assert parse_frequency("90 days") == 90 and parse_frequency("quarterly") == 91
     assert parse_frequency("as needed") is None
 
 
-def _controls(*defs):
-    return [{"control_id": d["control_id"], "status": "Active", "definition": d} for d in defs]
+def _controls(*defs, **schedule):
+    return [{"control_id": d["control_id"], "status": "Active", "definition": d, **schedule} for d in defs]
 
 
 def _rows(actions, **extra):
@@ -80,12 +101,25 @@ def test_reconciling_creates_then_changes_nothing():
     assert plan_obligations(_controls(definition()), _rows(first), CATALOGUE) == []
 
 
-def test_a_schedule_and_submission_set_by_people_survive_a_sync():
-    rows = _rows(plan_obligations(_controls(definition()), [], CATALOGUE),
-                 CheckFrequencyDays=91.0, LastRecordDate="2026-09-01", Status="Accepted")
-    changed = plan_obligations(_controls(definition(accountable="Records Officer")), rows, CATALOGUE)
+def test_a_schedule_and_submission_survive_a_sync():
+    chosen = {"schedule_days": 91, "schedule_set_by": "Victoria"}
+    rows = _rows(plan_obligations(_controls(definition(), **chosen), [], CATALOGUE),
+                 LastRecordDate="2026-09-01", Status="Accepted", ScheduledFrom="2026-06-01")
+    changed = plan_obligations(_controls(definition(accountable="Records Officer"), **chosen), rows, CATALOGUE)
     [action] = changed
     assert action.fields == {"OwnerRole": "Records Officer"}       # only the generated field
+
+
+def test_a_schedule_typed_on_the_record_gives_way_to_the_documents_and_its_clock_restarts():
+    rows = _rows(plan_obligations(_controls(definition()), [], CATALOGUE),
+                 CheckFrequencyDays=30.0, ScheduleSetBy="Victoria", ScheduledFrom="2026-11-12")
+    [action] = plan_obligations(_controls(definition(trigger="Quarterly review")), rows, CATALOGUE)
+    assert action.fields["CheckFrequencyDays"] == 91 and action.fields["ScheduleSetBy"] == FROM_THE_DOCUMENT
+    assert action.fields["ScheduledFrom"] is None
+    same_days = _rows(plan_obligations(_controls(definition(trigger="Quarterly review")), [], CATALOGUE),
+                      CheckFrequencyDays=91.0, ScheduleSetBy="Victoria", ScheduledFrom="2026-11-12")
+    [action] = plan_obligations(_controls(definition(trigger="Quarterly review")), same_days, CATALOGUE)
+    assert action.fields == {"ScheduleSetBy": FROM_THE_DOCUMENT}                     # same schedule: clock kept
 
 
 def test_a_record_dropped_from_the_control_is_retired_and_restored_if_named_again():
@@ -130,8 +164,23 @@ def test_only_states_that_changed_are_written():
                                    "NextDue": "2026-10-01T00:00:00Z"}},
             {"id": "2", "fields": {"ObligationKey": "L", "State": "Current"}}]
     assert state_changes(rows, TODAY) == [("2", {"State": "Unscheduled",
-                                                 "StateDetail": "No check frequency is set.",
+                                                 "StateDetail": "The document states no schedule for this record. "
+                                                                "Compliance sets it in Extraction Review.",
                                                  "NextDue": None})]
+
+
+def test_a_schedule_waits_for_someone_to_hold_the_control_owner_role():
+    assert state(CheckFrequencyDays=30) == WAITING                                  # never late meanwhile
+    rows = [{"id": "1", "fields": {"ObligationKey": "K", "CheckFrequencyDays": 30, "OwnerRole": "CCO"}},
+            {"id": "2", "fields": {"ObligationKey": "L", "CheckFrequencyDays": 30, "OwnerRole": "Empty role"}},
+            {"id": "3", "fields": {"ObligationKey": "M", "CheckFrequencyDays": 0, "OwnerRole": "CCO"}},
+            {"id": "4", "fields": {"ObligationKey": "N", "CheckFrequencyDays": 30, "OwnerRole": "CCO",
+                                   "ScheduledFrom": "2026-10-01"}}]
+    holders = lambda role: [{"oid": "p"}] if role == "CCO" else []
+    assert clocks_to_start(rows, holders, TODAY) == [("1", {"ScheduledFrom": "2026-10-19"})]
+    # started today: the first record is due one period later
+    assert assess({"ObligationKey": "K", "CheckFrequencyDays": 30, "ScheduledFrom": "2026-10-19"}, TODAY).next_due \
+        == date(2026, 11, 18)
 
 
 # ── gaps ─────────────────────────────────────────────────────────────────────
@@ -201,15 +250,6 @@ async def test_a_record_kept_elsewhere_is_linked_not_uploaded():
             await rt.upload_record("5", UploadFile(BytesIO(b"x"), filename="r.pdf"),
                                    submission_notes=None, record_date="2026-10-10", user=USER)
     assert exc.value.status_code == 409 and "S01 SharePoint" in exc.value.detail
-
-
-async def test_a_person_sets_the_schedule_once_and_the_first_record_falls_due_a_period_later():
-    store, g, u = _patched({**OBLIGATION, "CheckFrequencyDays": 0, "Status": "Pending",
-                            "LastRecordDate": None})
-    with g, u:
-        result = await rt.schedule_obligation("5", rt.ScheduleObligation(check_frequency_days=30), user=USER)
-    assert store["fields"]["ScheduledFrom"] == date.today().isoformat()
-    assert result["State"] == "Awaiting first record"
 
 
 async def test_an_obligations_owner_comes_from_its_control():

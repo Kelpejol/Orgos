@@ -23,13 +23,14 @@ USER = CurrentUser(oid="u", name="Reviewer", email="u@x", tenant_id="t", roles=[
 
 
 def library(requirement="The CTO shall log every change.", responsibility="CTO.",
-            code="DRG-ISMS-STD-TST", ids=("TST-01", "TST-02"), version="1.0"):
+            code="DRG-ISMS-STD-TST", ids=("TST-01", "TST-02"), version="1.0",
+            trigger="A change; the log is reviewed monthly."):
     b = DocBuilder()
     b.control_block(title="Test Standard", code=code, owner="CTO", layer="Layer 3")
     for cid in ids:
         b.control(cid, "Change logging",
                   requirement=requirement if cid == "TST-01" else "The CTO shall review logs.",
-                  trigger="A change.", responsibility=responsibility, evidence="REC-0001 Change log.")
+                  trigger=trigger, responsibility=responsibility, evidence="REC-0001 Change log.")
     return LibraryIndex([parse_document(b.bytes(), f"std-{version}.docx")])
 
 
@@ -144,7 +145,7 @@ class _Index:
         return {"kind": "group"}
 
 
-async def _accept(queue_item, register_rows):
+async def _accept(queue_item, register_rows, schedule_days=0):
     writes = {"create": [], "update": []}
 
     async def create(list_id, name, fields):
@@ -160,7 +161,8 @@ async def _accept(queue_item, register_rows):
          patch.object(rq, "create_list_item", side_effect=create), \
          patch.object(rq, "update_list_item", side_effect=update), \
          patch("ownership.resolver.get_ownership_index", new=AsyncMock(return_value=_Index())):
-        result = await rq._definition_accept_cascade(item, USER, "Matches the approved Standard.")
+        result = await rq._definition_accept_cascade(item, USER, "Matches the approved Standard.",
+                                                     schedule_days=schedule_days)
     return writes, result
 
 
@@ -183,6 +185,42 @@ async def test_accepting_a_new_control_creates_one_row_and_no_evidence_row():
     assert row["ControlId"] == "TST-01"
     assert json.loads(row["MappingJson"]) == []
     assert json.loads(row["DefinitionJson"])["evidence"] == [{"record_id": "REC-0001", "name": "Change log"}]
+
+
+# ── the record schedule (13 Nov 2026) ──────────────────────────────────────
+
+SILENT = "Each change to production."          # the document states no schedule
+
+
+async def test_a_control_whose_document_states_no_schedule_needs_one_to_be_accepted():
+    [action, _] = plan_sync(library(trigger=SILENT), [], []).actions
+    item = rq._sp_to_item(queued(action))
+    assert item["RecordSchedule"] == {"names_record": True, "document_days": 0, "document_words": ""}
+    with pytest.raises(rq.HTTPException) as exc:
+        await _accept(queued(action), [])
+    assert exc.value.status_code == 422 and "no schedule" in exc.value.detail
+
+
+async def test_the_schedule_compliance_chooses_is_kept_on_the_control():
+    [action, _] = plan_sync(library(trigger=SILENT), [], []).actions
+    writes, _ = await _accept(queued(action), [], schedule_days=91)
+    row = writes["create"][0][1]
+    assert row["RecordScheduleDays"] == 91 and row["RecordScheduleSetBy"] == "Reviewer"
+
+
+async def test_a_schedule_the_document_states_is_not_asked_for_nor_overridden():
+    [action, _] = plan_sync(library(), [], []).actions
+    assert rq._sp_to_item(queued(action))["RecordSchedule"]["document_days"] == 30
+    writes, _ = await _accept(queued(action), [], schedule_days=7)
+    assert "RecordScheduleDays" not in writes["create"][0][1]
+
+
+async def test_a_changed_control_keeps_the_schedule_chosen_before():
+    register = confirmed_register(library(trigger=SILENT))
+    register[0]["fields"]["RecordScheduleDays"] = 91
+    [action] = plan_sync(library(trigger=SILENT, requirement="Changed."), register, []).actions
+    writes, _ = await _accept(queued(action), register)        # no new choice needed
+    assert writes["update"][0][2]["ControlStatement"] == "Changed."
 
 
 async def test_a_definition_cannot_be_edited_in_the_queue():
@@ -286,6 +324,19 @@ async def test_a_documents_new_definitions_are_accepted_together_each_with_its_o
     assert writes["create"].count("Control Register") == 2 and writes["create"].count("Audit Log") == 2
     assert sorted(i for n, i, st in writes["update"] if n == "AI Review Queue") == ["60", "61"]
     assert result["evidence_obligations_created"] == 2
+
+
+async def test_accepting_together_leaves_controls_needing_a_schedule_to_be_accepted_one_by_one():
+    actions = plan_sync(library(trigger=SILENT), [], []).actions
+    queue = [queued(a, item_id=str(60 + n)) for n, a in enumerate(actions)]
+    with patch.object(rq, "get_list_items", new=AsyncMock(side_effect=[queue, []])), \
+         patch.object(rq, "create_list_item", new=AsyncMock(return_value={"id": "300"})) as create, \
+         patch.object(rq, "update_list_item", new=AsyncMock(return_value={})), \
+         patch("ownership.resolver.get_ownership_index", new=AsyncMock(return_value=_Index())):
+        result = await rq.accept_document_definitions(rq.AcceptDocumentBody(document="DRG-ISMS-STD-TST"), user=USER)
+    assert result["accepted"] == [] and result["need_schedule"] == ["TST-01", "TST-02"]
+    assert "one by one" in result["message"]
+    create.assert_not_called()
 
 
 async def test_the_accept_preview_says_what_a_definition_accept_really_does():

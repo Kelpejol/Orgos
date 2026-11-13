@@ -78,6 +78,9 @@ def _sp_to_control(item: dict) -> dict:
         "ControlId":        f.get("ControlId", ""),
         "BlockedReason":    f.get("BlockedReason", ""),
         "ConfirmedDate":    f.get("ConfirmedDate", ""),
+        # How often its record is due when the document states no schedule (set in Extraction Review)
+        "RecordScheduleDays":  int(float(f.get("RecordScheduleDays") or 0)),
+        "RecordScheduleSetBy": f.get("RecordScheduleSetBy", ""),
         "Definition":       _definition(f),
         "created":          item.get("createdDateTime", ""),
         "modified":         item.get("lastModifiedDateTime", ""),
@@ -244,6 +247,54 @@ async def reassign_control_owner(
         raise
     except Exception as exc:
         _handle(exc, f"reassign control owner {item_id}")
+
+
+class RecordScheduleBody(BaseModel):
+    days: int            # how often the control's record is due
+
+
+@router.patch("/api/v1/controls/{item_id}/record-schedule")
+async def set_record_schedule(
+    item_id: str,
+    body: RecordScheduleBody,
+    user: CurrentUser = Depends(require_compliance_lead),
+) -> dict:
+    """
+    How often a control's record is due, where its document states no schedule (Extraction
+    Review, "Set record schedules"). A schedule the document states is the document's: it changes
+    there, through Document Lifecycle. The record's clock starts once someone holds the Control
+    owner role; the first record is due one period later. Audited.
+    """
+    from evidence.obligations import document_schedule
+    if not 1 <= body.days <= 3650:
+        raise HTTPException(status_code=422, detail="A record schedule is 1 to 3650 days.")
+    try:
+        current = _sp_to_control(await get_list_item(_cr_list_id(), _CR_LIST_NAME, item_id))
+        stated = document_schedule(current.get("Definition") or {})
+        if stated:
+            raise HTTPException(status_code=409, detail=(
+                f"The {current.get('ControlDocument') or 'document'} sets this schedule (“{stated[1]}”), "
+                "so it changes in the document, through Document Lifecycle."))
+        before = int(float(current.get("RecordScheduleDays") or 0))
+        await update_list_item(_cr_list_id(), _CR_LIST_NAME, item_id, {
+            "RecordScheduleDays": body.days, "RecordScheduleSetBy": user.name or user.oid})
+        from audit.trail import record
+        await record(user, "Record schedule set",
+                     f"{current.get('ControlName') or current.get('ControlId')}: every {body.days} days"
+                     + (f" (was every {before} days)" if before else ""),
+                     item_id=item_id, item_type="Control", document_code=current.get("ControlDocumentCode", ""))
+        # The control's records take the schedule now, not at tomorrow's evidence run.
+        try:
+            from evidence.service import start_clocks, sync_obligations
+            await sync_obligations()
+            await start_clocks()
+        except Exception as exc:
+            logger.warning(f"Records of control {item_id} take the new schedule at the next evidence run: {exc}")
+        return _sp_to_control(await get_list_item(_cr_list_id(), _CR_LIST_NAME, item_id))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _handle(exc, f"set record schedule {item_id}")
 
 
 # =============================================================================

@@ -270,6 +270,9 @@ LISTS: dict[str, dict] = {
         "list_id_attr": "control_register_list_id",
         "display_name": "Control Register",
         "columns": {
+            # how often the control's record is due, where its document states no schedule
+            "RecordScheduleDays":        (NUM,    None),
+            "RecordScheduleSetBy":       (TEXT,   None),
             "ControlStatement": (NOTE,   None),
             "ControlType":      (TEXT,   None),
             "SourceDocument":   (TEXT,   None),

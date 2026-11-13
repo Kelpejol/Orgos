@@ -8,10 +8,16 @@
 #
 # Two frequencies, never one (architecture plan §9):
 #   • operating trigger — when the control runs; the definition's Trigger
-#   • check frequency   — how often we confirm the proof exists; stated by a
-#     person (documents rarely state it). Until set, the obligation is
-#     Unscheduled and says so. A cadence word in the trigger ("quarterly") is
-#     offered as a suggestion, never applied silently.
+#   • check frequency   — how often the record is due. Taken from the document
+#     when it states a schedule ("Every quarter", "monthly"; the most frequent
+#     when it names several), else set by Compliance in Extraction Review and
+#     kept on the control (RecordScheduleDays). Until then the obligation is
+#     Unscheduled and says so. (Decided with Compliance, 13 Nov 2026.)
+#
+# The clock starts when the schedule is set AND someone holds the Control owner
+# role (ScheduledFrom; evidence/service.start_clocks). The first record is due
+# one period later. Until someone holds the role the obligation is "Waiting for
+# an owner", never late.
 #
 # Reference at source: the obligation points at the record's authoritative
 # location from the Records Catalogue. A submission is a reference to the
@@ -58,6 +64,39 @@ def parse_frequency(text: str) -> Optional[int]:
     return None
 
 
+_EVERY_N = re.compile(r"\bevery\s+(\d{1,3})\s*(day|week|month|year)s?\b", re.I)
+_UNIT_DAYS = {"day": 1, "week": 7, "month": 30, "year": 365}
+FROM_THE_DOCUMENT = "From the document"
+
+
+def schedule_from_text(text: str) -> Optional[tuple[int, str]]:
+    """
+    The record schedule a text states: (days, the words as written). "Every 2 weeks" counts;
+    "within 30 days of …" does not (that is a deadline after an event, not a schedule). Where
+    it names several ("every quarter … and a full annual review"), the most frequent wins:
+    the record is due as often as the control runs.
+    """
+    found = []
+    for pattern, days in _CADENCES:
+        for m in re.finditer(pattern, text or "", re.I):
+            found.append((days, m.group(0)))
+    for m in _EVERY_N.finditer(text or ""):
+        n = int(m.group(1))
+        if n:
+            found.append((n * _UNIT_DAYS[m.group(2).lower()], m.group(0)))
+    return min(found, key=lambda f: f[0]) if found else None
+
+
+def document_schedule(definition: dict) -> Optional[tuple[int, str]]:
+    """The schedule a control's definition states: a Frequency/Schedule field first, else its Trigger."""
+    for key, value in (definition.get("other_fields") or {}).items():
+        if re.search(r"frequen|schedul|cadence", key or "", re.I):
+            found = schedule_from_text(str(value))
+            if found:
+                return found
+    return schedule_from_text(definition.get("trigger", ""))
+
+
 def suggest_frequency(trigger: str) -> Optional[tuple[int, str]]:
     """
     A check frequency suggested by a cadence word in the operating trigger:
@@ -89,9 +128,11 @@ class Obligation:
     custodian: str = ""
     suggested_frequency_days: Optional[int] = None
     suggested_frequency_basis: str = ""
+    schedule_days: int = 0            # how often the record is due: the document's, else Compliance's
+    schedule_set_by: str = ""         # FROM_THE_DOCUMENT, or who set it in Extraction Review
 
     def fields(self) -> dict:
-        """Generated fields only — schedule and submission state are never overwritten."""
+        """Generated fields only — submission state and the clock's start are never overwritten."""
         return {
             "Title": f"{self.control_id} · {self.record_id} {self.record_name}"[:255],
             "ObligationKey": self.key,
@@ -105,10 +146,13 @@ class Obligation:
             "Custodian": self.custodian,
             "SuggestedFrequencyDays": self.suggested_frequency_days or 0,
             "SuggestedFrequencyBasis": self.suggested_frequency_basis,
+            "CheckFrequencyDays": self.schedule_days or 0,
+            "ScheduleSetBy": self.schedule_set_by,
         }
 
 
-def obligations_for(definition: dict, catalogue: Optional[dict] = None) -> list[Obligation]:
+def obligations_for(definition: dict, catalogue: Optional[dict] = None,
+                    schedule_days: int = 0, schedule_set_by: str = "") -> list[Obligation]:
     """
     One obligation per Record ID the control's evidence names. A record named
     without an ID makes no obligation — it can't be found; Gap Analysis
@@ -119,7 +163,11 @@ def obligations_for(definition: dict, catalogue: Optional[dict] = None) -> list[
     # The Control owner produces the evidence. For an older "Accountable / Executing" control the
     # accountable role is its Control owner (as the control's own status is judged).
     owner = (definition.get("accountable") or "").strip()
-    suggestion = suggest_frequency(definition.get("trigger", ""))
+    stated = document_schedule(definition)
+    if stated:
+        days, set_by = stated[0], FROM_THE_DOCUMENT
+    else:                                   # the document is silent: Compliance's choice, if made
+        days, set_by = (int(schedule_days or 0), schedule_set_by or "Compliance") if schedule_days else (0, "")
     for ref in definition.get("evidence") or []:
         rid = ref.get("record_id")
         if not rid or rid in out:
@@ -139,8 +187,10 @@ def obligations_for(definition: dict, catalogue: Optional[dict] = None) -> list[
             location=entry.location if entry else "",
             system_id=entry.system_id if entry else "",
             custodian=entry.custodian if entry else "",
-            suggested_frequency_days=suggestion[0] if suggestion else None,
-            suggested_frequency_basis=(f"Trigger says “{suggestion[1]}”" if suggestion else ""),
+            suggested_frequency_days=stated[0] if stated else None,
+            suggested_frequency_basis=(f"The document says “{stated[1]}”" if stated else ""),
+            schedule_days=days,
+            schedule_set_by=set_by,
         )
     return list(out.values())
 
@@ -156,6 +206,7 @@ class ObligationAction:
 
 
 RETIRED = "Withdrawn"
+WAITING = "Waiting for an owner"
 
 
 def _same(stored, generated) -> bool:
@@ -179,7 +230,8 @@ def plan_obligations(controls: list[dict], existing: list[dict],
     wanted: dict[str, Obligation] = {}
     for c in controls:
         if c.get("definition") and c.get("status") not in ("Withdrawn", "Superseded"):
-            for ob in obligations_for(c["definition"], catalogue):
+            for ob in obligations_for(c["definition"], catalogue,
+                                      c.get("schedule_days") or 0, c.get("schedule_set_by") or ""):
                 wanted[ob.key] = ob
 
     by_key: dict[str, dict] = {}
@@ -197,6 +249,8 @@ def plan_obligations(controls: list[dict], existing: list[dict],
             continue
         current = item.get("fields") or {}
         changed = {k: v for k, v in generated.items() if not _same(current.get(k), v)}
+        if "CheckFrequencyDays" in changed:
+            changed["ScheduledFrom"] = None             # a new schedule: its clock starts again
         if current.get("Status") == RETIRED:
             changed["Status"] = "Pending"               # the link is stated again
         if changed:
@@ -227,7 +281,7 @@ def _as_date(value) -> Optional[date]:
 
 @dataclass
 class Assessment:
-    state: str                # Unscheduled | Awaiting first record | Missing | Current |
+    state: str                # Unscheduled | Waiting for an owner | Awaiting first record | Missing | Current |
                               # Due soon | Late | Stale | Submitted | Rejected | Withdrawn
     next_due: Optional[date]
     detail: str
@@ -252,15 +306,18 @@ def assess(fields: dict, today: Optional[date] = None) -> Assessment:
     if status == RETIRED:
         return Assessment("Withdrawn", None, "No longer required by the control.")
 
-    freq = int(fields.get("CheckFrequencyDays") or 0)
+    freq = int(float(fields.get("CheckFrequencyDays") or 0))
     if freq <= 0:
-        hint = fields.get("SuggestedFrequencyBasis")
         return Assessment("Unscheduled", None,
-                          "No check frequency is set." + (f" Suggested: {hint}." if hint else ""))
+                          "The document states no schedule for this record. Compliance sets it in Extraction Review.")
 
-    fresh = int(fields.get("FreshnessDays") or 0) or freq
+    fresh = int(float(fields.get("FreshnessDays") or 0)) or freq
     last = _as_date(fields.get("LastRecordDate"))
-    start = _as_date(fields.get("ScheduledFrom")) or today
+    start = _as_date(fields.get("ScheduledFrom"))
+    if start is None and last is None:
+        return Assessment(WAITING, None,
+                          "The schedule starts when someone holds the Control owner role in Org Roles.")
+    start = start or last
     next_due = (last or start) + timedelta(days=freq)
 
     if status == "Submitted":

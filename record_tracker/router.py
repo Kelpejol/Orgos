@@ -204,7 +204,8 @@ async def list_records(
             "Pending": 3, "Rejected": 4, "Accepted": 5,
         }
         state_order = {"Missing": 0, "Late": 1, "Rejected": 2, "Stale": 3, "Due soon": 4,
-                       "Submitted": 5, "Awaiting first record": 6, "Unscheduled": 7, "Current": 8}
+                       "Submitted": 5, "Awaiting first record": 6, "Waiting for an owner": 7,
+                       "Unscheduled": 8, "Current": 9}
         records.sort(key=lambda r: state_order.get(r.get("State"), status_order.get(r["Status"], 9)))
         return records
     except Exception as exc:
@@ -227,11 +228,6 @@ class SubmitRecord(BaseModel):
     record_link:      str   # Mandatory — link to the record where it lives
     submission_notes: Optional[str] = None
     record_date:      Optional[str] = None   # when the record was produced; required for obligations
-
-
-class ScheduleObligation(BaseModel):
-    check_frequency_days: int                # how often the record must be confirmed
-    freshness_days:       Optional[int] = None
 
 
 def _record_date(value: Optional[str]) -> str:
@@ -511,39 +507,5 @@ async def reassign_record_owner(
         _handle(exc, f"reassign record owner {item_id}")
 
 
-@router.patch("/api/v1/records/{item_id}/schedule")
-async def schedule_obligation(
-    item_id: str,
-    body: ScheduleObligation,
-    user: CurrentUser = Depends(require_compliance_lead),
-) -> dict:
-    """
-    Set how often an obligation's record must be confirmed (and, optionally,
-    how old an accepted record may be). Documents rarely state this, so a
-    person decides it; until then the obligation is Unscheduled. The first
-    record falls due one period after the schedule is set.
-    """
-    if not 1 <= body.check_frequency_days <= 3650:
-        raise HTTPException(status_code=422, detail="check_frequency_days must be 1–3650.")
-    if body.freshness_days is not None and not 0 <= body.freshness_days <= 3650:
-        raise HTTPException(status_code=422, detail="freshness_days must be 0–3650 (0 = same as the frequency).")
-    try:
-        cur = (await get_list_item(_list_id(), _LIST_NAME, item_id)).get("fields", {}) or {}
-        if not cur.get("ObligationKey"):
-            raise HTTPException(status_code=422, detail="Only evidence obligations have a schedule.")
-        fields: dict = {
-            "CheckFrequencyDays": body.check_frequency_days,
-            "FreshnessDays":      body.freshness_days or 0,
-            "ScheduleSetBy":      user.name or user.oid,
-        }
-        if not cur.get("ScheduledFrom"):
-            fields["ScheduledFrom"] = date.today().isoformat()
-        await update_list_item(_list_id(), _LIST_NAME, item_id, fields)
-        await record(user, "Record schedule set",
-                     f"Every {body.check_frequency_days} days; freshness {body.freshness_days or 'same as frequency'}",
-                     item_id=item_id, item_type="Record", document_code=cur.get("LinkedControlId", ""))
-        return _sp_to_record(await get_list_item(_list_id(), _LIST_NAME, item_id))
-    except HTTPException:
-        raise
-    except Exception as exc:
-        _handle(exc, f"schedule obligation {item_id}")
+# A record's schedule is not set here (13 Nov 2026): it comes from the control's document, or
+# Compliance sets it in Extraction Review (PATCH /api/v1/controls/{id}/record-schedule).

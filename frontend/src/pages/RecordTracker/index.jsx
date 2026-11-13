@@ -53,12 +53,6 @@ const recordApi = {
       record_date: recordDate || undefined,
     }).then(r => r.data),
 
-  schedule: (id, days, freshness) =>
-    apiClient.patch(`/api/v1/records/${id}/schedule`, {
-      check_frequency_days: days,
-      freshness_days: freshness || undefined,
-    }).then(r => r.data),
-
   verify: (id, accepted, rejectionNote) =>
     apiClient.patch(`/api/v1/records/${id}/verify`, {
       accepted,
@@ -106,6 +100,7 @@ const STATE_STYLES = {
   "Submitted":             STATUS_STYLES.Submitted,
   "Awaiting first record": STATUS_STYLES.Pending,
   "Unscheduled":           { color: "#595952", bg: "#F7F6F2", bd: "#D3D1C7" },
+  "Waiting for an owner":  { color: "#595952", bg: "#F7F6F2", bd: "#D3D1C7" },
   "Current":               STATUS_STYLES.Accepted,
   "Withdrawn":             { color: "#8A8A85", bg: "#F1EFE8", bd: "#D3D1C7" },
 };
@@ -409,67 +404,11 @@ const VerifyPanel = ({ item, onVerify, onClose, isPending }) => {
 };
 
 // =============================================================================
-//  Schedule panel (Compliance) — how often an obligation's record is confirmed
-// =============================================================================
-
-const SchedulePanel = ({ item, onSchedule, onClose, isPending }) => {
-  const [days, setDays] = useState(item.CheckFrequencyDays || item.SuggestedFrequencyDays || "");
-  const [fresh, setFresh] = useState(item.FreshnessDays || "");
-  const n = parseInt(days, 10);
-  const ok = n >= 1 && n <= 3650;
-  return (
-    <div style={{ marginTop: 12, padding: "14px", background: "var(--color-background-secondary)",
-                  borderRadius: 10, border: "1px solid var(--color-border-tertiary)" }}
-         onClick={e => e.stopPropagation()}>
-      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>How often is this record confirmed?</div>
-      <div style={{ fontSize: 11, color: "var(--color-text-secondary)", marginBottom: 10 }}>
-        Separate from when the control runs ({item.OperatingTrigger || "trigger not stated"}).
-        {item.SuggestedFrequencyBasis && ` Suggested: ${describeDays(item.SuggestedFrequencyDays)} — ${item.SuggestedFrequencyBasis}.`}
-      </div>
-      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 8 }}>
-        {FREQUENCY_PRESETS.map(([label, d]) => (
-          <button key={d} onClick={() => setDays(d)}
-            style={{ padding: "5px 10px", fontSize: 11, borderRadius: 6, cursor: "pointer",
-                     border: n === d ? "1px solid #0C447C" : "1.5px solid #C0C0C0",
-                     background: n === d ? "#D4E8FA" : "var(--color-background-primary)",
-                     color: n === d ? "#0C447C" : "var(--color-text-secondary)" }}>
-            {label}
-          </button>
-        ))}
-        <input type="number" min={1} max={3650} value={days} onChange={e => setDays(e.target.value)}
-          style={{ width: 80, fontSize: 12, padding: "5px 8px", borderRadius: 6, border: "1.5px solid #C0C0C0" }} />
-        <span style={{ fontSize: 11, alignSelf: "center", color: "var(--color-text-tertiary)" }}>days</span>
-      </div>
-      <label style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>
-        Record goes stale after{" "}
-        <input type="number" min={0} max={3650} value={fresh} onChange={e => setFresh(e.target.value)}
-          placeholder="same" style={{ width: 70, fontSize: 12, padding: "4px 6px", borderRadius: 6,
-                                       border: "1.5px solid #C0C0C0" }} /> days (blank = same as the frequency)
-      </label>
-      <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
-        <button disabled={!ok || isPending} onClick={() => onSchedule(item.id, n, parseInt(fresh, 10) || 0)}
-          style={{ padding: "8px 16px", fontSize: 12, borderRadius: 8, border: "none", fontWeight: 600,
-                   background: !ok || isPending ? "#E8E8E8" : "#085041",
-                   color: !ok || isPending ? "#999" : "#fff", cursor: ok ? "pointer" : "not-allowed" }}>
-          {isPending ? "Saving…" : "Set schedule"}
-        </button>
-        <button onClick={onClose}
-          style={{ padding: "8px 12px", fontSize: 12, borderRadius: 8, border: "1.5px solid #C0C0C0",
-                   background: "transparent", color: "var(--color-text-secondary)", cursor: "pointer" }}>
-          Cancel
-        </button>
-      </div>
-    </div>
-  );
-};
-
-// =============================================================================
 //  Record card
 // =============================================================================
 
-const RecordCard = ({ item, currentOid, isCompliance, onSubmit, onSubmitLink, onVerify, onReassignOwner, onSchedule, actionItemId, focused }) => {
+const RecordCard = ({ item, currentOid, isCompliance, onSubmit, onSubmitLink, onVerify, onReassignOwner, actionItemId, focused }) => {
   const cardRef = useRef(null);
-  const [showSchedule, setShowSchedule] = useState(false);
   const [expanded, setExpanded]     = useState(false);
   const [showSubmit, setShowSubmit] = useState(false);
   const [showVerify, setShowVerify] = useState(false);
@@ -683,20 +622,6 @@ const RecordCard = ({ item, currentOid, isCompliance, onSubmit, onSubmitLink, on
             />
           )}
 
-          {/* Schedule — how often the record is confirmed (Compliance) */}
-          {ob && isCompliance && item.State !== "Withdrawn" && !showSchedule && (
-            <button onClick={e => { e.stopPropagation(); setShowSchedule(true); }}
-              style={{ marginTop: 8, width: "100%", padding: "8px", fontSize: 12, borderRadius: 8,
-                       border: "1.5px solid var(--color-border-tertiary)", background: "transparent",
-                       color: "var(--color-text-secondary)", cursor: "pointer", fontWeight: 500 }}>
-              {item.CheckFrequencyDays ? "Change schedule" : "Set schedule"}
-            </button>
-          )}
-          {showSchedule && (
-            <SchedulePanel item={item} isPending={isPending} onClose={() => setShowSchedule(false)}
-              onSchedule={async (id, days, fresh) => { await onSchedule(id, days, fresh); setShowSchedule(false); }} />
-          )}
-
           {/* Reassign owner — older rows only; an obligation's owner comes from its control */}
           {!ob && isCompliance && !showReassign && (
             <button
@@ -856,19 +781,6 @@ export default function RecordTracker({ focusRecordId = "" } = {}) {
     }
   };
 
-  const handleSchedule = async (id, days, freshness) => {
-    setActionItemId(id);
-    try {
-      await recordApi.schedule(id, days, freshness);
-      qc.invalidateQueries({ queryKey: ["records"] });
-    } catch (err) {
-      notify({ tone: "danger", title: "Schedule not saved",
-               message: err.response?.data?.detail || err.message || "Could not set the schedule." });
-    } finally {
-      setActionItemId(null);
-    }
-  };
-
   const handleReassignOwner = async (id, ownerRole) => {
     setActionItemId(id);
     try {
@@ -961,7 +873,6 @@ export default function RecordTracker({ focusRecordId = "" } = {}) {
               onSubmitLink={handleSubmitLink}
               onVerify={handleVerify}
               onReassignOwner={handleReassignOwner}
-              onSchedule={handleSchedule}
               actionItemId={actionItemId}
               focused={item.id === focusRecordId}
             />
