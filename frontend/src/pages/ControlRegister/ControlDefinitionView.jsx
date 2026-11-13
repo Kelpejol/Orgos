@@ -89,11 +89,19 @@ export default function ControlDefinitionView({ control, onBack }) {
       </button>
 
       <div style={{ display: "flex", gap: 6, alignItems: "center", marginBottom: 6, flexWrap: "wrap" }}>
-        <Chip mono>{c.ControlId}</Chip>
         <StatusBadge label={c.Status || "Active"} />
       </div>
-      <div style={{ fontSize: 16, fontWeight: 600, lineHeight: 1.35, marginBottom: 10 }}>{d.title}</div>
-      <div style={{ fontSize: 13.5, lineHeight: 1.55 }}>{d.requirement || c.ControlStatement}</div>
+      <div style={{ fontSize: 16, fontWeight: 600, lineHeight: 1.35, marginBottom: 6 }}>{c.ControlName || d.title}</div>
+      {(d.requirement || c.ControlStatement) && (d.requirement || c.ControlStatement).replace(/[.;:\s]+$/, "") !== (c.ControlName || "").replace(/…$/, "") && (
+        <div style={{ fontSize: 13.5, lineHeight: 1.55 }}>{d.requirement || c.ControlStatement}</div>
+      )}
+      <div style={{ fontSize: 12, color: "var(--color-text-secondary)", marginTop: 6 }}>
+        From the {c.ControlDocument || d.defined_in_label}
+      </div>
+      {/* The codes, for auditors and for documents that cite them — not the way a person finds a control */}
+      <div style={{ fontSize: 10.5, color: "var(--color-text-tertiary)", marginTop: 3, fontFamily: "var(--font-mono)" }}>
+        {[c.ControlId && `Control ID ${c.ControlId}`, c.ControlDocumentCode].filter(Boolean).join(" · ")}
+      </div>
 
       {c.Status === "Blocked" && (
         <div style={{ marginTop: 14, padding: "10px 12px", background: "#FCEBEB", borderRadius: 8,
@@ -153,7 +161,7 @@ export default function ControlDefinitionView({ control, onBack }) {
       </Section>
 
       <Section title="Where it comes from">
-        <Field l="Defined in" v={[d.defined_in_label, where.section, where.version && `v${where.version}`]
+        <Field l="Defined in" v={[where.title || d.defined_in_label, where.section, where.version && `v${where.version}`]
           .filter(Boolean).join(" · ")} />
         <Field l="Carried out in" v={(d.implemented_in || []).length
           ? d.implemented_in.map((i) => [i.document, i.section].filter(Boolean).join(" § ")).join("; ")

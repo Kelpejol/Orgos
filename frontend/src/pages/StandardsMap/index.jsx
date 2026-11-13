@@ -169,11 +169,11 @@ const ClauseDetail = ({ standard: standardName, clauseCode, onBack }) => {
                 {isBlocked && <StatusBadge label="Blocked" />}
               </div>
               <div style={{ fontSize: 13, fontWeight: 600, lineHeight: 1.4, marginBottom: 6 }}>
-                {control.ControlStatement}
+                {control.ControlName || control.ControlStatement}
               </div>
               <div>
                 <Field l="Owner role"       v={<OwnerDisplay item={control} compact />} />
-                <Field l="Source document"  v={control.SourceDocument || "—"} />
+                <Field l="Source document"  v={control.ControlDocument || control.SourceDocument || "—"} />
                 {control.RiskImplication && (
                   <Field l="Risk if fails"  v={control.RiskImplication} color="#A32D2D" />
                 )}

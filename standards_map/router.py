@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from auth.validator import CurrentUser, get_current_user
 from config import settings
+from control_register.describe import describe
 from graph.client import get_list_items
 # The clauses — and how a control is matched to one — come from the catalogue,
 # shared with the Gap Analyzer.
@@ -234,6 +235,8 @@ async def get_clause_detail(
                 "Status": f.get("Status", "Active"),
                 "SourceDocument": f.get("SourceDocument", ""),
                 "SourceClause": f.get("SourceClause", ""),
+                # in words: what it requires and the name of its document (control_register/describe.py)
+                **{k: v for k, v in describe(f).items() if k != "ControlId"},
             }
 
         def fmt_record(f: dict) -> dict:

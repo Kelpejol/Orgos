@@ -26,6 +26,7 @@ from graph.client import (
     update_list_item,
 )
 from graph.exceptions import GraphAPIError, GraphNotFoundError
+from control_register.describe import describe
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +81,8 @@ def _sp_to_control(item: dict) -> dict:
         "Definition":       _definition(f),
         "created":          item.get("createdDateTime", ""),
         "modified":         item.get("lastModifiedDateTime", ""),
+        # What the control is, in words: ControlName, ControlSummary, ControlDocument (+ codes)
+        **{k: v for k, v in describe(f).items() if k != "ControlId"},
     }
 
 

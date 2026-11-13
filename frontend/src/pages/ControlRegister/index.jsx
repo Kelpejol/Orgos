@@ -60,10 +60,14 @@ export default function ControlRegister() {
     let list = controls.filter(FILTERS[typeFilter] || FILTERS.All);
     list = [...list].sort((a, b) =>
       (a.ControlId ? 0 : 1) - (b.ControlId ? 0 : 1) ||
+      (a.ControlDocument || "").localeCompare(b.ControlDocument || "") ||
       (a.ControlId || "").localeCompare(b.ControlId || "", undefined, { numeric: true }));
     if (search.trim()) {
       const q = search.toLowerCase();
       list = list.filter(c =>
+        (c.ControlName      || "").toLowerCase().includes(q) ||
+        (c.ControlSummary   || "").toLowerCase().includes(q) ||
+        (c.ControlDocument  || "").toLowerCase().includes(q) ||
         (c.ControlId        || "").toLowerCase().includes(q) ||
         (c.Title            || "").toLowerCase().includes(q) ||
         (c.ControlStatement || "").toLowerCase().includes(q) ||
@@ -109,7 +113,7 @@ export default function ControlRegister() {
 
         <Field l="Control type"    v={selected.ControlType} />
         <Field l="ISO clause"      v={selected.ISOClause} />
-        <Field l="Source document" v={selected.SourceDocument} />
+        <Field l="Source document" v={selected.ControlDocument || selected.SourceDocument} />
         {selected.SourceClause && <Field l="Source clause"  v={selected.SourceClause} />}
         <Field l="Control owner"      v={<OwnerDisplay item={selected} />} />
         {/* Only an older control (no Control ID) is reassigned here; a defined control's owner
@@ -220,7 +224,7 @@ export default function ControlRegister() {
         ))}
         <input
           type="text" value={search} onChange={e => setSearch(e.target.value)}
-          placeholder="Search controls..."
+          placeholder="Search by what the control does, its document, owner…"
           style={{ flex: 1, minWidth: 180, fontSize: 12, padding: "6px 12px", borderRadius: 8,
                    border: "1.5px solid #C0C0C0", background: "var(--color-background-primary)",
                    color: "var(--color-text-primary)", outline: "none" }}
@@ -267,14 +271,7 @@ export default function ControlRegister() {
                                 alignItems: "flex-start", gap: 8 }}>
                     <div style={{ flex: 1 }}>
                       <div style={{ display: "flex", gap: 4, marginBottom: 4, flexWrap: "wrap" }}>
-                        {c.ControlId ? (
-                          <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 3,
-                                         fontWeight: 600, fontFamily: "var(--font-mono)",
-                                         background: "var(--color-background-info)",
-                                         color: "var(--color-text-info)" }}>
-                            {c.ControlId}
-                          </span>
-                        ) : (
+                        {!c.ControlId && (
                           <span style={{ fontSize: 10, padding: "1px 6px", borderRadius: 3,
                                          fontWeight: 500, background: tc.bg,
                                          color: tc.color, border: `0.5px solid ${tc.bd}` }}>
@@ -291,14 +288,20 @@ export default function ControlRegister() {
                         )}
                         {isBlocked && <StatusBadge label="Blocked" />}
                       </div>
-                      <div style={{ fontSize: 12, fontWeight: 600, lineHeight: 1.4, marginBottom: 3 }}>
-                        {c.ControlId ? (c.Definition?.title || c.Title) : (c.ControlStatement || c.Title)}
+                      <div style={{ fontSize: 12.5, fontWeight: 600, lineHeight: 1.4, marginBottom: 3 }}>
+                        {c.ControlName || c.ControlStatement || c.Title}
                       </div>
+                      {c.ControlSummary && c.ControlSummary.replace(/[.;:\s]+$/, "") !== (c.ControlName || "").replace(/…$/, "") && (
+                        <div style={{ fontSize: 11.5, color: "var(--color-text-secondary)", lineHeight: 1.45, marginBottom: 3,
+                                      display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>
+                          {c.ControlSummary}
+                        </div>
+                      )}
                       {c.ControlId && isBlocked && c.BlockedReason && (
                         <div style={{ fontSize: 11, color: "#791F1F", marginBottom: 2 }}>{c.BlockedReason}</div>
                       )}
                       <div style={{ fontSize: 11, color: "var(--color-text-secondary)" }}>
-                        {c.OwnerRole || "No owner"}{c.OwnerResolved === false && c.OwnerRole ? " (unassigned)" : ""} · {c.SourceDocument || "No source"}
+                        {c.OwnerRole || "No owner"}{c.OwnerResolved === false && c.OwnerRole ? " (unassigned)" : ""} · {c.ControlDocument || c.SourceDocument || "No source"}
                       </div>
                     </div>
                     <span style={{ fontSize: 12, color: "var(--color-text-tertiary)", flexShrink: 0 }}>›</span>

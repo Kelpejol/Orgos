@@ -312,7 +312,7 @@ export default function WorkHub({ go }) {
     isCompliance && blocked.length > 0 && { key: "blocked", color: "#791F1F", bg: "#FCEBEB", bd: "#F09595", icon: "⊘",
       count: blocked.length,
       title: `control${blocked.length > 1 ? "s" : ""} Blocked`,
-      message: blocked.slice(0, 3).map((c) => `${c.ControlId || c.Title}: ${c.BlockedReason || "owner not in Org Roles"}`).join(" · ") +
+      message: blocked.slice(0, 3).map((c) => `${c.ControlName || c.Title}: ${c.BlockedReason || "owner not in Org Roles"}`).join(" · ") +
         (blocked.length > 3 ? ` +${blocked.length - 3} more.` : ""),
       action: "Control Register", nav: "control" },
 
