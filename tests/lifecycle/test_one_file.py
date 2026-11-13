@@ -145,11 +145,11 @@ async def test_the_scheduled_check_skips_approved_documents(library):
 
 async def test_approval_preview_uses_the_code_corrected_in_sharepoint(library):
     library.add(FILE, policy(), "Context Policy.docx")
-    item = Item(Stage="Approval", DocumentCode="Not assigned", FileState=json.dumps({"item": FILE, "ctag": "ctag-0"}))
+    item = Item(Stage="Approval", DocumentCode="Not assigned", FileState=json.dumps({"item": FILE, "ctag": "ctag-0"}),
+                VersionDecision="new", ChangeSummary="First issue of the context policy for the library.")
     stack, _ = run(item)
     with stack, patch.object(lr, "run_cdi_check", new=AsyncMock(return_value={"passed": True, "checks": []})):
-        impact = await lr.approval_impact("42", user=COMPLIANCE, version_decision="new",
-                                          change_summary="First issue of the context policy for the library.")
+        impact = await lr.approval_impact("42", user=COMPLIANCE)
     assert not impact["blocked"], impact["blocked_reason"]
     assert "DRG-QI-POL-CIP" in impact["summary"]
 

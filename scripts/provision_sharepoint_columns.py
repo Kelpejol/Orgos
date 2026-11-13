@@ -253,6 +253,9 @@ LISTS: dict[str, dict] = {
             "FileState":                 (NOTE,   None),
             # sensitisation and approval
             "AmendmentSummary":          (NOTE,   None),
+            # how approval treats the version, set by Compliance on the card before approval
+            "VersionDecision":           (TEXT,   None),
+            "ChangeSummary":             (NOTE,   None),
             "RejectionCount":            (NUM,    None),
             "StakeholderResponseCount":  (NUM,    None),
             "SensitisationDeadline":     (DATE,   None),

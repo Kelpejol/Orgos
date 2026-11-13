@@ -239,6 +239,9 @@ async def _sp_to_doc(item: dict) -> dict:
         "RevisionReason":           f.get("RevisionReason", ""),
         "SensitisationFeedback":    f.get("SensitisationFeedback", ""),
         "AmendmentSummary":         f.get("AmendmentSummary", ""),
+        # How approval treats the version, set by the officer on the card (see set_version_plan)
+        "VersionDecision":          f.get("VersionDecision", ""),
+        "ChangeSummary":            f.get("ChangeSummary", ""),
         "SensitisationDeadline":    f.get("SensitisationDeadline", ""),
         "StakeholderResponseCount": int(f.get("StakeholderResponseCount", 0) or 0),
         "Stakeholders":             stakeholders,
@@ -406,6 +409,28 @@ async def _plan_version(doc: dict, decision: Optional[str], summary: Optional[st
         raise HTTPException(status_code=422, detail=str(exc))
 
 
+# How approval treats the version (a new version with its change summary, a correction, or an
+# annual review) is decided by the compliance officer on the card, before the document goes for
+# approval: the approver only approves or rejects. It is held on the card (VersionDecision,
+# ChangeSummary) and read from there by every approval.
+
+def _version_plan_of(doc: dict) -> tuple[str, str]:
+    return (doc.get("VersionDecision") or "").strip().lower(), (doc.get("ChangeSummary") or "").strip()
+
+
+async def _approval_version(doc: dict) -> versioning.VersionOutcome:
+    """The version the card says approval gives — or a 422 the approver can act on."""
+    decision, summary = _version_plan_of(doc)
+    try:
+        return await _plan_version(doc, decision, summary)
+    except HTTPException as exc:
+        if exc.status_code != 422:
+            raise
+        raise HTTPException(status_code=422, detail=(
+            "The version for this approval is not set yet. Compliance sets it on the document's card in "
+            f"Document Lifecycle (“Version on approval”). {exc.detail} Nothing was changed."))
+
+
 class ProgressDoc(BaseModel):
     current_stage:    str
     skip_stakeholders: Optional[bool] = False   # Review → Sensitisation without stakeholders
@@ -430,11 +455,8 @@ class ReassignDoc(BaseModel):
 
 class ApproveDoc(BaseModel):
     notes: Optional[str] = None
-    # How this approval treats the version (CDI §14): "new" (needs a change summary),
-    # "correction" (no new version) or "review" (annual review, no change). A first
-    # issue is always a new version; a revision must choose.
-    version_decision: Optional[str] = None
-    change_summary:   Optional[str] = None
+    # The version is not chosen here: Compliance sets it on the card before the document goes
+    # for approval (VersionDecision / ChangeSummary), and approval reads it from there.
 
 
 class RejectDoc(BaseModel):
@@ -894,6 +916,15 @@ async def progress_doc(
             # The approver MAY be the document owner — an owner can sensitise and
             # also approve, so we no longer block approver == owner.
 
+            # The version is settled here, by the officer sending it for approval, so the
+            # approver never has to: what this send gives, or what the card already holds.
+            if body.version_decision:
+                doc["VersionDecision"] = body.version_decision
+                doc["ChangeSummary"] = body.change_summary or ""
+            decision, summary = _version_plan_of(doc)
+            await _plan_version(doc, decision, summary)
+            version_fields = {"VersionDecision": decision, "ChangeSummary": summary}
+
             # ── Skip approver → auto-finalise ──────────────────────────────────
             # With no approver assigned there is nobody to click Approve, so the
             # document would otherwise sit in Approval forever and never reach the
@@ -908,10 +939,9 @@ async def progress_doc(
                 # does not meet) would strand it there.
                 _check_publishable(doc)
                 await standard_gate.enforce(doc)                              # approval re-checks the standard
-                await _plan_version(doc, body.version_decision, body.change_summary)
                 await update_list_item(
                     _get_list_id(), _LIST_NAME, item_id,
-                    {"Stage": "Approval", "SubmittedForApproval": date.today().isoformat()},
+                    {"Stage": "Approval", "SubmittedForApproval": date.today().isoformat(), **version_fields},
                 )
                 doc["Stage"] = "Approval"  # keep local dict consistent for finalise
                 note = (
@@ -924,8 +954,8 @@ async def progress_doc(
                     approver_oid=user.oid,
                     approver_email=finaliser.get("email", ""),
                     approval_note=note,
-                    version_decision=body.version_decision or "",
-                    change_summary=body.change_summary or "",
+                    version_decision=decision,
+                    change_summary=summary,
                 )
                 updated = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
                 result = await _sp_to_doc(updated)
@@ -979,6 +1009,7 @@ async def progress_doc(
             fields["SubmittedForApproval"] = date.today().isoformat()
             fields["ApprovalStatus"]       = "Pending"
             fields["ApproverEntraId"]      = body.approver_id   # text column — OID
+            fields.update(version_fields)
             _approver_email_pg = (body.approver_email or "").strip()
 
         # ── Critical write — text columns always succeed ───────────────────────
@@ -1046,8 +1077,6 @@ async def claim_doc(
 @router.get("/documents/{item_id}/approval-impact")
 async def approval_impact(
     item_id: str,
-    version_decision: Optional[str] = None,
-    change_summary: str = "",
     user: CurrentUser = Depends(get_current_user),
 ) -> dict:
     """
@@ -1110,24 +1139,24 @@ async def approval_impact(
         if revision_of and (conflict := _code_conflict(doc, reg_fields)):
             return blocked(conflict)
         current_version = versioning.display_version(reg_fields.get("CurrentVersion", "")) if revision_of else ""
+        version_decision, change_summary = _version_plan_of(doc)    # set by Compliance on the card
         try:
             outcome = versioning.plan(
                 version_decision, change_summary, existing_version=reg_fields.get("CurrentVersion", "") if revision_of else "",
                 today=date.today(), review_days=REVIEW_PERIOD_DAYS)
         except versioning.VersionError as exc:
-            outcome = None
-            impact["flags"].append({"register": "Document Register", "detail": f"Before approving: {exc}"})
+            return blocked(
+                "The version for this approval is not set yet. Compliance sets it on the document's card in "
+                f"Document Lifecycle (“Version on approval”). {exc}")
         code = doc.get("DocumentCode", "")
         typed = _load_cdt_cover(doc).version
-        if outcome and not revision_of and versioning.parse_version(typed) is not None:
+        if not revision_of and versioning.parse_version(typed) is not None:
             impact["warnings"].append(
                 f"The document's cover says version {typed}, typed by hand. The Document Register is the master, "
                 f"so this first issue is recorded as version {outcome.version} and the cover is stamped to match. "
                 "If it already had issued versions elsewhere, say so in the change summary.")
         if revision_of:
-            if outcome is None:
-                what = f"stays at version {current_version} until you choose how this approval treats it"
-            elif outcome.decision == versioning.NEW:
+            if outcome.decision == versioning.NEW:
                 what = (f"version {current_version} → {outcome.version}, new effective date "
                         f"({outcome.effective_date:%d %B %Y}) and review date ({outcome.next_review_date:%d %B %Y})")
             elif outcome.decision == versioning.CORRECTION:
@@ -1141,7 +1170,7 @@ async def approval_impact(
         else:
             impact["creates"].append({
                 "register": "Document Register",
-                "detail": f"New entry {code} — status Active, version {outcome.version if outcome else '01'}, effective today.",
+                "detail": f"New entry {code} — status Active, version {outcome.version}, effective today.",
             })
 
         impact["updates"].append({
@@ -1166,14 +1195,17 @@ async def approval_impact(
             impact["warnings"].append("CDI status is Failed — the published document will carry unresolved CDI findings.")
 
         if revision_of:
-            published_as = (f"as version {outcome.version} of the existing register entry" if outcome and outcome.issues_new_version
+            published_as = (f"as version {outcome.version} of the existing register entry" if outcome.issues_new_version
                             else f"as an update to the existing register entry (version {current_version})")
         else:
-            published_as = f"as a new register entry (version {outcome.version if outcome else '01'})"
+            published_as = f"as a new register entry (version {outcome.version})"
         impact["summary"] = (
             f"Approving publishes {doc.get('DocumentCode', 'this document')} {published_as}. "
             "This action cannot be undone."
         )
+        # What Compliance set on the card, for the approver to read (not to change)
+        impact["version"] = {"decision": outcome.decision, "version": outcome.version,
+                             "change_summary": outcome.history_purpose}
         return impact
 
     except HTTPException:
@@ -1642,6 +1674,8 @@ async def approve_doc(
         approver_email_val = approver_resolved.get("email", "")
 
         await standard_gate.enforce(doc)               # approval re-checks the standard
+        await _approval_version(doc)                   # the version Compliance set on the card
+        decision, summary = _version_plan_of(doc)
 
         approval_note = f"Approval note: {body.notes}" if body.notes else ""
         register_item_id, extraction_result = await _finalize_document_approval(
@@ -1650,8 +1684,8 @@ async def approve_doc(
             approver_oid=user.oid,
             approver_email=approver_email_val,
             approval_note=approval_note,
-            version_decision=body.version_decision or "",
-            change_summary=body.change_summary or "",
+            version_decision=decision,
+            change_summary=summary,
         )
 
         updated = await get_list_item(_get_list_id(), _LIST_NAME, item_id)
@@ -3068,6 +3102,38 @@ async def version_options(item_id: str, user: CurrentUser = Depends(get_current_
         "min_new_summary": versioning.MIN_NEW_SUMMARY,
         "min_correction_summary": versioning.MIN_CORRECTION_SUMMARY,
     }
+
+
+class VersionPlanBody(BaseModel):
+    version_decision: Optional[str] = None   # "new" | "correction" | "review"; a first issue is always "new"
+    change_summary:   str = ""
+
+
+@router.put("/documents/{item_id}/version-plan")
+async def set_version_plan(item_id: str, body: VersionPlanBody,
+                           user: CurrentUser = Depends(get_current_user)) -> dict:
+    """
+    Compliance (or the document owner) says how approval will treat the version: a new version
+    and what changed, a correction, or an annual review with no change (CDI §14). It is checked
+    now, held on the card, and used as it stands when the document is approved; the approver is
+    never asked for it. It can be changed until the document is approved.
+    """
+    try:
+        doc = await _sp_to_doc(await _current_item(item_id))
+        if doc.get("ApprovalStatus") == "Approved":
+            raise HTTPException(status_code=409, detail="This document is already approved; its version was set then.")
+        if not _may_correct_approval(doc, user):
+            raise HTTPException(status_code=403, detail="Only the document owner or Compliance can set the version.")
+        outcome = await _plan_version(doc, body.version_decision, body.change_summary)
+        summary = (body.change_summary or "").strip()
+        await update_list_item(_get_list_id(), _LIST_NAME, item_id,
+                               {"VersionDecision": outcome.decision, "ChangeSummary": summary})
+        return {"VersionDecision": outcome.decision, "ChangeSummary": summary,
+                "version": outcome.version, "issues_new_version": outcome.issues_new_version}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _handle_error(exc, f"set version for lifecycle document {item_id}")
 
 
 class RoleFixBody(BaseModel):

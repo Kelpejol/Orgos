@@ -171,7 +171,8 @@ See docs/REMAINING-WORK.md §2. (The Role Catalogue is not needed: Org Roles is 
 ## 11. One version number
 
 - Run `python scripts/migrate_versions.py` (a dry run that lists every change), then again with `--apply`, to rewrite existing Document Register entries from "R02" to "02". Nothing else about an entry changes. New approvals write the version plain.
-- From now on every approval asks how it treats the version (first issue, new version, correction, annual review). A new version cannot be approved without a change summary that says what changed and why.
+- How approval treats the version (first issue, new version, correction, annual review) is set by **Compliance on the card** ("Version on approval"), or when sending the document for approval. The **approver is not asked**: the approval page only shows it. A new version cannot be approved without a change summary that says what changed and why.
+- **Before deploying this (13 Nov 2026):** add two columns to the **Document Lifecycle** list, `VersionDecision` (single line of text) and `ChangeSummary` (multiple lines, plain text), with `python scripts/provision_sharepoint_columns.py --list "Document Lifecycle" --apply`. Without them the version cannot be saved and no document can be approved.
 
 
 ## 12. New columns and choice values (31 Oct fixes)

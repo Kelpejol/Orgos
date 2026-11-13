@@ -183,24 +183,146 @@ async def test_version_options_for_a_first_issue_a_revision_and_a_scheduled_revi
     assert sched["default_decision"] == "review"
 
 
-async def test_the_approval_preview_says_what_the_chosen_option_will_do():
-    async def preview(**params):
-        doc = {**revision(), "Stage": "Approval", "ApprovalStatus": "", "ApproverEntraId": "", "OwnerEntraId": "owner",
-               "id": "10"}
-        with Env(REGISTER), patch("lifecycle.router._sp_to_doc", new=AsyncMock(return_value=doc)), \
-             patch("lifecycle.router.is_valid_doc_code", return_value=True):
-            return await lr.approval_impact("10", user=COMPLIANCE, **params)
-    new = await preview(version_decision="new", change_summary=GOOD)
+def _at_approval(doc, **version):
+    return {**doc, "Stage": "Approval", "ApprovalStatus": "", "ApproverEntraId": "", "OwnerEntraId": "owner",
+            "id": "10", **version}
+
+
+async def _preview(doc, register):
+    with Env(register), patch("lifecycle.router._sp_to_doc", new=AsyncMock(return_value=doc)), \
+         patch("lifecycle.router.is_valid_doc_code", return_value=True):
+        return await lr.approval_impact("10", user=COMPLIANCE)
+
+
+async def test_the_approval_preview_shows_the_version_compliance_set_on_the_card():
+    new = await _preview(_at_approval(revision(), VersionDecision="new", ChangeSummary=GOOD), REGISTER)
     assert any("02 → 03" in u["detail"] for u in new["updates"])
-    correction = await preview(version_decision="correction", change_summary="Fixed a broken cross-reference.")
+    assert new["version"] == {"decision": "new", "version": "03", "change_summary": GOOD}
+    correction = await _preview(_at_approval(revision(), VersionDecision="correction",
+                                             ChangeSummary="Fixed a broken cross-reference."), REGISTER)
     assert any("stays at version 02" in u["detail"] for u in correction["updates"])
-    unchosen = await preview()
-    assert any("Before approving" in f["detail"] for f in unchosen["flags"])
+
+
+async def test_the_approval_preview_is_blocked_until_compliance_sets_the_version():
+    unset = await _preview(_at_approval(revision()), REGISTER)
+    assert unset["blocked"] and "Compliance sets it on the document's card" in unset["blocked_reason"]
+    first_issue_without_summary = await _preview(_at_approval(_lifecycle_doc()), None)
+    assert first_issue_without_summary["blocked"]
 
 
 async def test_the_preview_warns_when_a_hand_typed_cover_version_will_be_replaced():
-    doc = {**_lifecycle_doc(), "Stage": "Approval", "ApprovalStatus": "", "ApproverEntraId": "", "OwnerEntraId": "owner", "id": "10"}
-    with Env(None), patch("lifecycle.router._sp_to_doc", new=AsyncMock(return_value=doc)), \
-         patch("lifecycle.router.is_valid_doc_code", return_value=True):
-        out = await lr.approval_impact("10", user=COMPLIANCE, version_decision="new", change_summary=GOOD)
+    out = await _preview(_at_approval(_lifecycle_doc(), VersionDecision="new", ChangeSummary=GOOD), None)
     assert any("typed by hand" in w and "version 01" in w for w in out["warnings"])         # the fixture's cover says 05
+
+
+# ── the approver approves; the version comes from the card ──────────────────
+
+APPROVER = CurrentUser(oid="a", name="Approver", email="a@x", tenant_id="t", roles=[])
+
+
+async def _approve_as_approver(doc, register=None):
+    with Env(register) as env, patch("lifecycle.router._current_item", new=AsyncMock(return_value={"id": "10"})), \
+         patch("lifecycle.router._sp_to_doc", new=AsyncMock(return_value=doc)), \
+         patch("lifecycle.router.standard_gate.enforce", new=AsyncMock()):
+        try:
+            await lr.approve_doc("10", lr.ApproveDoc(), user=APPROVER)
+        except HTTPException as exc:
+            return env, exc
+    return env, None
+
+
+async def test_approval_uses_the_version_set_on_the_card():
+    doc = _at_approval(revision(), ApproverEntraId="a", VersionDecision="new", ChangeSummary=GOOD)
+    env, error = await _approve_as_approver(doc, REGISTER)
+    assert error is None and env.register_update()["CurrentVersion"] == "03"
+
+
+async def test_approval_without_a_version_on_the_card_is_refused_and_writes_nothing():
+    for doc, register in ((_at_approval(revision(), ApproverEntraId="a"), REGISTER),
+                          (_at_approval(_lifecycle_doc(), ApproverEntraId="a"), None)):
+        env, error = await _approve_as_approver(doc, register)
+        assert error is not None and error.status_code == 422
+        assert "Compliance sets it on the document's card" in error.detail and "Nothing was changed" in error.detail
+        assert env.nothing_written()
+
+
+async def test_the_approver_cannot_choose_the_version():
+    assert "version_decision" not in lr.ApproveDoc.model_fields and "change_summary" not in lr.ApproveDoc.model_fields
+
+
+# ── sending for approval settles the version ────────────────────────────────
+
+async def _send_for_approval(doc, body):
+    with Env() as env, patch("lifecycle.router._current_item", new=AsyncMock(return_value={"id": "10"})), \
+         patch("lifecycle.router._sp_to_doc", new=AsyncMock(return_value=doc)):
+        try:
+            await lr.progress_doc("10", body, user=COMPLIANCE)
+        except HTTPException as exc:
+            return env, exc
+    return env, None
+
+
+def _moved(env):
+    return [c.args[3] for c in env.update.call_args_list if c.args[3].get("Stage") == "Approval"]
+
+
+async def test_sending_for_approval_saves_the_version_with_the_move():
+    doc = {**_lifecycle_doc(), "Stage": "Sensitisation", "ApprovalStatus": ""}
+    body = lr.ProgressDoc(current_stage="Sensitisation", approver_id="a", approver_name="A",
+                          version_decision="new", change_summary=GOOD)
+    env, error = await _send_for_approval(doc, body)
+    assert error is None
+    moved = _moved(env)
+    assert moved and moved[0]["VersionDecision"] == "new" and moved[0]["ChangeSummary"] == GOOD
+
+
+async def test_sending_for_approval_keeps_a_version_already_set_on_the_card():
+    doc = {**_lifecycle_doc(), "Stage": "Sensitisation", "ApprovalStatus": "",
+           "VersionDecision": "new", "ChangeSummary": GOOD}
+    env, error = await _send_for_approval(doc, lr.ProgressDoc(current_stage="Sensitisation", approver_id="a"))
+    assert error is None and _moved(env)[0]["ChangeSummary"] == GOOD
+
+
+async def test_sending_for_approval_without_a_version_is_refused_and_does_not_move():
+    doc = {**_lifecycle_doc(), "Stage": "Sensitisation", "ApprovalStatus": ""}
+    env, error = await _send_for_approval(doc, lr.ProgressDoc(current_stage="Sensitisation", approver_id="a"))
+    assert error is not None and error.status_code == 422 and not _moved(env)
+
+
+# ── setting it on the card ──────────────────────────────────────────────────
+
+async def _set(doc, body, user=COMPLIANCE, register=None):
+    with Env(register) as env, patch("lifecycle.router._current_item", new=AsyncMock(return_value={"id": "10"})), \
+         patch("lifecycle.router._sp_to_doc", new=AsyncMock(return_value=doc)):
+        try:
+            return env, await lr.set_version_plan("10", body, user=user)
+        except HTTPException as exc:
+            return env, exc
+
+
+async def test_compliance_sets_the_version_on_the_card():
+    env, out = await _set(revision(Stage="Review"), lr.VersionPlanBody(version_decision="correction",
+                                                                       change_summary="Fixed a broken cross-reference."),
+                          register=REGISTER)
+    assert out["version"] == "02" and out["issues_new_version"] is False
+    env.update.assert_awaited_once()
+    assert env.update.call_args.args[3] == {"VersionDecision": "correction",
+                                            "ChangeSummary": "Fixed a broken cross-reference."}
+
+
+async def test_a_first_issue_is_always_a_new_version():
+    env, out = await _set(_lifecycle_doc(Stage="Review"), lr.VersionPlanBody(change_summary=GOOD))
+    assert out["VersionDecision"] == "new" and out["version"] == "01"
+
+
+async def test_setting_the_version_refuses_a_summary_that_says_nothing_and_writes_nothing():
+    env, out = await _set(_lifecycle_doc(Stage="Review"), lr.VersionPlanBody(change_summary="Issued for use"))
+    assert isinstance(out, HTTPException) and out.status_code == 422 and env.nothing_written()
+
+
+async def test_only_the_owner_or_compliance_sets_the_version_and_not_after_approval():
+    stranger = CurrentUser(oid="x", name="X", email="x@x", tenant_id="t", roles=[])
+    env, out = await _set(_lifecycle_doc(Stage="Review"), lr.VersionPlanBody(change_summary=GOOD), user=stranger)
+    assert isinstance(out, HTTPException) and out.status_code == 403 and env.nothing_written()
+    env, out = await _set(_lifecycle_doc(Stage="Approval", ApprovalStatus="Approved"), lr.VersionPlanBody(change_summary=GOOD))
+    assert isinstance(out, HTTPException) and out.status_code == 409 and env.nothing_written()

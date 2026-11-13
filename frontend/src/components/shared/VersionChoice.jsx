@@ -1,16 +1,17 @@
 // =============================================================================
 // components/shared/VersionChoice.jsx
-// How this approval treats the document's version (CDI Procedure §14):
+// How approval treats the document's version (CDI Procedure §14):
 //   first issue          becomes version 01 — says what the document is and why
 //   new version          a real change — needs a change summary
 //   correction           a typo / cross-reference / formatting: the version stays, it is logged
 //   annual review        no change: the version stays, the review date moves on
-// The Register holds the version; approval stamps the cover from it. Nobody
-// types a version into a file.
+// Compliance sets it on the card (VersionPlanPanel) or when sending the document for
+// approval; the approver only reads it. The Register holds the version; approval stamps
+// the cover from it. Nobody types a version into a file.
 // =============================================================================
 
-import { useEffect } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import apiClient from "../../api/grcApi.js";
 
 const CHOICES = (cur, next) => ({
@@ -32,7 +33,7 @@ const WEAK = new Set(["issued for use", "issued", "approved for use", "approved"
 // The server is the authority; this only saves a round trip.
 export function versionProblem(decision, summary, options) {
   if (!options) return "Loading…";
-  if (!decision) return "Choose how this approval treats the version.";
+  if (!decision) return "Choose how approval treats the version.";
   if (decision === "review") return "";
   const text = (summary || "").trim();
   const min = decision === "new" ? options.min_new_summary : options.min_correction_summary;
@@ -91,7 +92,7 @@ export default function VersionChoice({ docId, value, onChange, onReady }) {
       {(current || !options.has_issued_version) && (
         <>
           <label style={{ display: "block", fontSize: 11, fontWeight: 600, color: "var(--color-text-secondary)", marginBottom: 4 }}>
-            {options.has_issued_version ? current.label : "What is this document, and why is it being issued?"}
+            {options.has_issued_version ? current.label : "Change summary: what this document is and why it is being issued"}
             {(!options.has_issued_version || current.required) && " (required)"}
           </label>
           <textarea value={value.summary} rows={3} onChange={(e) => onChange({ ...value, summary: e.target.value })}
@@ -104,6 +105,90 @@ export default function VersionChoice({ docId, value, onChange, onReady }) {
             <div style={{ fontSize: 11, color: "#791F1F", marginTop: 4 }}>{problem}</div>
           )}
         </>
+      )}
+    </div>
+  );
+}
+
+// What a decision saved on the card reads as, without asking the server.
+export const DECISION_LABEL = {
+  new: "New version",
+  correction: "Correction — no new version",
+  review: "Annual review — no change",
+};
+
+// The card's "Version on approval": what Compliance has set, and a way to set or change it.
+// The approver is never asked; approval uses what is saved here.
+export function VersionPlanPanel({ doc, canEdit }) {
+  const qc = useQueryClient();
+  const saved = { decision: doc.VersionDecision || "", summary: doc.ChangeSummary || "" };
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(saved);
+  const [ready, setReady] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const save = async () => {
+    setBusy(true); setError("");
+    try {
+      await apiClient.put(`/api/v1/lifecycle/documents/${doc.id}/version-plan`, {
+        version_decision: value.decision || undefined, change_summary: value.summary.trim(),
+      });
+      await qc.invalidateQueries({ queryKey: ["lifecycle"] });
+      setEditing(false);
+    } catch (err) {
+      setError(err.response?.data?.detail || err.message || "Could not save the version.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const box = { marginTop: 8, padding: "8px 12px", borderRadius: 8, fontSize: 11.5, lineHeight: 1.45 };
+  if (editing) {
+    return (
+      <div style={{ ...box, padding: 0 }}>
+        <VersionChoice docId={doc.id} value={value} onChange={setValue} onReady={setReady} />
+        {error && <div style={{ fontSize: 11, color: "#791F1F", marginBottom: 6 }}>{error}</div>}
+        <div style={{ display: "flex", gap: 6 }}>
+          <button onClick={() => { setEditing(false); setValue(saved); setError(""); }} disabled={busy}
+            style={{ flex: 1, padding: "6px", fontSize: 11, borderRadius: 7, cursor: "pointer",
+                     border: "1.5px solid #C0C0C0", background: "transparent", color: "var(--color-text-secondary)" }}>
+            Cancel
+          </button>
+          <button onClick={save} disabled={busy || !ready}
+            style={{ flex: 2, padding: "6px", fontSize: 11, borderRadius: 7, fontWeight: 600, border: "none",
+                     background: busy || !ready ? "#E8E8E8" : "#0C447C", color: busy || !ready ? "#999" : "#fff",
+                     cursor: busy || !ready ? "not-allowed" : "pointer" }}>
+            {busy ? "Saving…" : "Save version"}
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const isSet = !!saved.decision;
+  return (
+    <div style={{ ...box, background: isSet ? "var(--color-background-secondary)" : "#FAEEDA",
+                  border: `0.5px solid ${isSet ? "var(--color-border-tertiary, #E0E0E0)" : "#FAC775"}` }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", gap: 8 }}>
+        <span style={{ fontSize: 10, fontWeight: 700, color: "var(--color-text-secondary)" }}>Version on approval</span>
+        {canEdit && (
+          <button onClick={() => { setValue(saved); setEditing(true); }}
+            style={{ background: "none", border: "none", padding: 0, fontSize: 11, color: "#0C447C",
+                     cursor: "pointer", fontWeight: 600 }}>
+            {isSet ? "Change" : "Set"}
+          </button>
+        )}
+      </div>
+      {isSet ? (
+        <>
+          <div style={{ fontWeight: 600, marginTop: 2 }}>{DECISION_LABEL[saved.decision] || saved.decision}</div>
+          {saved.summary && <div style={{ color: "var(--color-text-secondary)", marginTop: 2 }}>{saved.summary}</div>}
+        </>
+      ) : (
+        <div style={{ color: "#633806", marginTop: 2 }}>
+          Not set yet. Set it before sending the document for approval; the approver is not asked.
+        </div>
       )}
     </div>
   );

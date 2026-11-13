@@ -21,7 +21,7 @@ import DocumentViewer from "../../components/shared/DocumentViewer.jsx";
 import FeedbackAmendPanel from "../../components/shared/FeedbackAmendPanel.jsx";
 import apiClient from "../../api/grcApi.js";
 import StandardCheckPanel from "../../components/shared/StandardCheckPanel.jsx";
-import VersionChoice from "../../components/shared/VersionChoice.jsx";
+import VersionChoice, { VersionPlanPanel } from "../../components/shared/VersionChoice.jsx";
 import { useAiSuggestion } from "../../hooks/useAiSuggestion.js";
 
 // =============================================================================
@@ -1303,6 +1303,11 @@ const LifecycleCard = ({
         </div>
       )}
 
+      {/* ── How approval treats the version: set by Compliance, never asked of the approver ── */}
+      {!isApproved && (isReview || isSensitisation || isApproval) && (
+        <VersionPlanPanel doc={doc} canEdit={isOwner || isCompliance} />
+      )}
+
       {/* ── Approval: approver info + approved state ── */}
       {isApproval && (
         <div style={{ marginTop: 8 }}>
@@ -1971,8 +1976,9 @@ const ApproverModal = ({ doc, onClose, onDone }) => {
   const [resolved,    setResolved]    = useState(null);
   const [saving,      setSaving]      = useState(false);
   const [error,       setError]       = useState("");
-  const [skipping,    setSkipping]    = useState(false);   // skipping the approver finalises, so it needs the version too
-  const [version,     setVersion]     = useState({ decision: "", summary: "" });
+  const [skipping,    setSkipping]    = useState(false);   // skipping the approver approves straight away
+  // How approval treats the version is settled here, by Compliance — the approver is not asked.
+  const [version,     setVersion]     = useState({ decision: doc.VersionDecision || "", summary: doc.ChangeSummary || "" });
   const [versionReady, setVersionReady] = useState(false);
 
   const handleSubmit = async () => {
@@ -1983,6 +1989,8 @@ const ApproverModal = ({ doc, onClose, onDone }) => {
         approver_id:    resolved.oid,
         approver_name:  resolved.display_name,
         approver_email: resolved.email,
+        version_decision: version.decision || undefined,
+        change_summary: version.summary.trim() || undefined,
       });
       qc.invalidateQueries({ queryKey: ["lifecycle"] });
       onDone();
@@ -2052,26 +2060,24 @@ const ApproverModal = ({ doc, onClose, onDone }) => {
         </div>
 
         {skipping && (
-          <>
-            <div style={{ fontSize: 12, color: "#633806", background: "#FAEEDA", border: "0.5px solid #FAC775",
-                          borderRadius: 8, padding: "8px 10px", marginBottom: 10, lineHeight: 1.5 }}>
-              Skipping the approver approves and publishes the document straight away, so say how this
-              treats the version first.
-            </div>
-            <VersionChoice docId={doc.id} value={version} onChange={setVersion} onReady={setVersionReady} />
-          </>
+          <div style={{ fontSize: 12, color: "#633806", background: "#FAEEDA", border: "0.5px solid #FAC775",
+                        borderRadius: 8, padding: "8px 10px", marginBottom: 10, lineHeight: 1.5 }}>
+            Skipping the approver approves and publishes the document straight away, with the version below.
+          </div>
         )}
+        {/* Set once, here: the approver reads it and does not choose it */}
+        <VersionChoice docId={doc.id} value={version} onChange={setVersion} onReady={setVersionReady} />
 
         {/* Actions */}
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
           <button
             onClick={handleSubmit}
-            disabled={saving || !resolved || skipping}
+            disabled={saving || !resolved || skipping || !versionReady}
             style={{
               flex: 1, padding: "11px", fontSize: 13, borderRadius: 9, border: "none", fontWeight: 600,
-              background: saving || !resolved ? "#E8E8E8" : "#993556",
-              color: saving || !resolved ? "#999" : "#fff",
-              cursor: saving || !resolved ? "not-allowed" : "pointer",
+              background: saving || !resolved || !versionReady ? "#E8E8E8" : "#993556",
+              color: saving || !resolved || !versionReady ? "#999" : "#fff",
+              cursor: saving || !resolved || !versionReady ? "not-allowed" : "pointer",
               minWidth: 160,
             }}
           >
